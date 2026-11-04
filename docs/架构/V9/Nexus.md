@@ -24,21 +24,11 @@ Scout 执行 `account` / `otp_mail` / `llm` / `vlm` / `vlm_frame` / `note` 时�
 
 `note` 仍是证据，限制与现在的 `case.note` 相同。
 
-### 1.3 `script_guide` 布局
-
-`GET` 脚本引导的 `layout` 改成 [页面与脚本](页面与脚本.md)：
-
-- `scripts_package`：`scripts/`
-- `tests_root`：`tests/<模块>/<case_id>.py`，一个用例一个文件
-- `pages_dir`：`pages/<page_key>.yaml`
-- `path_field` 仍是 `script_path`
-- 去掉 `{app_id}/` 建议目录，去掉按渠道文件名回退
-
-### 1.4 应用逻辑改读仓库
+### 1.3 应用逻辑改读仓库
 
 按 [页面与脚本 §4](页面与脚本.md) 做一次导出：现有页面、控件定位、入口写成 `pages/*.yaml`。导出后 `logic.page.*`、`logic.control.*`、`logic.entry.*` 只读检出里的 YAML。停写 `nav_fsm*`、控件表和逻辑块表。没有 `pages/` 时返回空列表，不读库。库表本批不删。
 
-`agent_guide` 里「由 Nexus 派给 Scout」改成：开跑后整份脚本在 Scout 执行；账号、验证码和模型经 `case.*` 回调 Nexus。脚本文本仍然只写在 `script_guide` 返回的检出目录，不 POST 给 Nexus。Git 提交仍在本机，Nexus 不保存 Git 令牌。
+`agent_guide` 里「由 Nexus 派给 Scout」改成：开跑后整份脚本在 Scout 执行；账号、验证码和模型经 `case.*` 回调 Nexus。脚本文本只写在本机检出目录，不 POST 给 Nexus。Git 提交仍在本机，Nexus 不保存 Git 令牌。
 
 ### 1.5 DSH 插件适配
 

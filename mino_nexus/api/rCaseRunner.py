@@ -68,6 +68,7 @@ class RunRequest(BaseModel):
     env_profile: str = ""
     env_surface: str = ""
     action_scheme: str = "dom_preferred"
+    revision: str = ""
 
 
 class PromoteBaselineRequest(BaseModel):
@@ -155,9 +156,15 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
         app = ps.require_app(body.app_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="App not found") from exc
+    from mino_nexus.resources import repo_apps
+    if repo_apps.has_app(str(app.get("project_id") or ""), str(app.get("id") or body.app_id)) is False:
+        raise HTTPException(status_code=400, detail={
+            "reason_code": "app_not_in_repo_config",
+            "message": "仓库应用清单里没有 app_id 为这个应用的条目；改了 config.yaml 请先 push 并调用 repo_apps_sync"})
     cov = str(body.coverage or "").strip().lower()
     if cov not in ("", "once", "per_device"):
         raise HTTPException(status_code=400, detail="coverage 必须是 once 或 per_device")
+    revision = str(body.revision or "").strip()
     try:
         snapshot = cr.run_cases(
             app,
@@ -180,6 +187,7 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             plugin_user_id=_plugin_user(sess),
             execution_mode="agent",
             client_request_id=body.client_request_id,
+            revision=revision,
         )
         return ok(snapshot, msg="AI-led 回归任务已启动")
     except (cr.DeviceBusy, ResourceBusy) as exc:

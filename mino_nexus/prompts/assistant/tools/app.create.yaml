@@ -1,0 +1,32 @@
+id: app.create
+title: 创建应用
+description: 在项目下创建一个应用，返回它的 id。写脚本仓库 config.yaml 的 apps 前，如果项目里还没有这个应用，先调用本工具拿到 id，再把它填进 config.yaml 的 app_id。创建前先用 project_list 确认同名应用不存在，不要重复创建。
+route: POST /project/app/create
+risk: write
+async: false
+params_schema:
+  type: object
+  properties:
+    project_id:
+      type: string
+      description: 项目 id，来自 project_list
+    name:
+      type: string
+      description: 应用名称
+    description:
+      type: string
+    platforms:
+      type: string
+      description: 应用支持的平台，逗号分隔，取值 android / ios / web / mac / win，例如 android,ios
+  required:
+  - project_id
+  - name
+  - platforms
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- im
+- mcp
+enabled: true

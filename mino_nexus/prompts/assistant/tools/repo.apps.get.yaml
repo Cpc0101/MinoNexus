@@ -1,0 +1,23 @@
+id: repo.apps.get
+title: 查看脚本仓库的应用清单
+description: 读取 Nexus 记录的项目脚本仓库应用清单（含同步的 commit、分支、同步人和时间）。没有同步过则 apps 为空。
+route: GET /project/{project_id}/repo-apps
+risk: read
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+  required:
+  - project_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- im
+- mcp
+enabled: true

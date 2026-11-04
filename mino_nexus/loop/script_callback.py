@@ -41,6 +41,8 @@ class ScriptAdmission:
     ctx: Any
     writer: Any
     steps: list[dict[str, Any]] = field(default_factory=list)
+    step_seq: int = 0
+    step_open: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -169,19 +171,33 @@ def _step(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
 
     action = str(params.get("action") or "")
     role = str(params.get("role") or "")
-    try:
-        number = int(params.get("number"))
-    except (TypeError, ValueError) as exc:
-        raise ScriptAbort("步骤编号无效", reason_code="script_step_missing") from exc
-    text = _step_text(admission.case, role, number)
+    title = params.get("title")
+    titled = params.get("number") is None and isinstance(title, str) and bool(title.strip())
+    extra: dict[str, Any] = {}
+    if titled:
+        # 按标题写的步骤没有用例原文可对：n 是本次运行里 enter 的先后序号，enter/leave 配对。
+        text = title.strip()[:300]
+        extra["title"] = text
+        if action == "enter":
+            admission.step_seq += 1
+            admission.step_open = admission.step_seq
+        number = admission.step_open or admission.step_seq
+        if action == "leave":
+            admission.step_open = 0
+    else:
+        try:
+            number = int(params.get("number"))
+        except (TypeError, ValueError) as exc:
+            raise ScriptAbort("步骤编号无效", reason_code="script_step_missing") from exc
+        text = _step_text(admission.case, role, number)
     writer = admission.writer
     if action == "enter" and writer is not None:
         if hasattr(writer, "set_turn"):
             writer.set_turn(number)
-        writer.append("node/enter", {"n": number, "role": role, "text": text, "case_step": number})
+        writer.append("node/enter", {"n": number, "role": role, "text": text, "case_step": number, **extra})
     elif action == "leave" and writer is not None:
         status = "fail" if params.get("failed") else "pass"
-        writer.append("node/leave", {"n": number, "role": role, "status": status, "case_step": number, "text": text})
+        writer.append("node/leave", {"n": number, "role": role, "status": status, "case_step": number, "text": text, **extra})
     elif action not in {"enter", "leave"}:
         raise ScriptAbort("步骤动作无效", reason_code="script_step_missing")
     return {"_summary": text or str(number)}
@@ -234,8 +250,15 @@ def _write_step(admission: ScriptAdmission, params: dict[str, Any]) -> None:
         "executor_used": "scout",
         "source": "script_run",
     }
+    for key in ("app", "script_sha256", "script_length"):
+        value = body.get(key)
+        if isinstance(value, (str, int)) and value != "":
+            record[key] = value if isinstance(value, int) else value[:80]
     if admission.writer is not None:
-        admission.writer.append("tool/call", {"capability_id": cap, "params": {}, "source": "script_run"})
+        call = {"capability_id": cap, "params": {}, "source": "script_run"}
+        if record.get("app"):
+            call["app"] = record["app"]
+        admission.writer.append("tool/call", call)
         admission.writer.append("tool/result", record)
     admission.steps.append(record)
 

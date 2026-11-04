@@ -232,42 +232,6 @@ def resource_logs(
         raise _not_found() from exc
 
 
-@router.get("/script-guide")
-def script_guide(project_id: str, _sess: dict = Depends(current_session)):
-    """仓库位置和 case 基础指令。给要写用例脚本的工具看，不含仓库凭据。"""
-    from mino_nexus.casework.script_workspace import ensure_workspace, get_repo, public_url, venv_python
-    from mino_nexus.loop.script_api import script_contract
-    from mino_nexus.resources import project_store as ps
-
-    try:
-        ps.require_project(project_id)
-    except KeyError as exc:
-        raise _not_found() from exc
-    repo = get_repo(project_id)
-    place = ensure_workspace(project_id)
-    return ok({
-        "workspace": place,
-        "repo": {
-            "configured": bool(str(repo.get("url") or "").strip()),
-            "url": public_url(repo.get("url") or ""),
-            "branch": repo.get("branch") or "",
-            "local_checkout": place["checkout"],
-            "venv_python": str(venv_python(project_id)),
-        },
-        "layout": {
-            "one_repo_per_project": True,
-            "edit_local_files": True,
-            "path_field": "script_path",
-            "path_rule": "用例记录仓库内的相对路径，必须是 .py，且不能写出仓库。一个 case_id 只有 tests/<需求ID>/<case_id>.py，不按渠道拆文件；目录一律用需求ID（req-xxx），不用中文、不用 module 名。",
-            "save": "在 workspace.checkout 里直接改文件。不要把脚本文本交给 Nexus 保存。",
-            "scripts_package": "scripts/",
-            "tests_root": "tests/<需求ID>/<case_id>.py",
-            "pages_dir": "pages/<page_key>.yaml",
-        },
-        **script_contract(),
-    })
-
-
 @router.get("/env")
 def resource_env(
     project_id: str,

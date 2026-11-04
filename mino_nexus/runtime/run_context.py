@@ -225,6 +225,8 @@ class RunContext(LoopState):
             "ios_wda": _ok(self.ios),
             "playwright": _ok(self.playwright),
             "desktop": _ok(self.desktop),
+            "mac": _ok(self.desktop) if self.platform == "mac" else False,
+            "win": _ok(self.desktop) if self.platform == "win" else False,
             "vlm": _ok(self.vlm),
             "hitl": _ok(self.hitl),
             "ai_persona": _ok(self.vlm),   # 拟人化依赖 VLM
@@ -304,6 +306,9 @@ def from_node(
     def _state_for(channel: str, executor: str) -> dict[str, Any]:
         """只看这台 sn 自己报的通道。节点上装了 adb 插件 ≠ 这台设备能走 adb。"""
         raw = channels.get(channel)
+        if raw is None and channel in {"mac", "win"}:
+            # Older Scout manifests keyed the native channel as "desktop".
+            raw = channels.get("desktop")
         if isinstance(raw, dict):
             state = str(raw.get("state") or raw.get("status") or "").strip()
             if state:
@@ -318,7 +323,7 @@ def from_node(
     ctx.remote = _state_for("remote", "remote")
     ctx.ios = _state_for("ios", "ios_wda")
     ctx.playwright = _state_for("playwright", "playwright")
-    ctx.desktop = _state_for("desktop", "desktop")
+    ctx.desktop = _state_for(platform if platform in {"mac", "win"} else "desktop", platform)
     ctx.desktop_os = platform if platform in {"mac", "win"} else str(getattr(dev, "os", "") or "")
     ctx.desktop_capabilities = list(getattr(dev, "capabilities", None) or [])
     ctx.session_generation = str(getattr(dev, "session_generation", "") or "")

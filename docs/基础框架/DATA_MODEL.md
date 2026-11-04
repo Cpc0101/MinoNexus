@@ -16,6 +16,7 @@
 | 用例脚本 | `case_scripts`（`project_id` + `case_id`；`case_id` 为空是项目级 pretest/posttest） | 未分端的脚本。仓库未配置时，有 `run_body` 的用例仍按库内脚本执行 |
 | 分端用例脚本 | `case_platform_scripts`（`project_id` + `case_id` + `platform`） | 仓库未配置时，按端覆盖库内脚本 |
 | 用例脚本仓库 | `project_script_repos`（`project_id` → `url`、`branch`） | 只存仓库位置。用例的 `script_path` 记录仓库内相对路径。执行前同步到 `case_workspaces/{project_id}/`，用该目录下的虚拟环境运行这个文件 |
+| 仓库应用清单 | `project_repo_apps`（`project_id` 主键 → `revision`、`branch`、`apps` JSON、`synced_by`、`synced_at`） | agent 通过 MCP `repo_apps_sync` 同步 config.yaml 的 apps，Nexus 不读仓库；Workbench 只读展示，`case_run` 用它核对 app_id。按差异更新（apps 按 key 新增或整项替换，remove 删除，其余保留），不含账号密码。SCHEMA_VERSION=7 新增此表 |
 | 用例导入预览 | `case_import_previews`（账号与项目隔离，24 小时有效；解析结果逐行持久化，生命周期独立于提交回执） | 导入预览 API；工作租约避免多进程重复解析，进程退出后恢复未完成行 |
 | 用例导入回执 | `case_import_receipts` / `case_import_receipt_lines`（账号、项目、提交身份唯一；不随预览过期删除） | 确认导入与回执查询/续交 API；保存原始行、决策及实际用例 revision 快照，每行用例与结果原子提交 |
 | 跑批任务 | `app_regression_runs`。任务号 `CR` + 本地时间 `yyMMddHHmmss` + 3 位毫秒 | 任务中心 |

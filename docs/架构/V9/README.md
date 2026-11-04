@@ -9,7 +9,7 @@
 | [Nexus](Nexus.md) | Nexus agent | 本仓 `MinoNexus` |
 | [Scout](Scout.md) | Scout agent | `../MinoScout` |
 | [页面与脚本](页面与脚本.md) | 三端都读。仓库三目录和页面真源 | — |
-| [Agent调度](Agent调度.md) | dshbot 与其他写脚本、跑用例的 agent | 不改产品代码；Nexus 把同一份规则放进 `script_guide` |
+| [Agent调度](Agent调度.md) | dshbot 与其他写脚本、跑用例的 agent | 不改产品代码 |
 | [Workbench](Workbench.md) | Workbench agent | `../MinoWorkbench` |
 
 ## 1. 冻结结论
@@ -47,13 +47,15 @@ Workbench
 | `case_id` | 用例 id |
 | `sn` | 本趟设备 |
 | `platform` | `android` / `ios` / `web` / `mac` / `win` |
-| `script_path` | 仓库内相对路径，必须是 `.py` |
-| `files` | `{相对路径: 文本}`。用例 `.py`、根上的 `pretest.py` / `posttest.py`（有才带）、`scripts/**/*.py`、`pages/**/*.yaml` |
+| `repo_url` | 项目脚本仓库地址，必填，已去内嵌凭据；Scout 用本机 git 凭据访问 |
+| `branch` | 分支，可空 |
+| `revision` | 提交，可空；空表示分支最新，Nexus 不校验 |
+| `script_path` | 仓库内相对路径（`.py`），可空；空表示 Scout 按 `tests/**/<case_id>.py` 找 |
 
 约束：
 
-- 路径必须落在仓库内，禁止 `..` 和绝对路径。单文件不超过 256KB，整包不超过 4MB，文件数不超过 256。
-- 可执行的只有用例和 `scripts/` 的 `.py`。`pages/` 只放 YAML。不含 `requirements.txt` 的安装动作，Scout 不因这次运行执行 pip。
+- 不再有 `files`：Nexus 不读取、不打包脚本仓库，Scout 自己拉取并读 `config.yaml`、`pages/`、`flows/`、`scripts/`。路径必须落在仓库内，禁止 `..` 和绝对路径。
+- 可执行的只有用例、`flows/` 和 `scripts/` 的 `.py`。`pages/` 只放 YAML。Scout 不因这次运行执行 pip。
 - Scout 看不到 Nexus 的 `case_workspaces` 绝对路径。禁止把本机路径当作节点上的路径。
 - 令牌无效、设备与 `sn` 不符、节点未登记该渠道：整次 `declined`，不执行脚本。
 
@@ -75,7 +77,6 @@ Workbench
 | 步骤 | 工具 | 本批 |
 |---|---|---|
 | 看清入口 | `agent_guide` | 改文案：脚本运行不再逐跳由 Nexus 决策 |
-| 改仓库 | `script_guide` | 布局改为本文 §3 |
 | 开跑 | `case_run` | 只做租约、会话、下发脚本运行载荷。`agent_loop` 删除，没有逐步决策入口 |
 | 读结果 | `task_get` `session_events` | 不改字段 |
 | 释放隔离 | 现有 baseline | 不改 |

@@ -18,7 +18,8 @@ def _program_executor(ctx: Any) -> str:
     if channel == UiChannel.WEB:
         return "playwright"
     if channel == UiChannel.DESKTOP:
-        return "desktop"
+        plat = str(getattr(ctx, "platform", "") or "")
+        return plat if plat in {"mac", "win"} else "desktop"
     if channel == UiChannel.IOS:
         return "ios_wda"
     return "adb"
@@ -52,13 +53,13 @@ def _progress_gate_web_kwargs(ctx: Any, proxy: Any) -> dict[str, Any]:
 
 
 def _ensure_desktop_window(proxy: RouterProxy, ctx, *, run_id: str, case_seq: int = 0, writer=None) -> Optional[dict[str, Any]]:
-    if _program_executor(ctx) != "desktop":
+    if _program_executor(ctx) not in {"mac", "win"}:
         return None
     package = str(getattr(ctx, "target_package", "") or "").strip()
     event = PlanEvent(
         seq=0, capability_id="launch_app", event_kind="launch_app", params={"package": package},
         ai_reasoning="PC 首张截图前先启动被测应用并确认目标窗口绑定", label="准备被测窗口",
-        expected_executor="desktop",
+        expected_executor=_program_executor(ctx),
     )
     if writer:
         writer.append("tool/call", {"capability_id": event.capability_id, "params": event.params})
@@ -67,7 +68,7 @@ def _ensure_desktop_window(proxy: RouterProxy, ctx, *, run_id: str, case_seq: in
     status = result.status.value if hasattr(result.status, "value") else str(result.status)
     return {
         "status": status, "summary": result.summary or "准备被测窗口",
-        "error": result.error or "", "executor_used": result.executor_used or "desktop",
+        "error": result.error or "", "executor_used": result.executor_used or _program_executor(ctx),
         "fatal": status != "pass", "execution_metadata": execution_result_metadata(result),
         "params": event.params, "thought": event.ai_reasoning,
     }

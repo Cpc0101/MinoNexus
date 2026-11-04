@@ -136,9 +136,9 @@ Scout 必须声明 `REGISTER.account_isolation_version=1`，旧客户端在消�
 
 ## PC Desktop 接入与调度（V4）
 
-节点的 `host.os/arch/hostname/desktop` 是 Scout 上报的事实。每个节点只登记 `desktop:<node_id>:console` 一个交互桌面；窗口、显示器和前台应用都不是设备。`platform=desktop` 与 `os=macos|windows|linux` 分开，Web 槽保留。节点不能上报其他节点的 Desktop/Web 槽；宿主 OS 与桌面 OS 不符时拒绝该槽并返回 warning。
+节点的 `host.os/arch/hostname/desktop` 是 Scout 上报的事实。每个节点只登记 `mac:<node_id>:console` 或 `win:<node_id>:console` 一个交互桌面；窗口、显示器和前台应用都不是设备。`platform=mac|win` 与 `os=macos|windows|linux` 分开，Web 槽保留。节点不能上报其他节点的 Desktop/Web 槽；宿主 OS 与桌面 OS 不符时拒绝该槽并返回 warning。
 
-设备信息持久化在 SQLite `m_device.extra`，包含 `os`、`session_key`、`session_generation`、`desktop_state`、`blocked_reason`、`capabilities`、`readiness`。节点信息持久化在 SQLite `nodes`，不是旧 JSON 文件。离线保留原设备行与会话信息，但 `executable=false`，原因以所属节点离线为准。缺权限、锁屏、无 GUI、缺插件和未上报能力分别显示；在线不代表桌面就绪。心跳允许更新 Desktop executor 的可用性。
+设备信息持久化在 SQLite `m_device.extra`，包含 `os`、`session_key`、`session_generation`、`desktop_state`、`blocked_reason`、`capabilities`、`readiness`。节点信息持久化在 SQLite `nodes`，不是旧 JSON 文件。离线保留原设备行与会话信息，但 `executable=false`，原因以所属节点离线为准。缺权限、锁屏、无 GUI、缺插件和未上报能力分别显示；在线不代表桌面就绪。心跳允许更新原生 executor（`mac` / `win`）的可用性。
 
 运行与探索提交通过同一服务重新核对账号归属、真实设备平台、应用渠道/OS、能力目录与当前占用。客户端 `platform` 不决定路由；不兼容或不就绪返回 409。他人资源返回 404，普通账号看不到未归属节点。用户选中的目标不可用时不自动换设备。本次 Desktop 接入提交中的任一选中目标不满足准入条件即拒绝整个提交，避免静默漏跑。
 

@@ -52,6 +52,9 @@ params_schema:
       items:
         type: string
       description: 明确选择的用例 id，空列表不会执行全部
+    revision:
+      type: string
+      description: 脚本所在的 git 提交 SHA，必须已 push 到项目仓库。Nexus 不校验，原样交给 Scout；Scout 自己拉取仓库，在该提交上读脚本，远端找不到由 Scout 返回 revision_missing，不回退到分支最新。不传则 Scout 取分支最新。
     action_scheme:
       type: string
       enum:

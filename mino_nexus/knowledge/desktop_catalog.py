@@ -38,9 +38,12 @@ _CAPS = {
 CAPABILITY_IDS = frozenset(_CAPS)
 
 
-def capabilities(reported: list[str], os_name: str, *, platform: str = "desktop") -> list[Capability]:
+def capabilities(reported: list[str], os_name: str, *, platform: str = "") -> list[Capability]:
     os_name = {"mac": "macos", "win": "windows"}.get(os_name, os_name)
-    if platform not in {"desktop", "mac", "win"} or (platform == "mac" and os_name != "macos") or (platform == "win" and os_name != "windows"):
+    if platform == "desktop":
+        # Legacy platform alias: the executor is still the host platform.
+        platform = "mac" if os_name == "macos" else "win" if os_name == "windows" else ""
+    if platform not in {"mac", "win"} or (platform == "mac" and os_name != "macos") or (platform == "win" and os_name != "windows"):
         return []
     if os_name not in ("macos", "windows"):
         return []
@@ -65,7 +68,7 @@ def capabilities(reported: list[str], os_name: str, *, platform: str = "desktop"
             caller="system" if cap_id == "get_foreground_app" else "program" if cap_id == "launch_app" else "case",
             phases=["prep", "do", "check", "cleanup"] if cap_id == "get_foreground_app" else ["prep", "do"],
             visible_to=list(current.visible_to) if current is not None else ["case", "system"],
-            implementations=[Implementation(id="desktop.cua", executor="desktop", display_name="Cua Desktop")],
+            implementations=[Implementation(id="desktop.cua", executor=platform, display_name="Cua Desktop")],
             params=schema_to_param_rows(parameters),
         ))
     return out

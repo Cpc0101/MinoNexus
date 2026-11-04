@@ -284,6 +284,20 @@ def list_apps(project_id: str) -> list[dict[str, Any]]:
     return [a for a in _apps_of(root, str(project_id or "")) if isinstance(a, dict)]
 
 
+def _public_repo_url(url: Any) -> str:
+    """去掉 URL 里可能带的用户名 / 令牌，只读展示用。"""
+    from urllib.parse import urlsplit, urlunsplit
+
+    text = str(url or "").strip()
+    parts = urlsplit(text)
+    if not parts.username:
+        return text
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
 def list_projects() -> list[dict[str, Any]]:
     """项目首页列表：按项目查库，避免 _root 全表加载与按应用重复 count_cases。"""
     from collections import defaultdict
@@ -299,6 +313,9 @@ def list_projects() -> list[dict[str, Any]]:
         apps_by_pid: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in db.query(App).all():
             apps_by_pid[str(row.project_id or "")].append(_app_dict(row))
+        from mino_nexus.models.project_script_repo import ProjectScriptRepo
+
+        repos = {str(r.project_id): (_public_repo_url(r.url), str(r.branch or "")) for r in db.query(ProjectScriptRepo).all()}
 
     out: list[dict[str, Any]] = []
     for p in project_rows:
@@ -319,6 +336,8 @@ def list_projects() -> list[dict[str, Any]]:
                 "name": p.get("name"),
                 "description": p.get("description"),
                 "env_summary": summary,
+                "repo_url": repos.get(pid, ("", ""))[0],
+                "repo_branch": repos.get(pid, ("", ""))[1],
                 "apps": apps_out,
                 "app_count": len(apps_out),
                 "case_count": case_n,

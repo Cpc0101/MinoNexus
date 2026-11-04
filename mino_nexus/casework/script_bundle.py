@@ -1,11 +1,8 @@
-"""把一次用例收成脚本运行载荷里的文件包。只认 tests/，不回退渠道文件。"""
+"""在仓库检出里定位一条用例的脚本（Workbench 查看 / 编辑用）。只认 tests/，不回退渠道文件。不参与执行。"""
 from __future__ import annotations
 
 from pathlib import Path
 
-FILE_MAX = 256 * 1024
-PACK_MAX = 4 * 1024 * 1024
-COUNT_MAX = 256
 _PLATFORMS = frozenset({"android", "ios", "web", "mac", "win"})
 
 
@@ -88,50 +85,3 @@ def locate_case_script(checkout: Path, case_id: str, script_path: str = "") -> P
             "script_channel_only",
         )
     raise ScriptPackError(f"没有 tests/<需求ID>/{cid}.py", "script_missing")
-
-
-def collect_files(checkout: Path, script: Path) -> tuple[str, dict[str, str]]:
-    """用例文件、根上的 pretest/posttest、scripts 下的 py、pages 下的 yaml。超限拒绝。"""
-    selected: list[Path] = [script]
-    for name in ("pretest.py", "posttest.py"):
-        hook = checkout / name
-        if hook.is_file():
-            selected.append(hook)
-    scripts = checkout / "scripts"
-    if scripts.is_dir():
-        selected.extend(path for path in scripts.rglob("*.py") if path.is_file())
-    pages = checkout / "pages"
-    if pages.is_dir():
-        selected.extend(path for path in pages.rglob("*.yaml") if path.is_file())
-
-    ordered: list[tuple[str, Path]] = []
-    seen: set[str] = set()
-    for path in selected:
-        rel = _relative(checkout, path)
-        if rel in seen:
-            continue
-        seen.add(rel)
-        ordered.append((rel, path))
-    if len(ordered) > COUNT_MAX:
-        raise ScriptPackError(f"脚本包有 {len(ordered)} 个文件，超过 {COUNT_MAX}", "script_pack_limit")
-
-    files: dict[str, str] = {}
-    total = 0
-    script_rel = _relative(checkout, script)
-    for rel, path in ordered:
-        try:
-            blob = path.read_bytes()
-        except OSError as exc:
-            raise ScriptPackError(f"读不到 {rel}", "script_pack_invalid") from exc
-        if len(blob) > FILE_MAX:
-            raise ScriptPackError(f"{rel} 超过 256KB", "script_pack_limit")
-        total += len(blob)
-        if total > PACK_MAX:
-            raise ScriptPackError("脚本包超过 4MB", "script_pack_limit")
-        try:
-            files[rel] = blob.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ScriptPackError(f"{rel} 不是 UTF-8 文本", "script_pack_invalid") from exc
-    if script_rel not in files:
-        raise ScriptPackError(f"脚本包缺少 {script_rel}", "script_missing")
-    return script_rel, files

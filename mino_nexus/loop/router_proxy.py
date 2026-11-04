@@ -1030,6 +1030,16 @@ class RouterProxy:
                 "（AI 选了菜单外的能力？或 catalog_entries 缺这条）"
             )
 
+        if plat in {"mac", "win"}:
+            available_now = set(executors_for_device(self.sn, node))
+            if "desktop" in available_now and not any(
+                    str(getattr(impl, "executor", "")) in available_now
+                    for impl in cap.implementations or []):
+                # Transition: a pre-2026-11 Scout only advertises `desktop`.
+                cap = cap.model_copy(update={"implementations": [
+                    impl.model_copy(update={"executor": "desktop"})
+                    for impl in cap.implementations or []]})
+
         by_executor: dict[str, Any] = {}
         for impl in cap.implementations or []:
             ex = str(getattr(impl, "executor", "") or "").strip()

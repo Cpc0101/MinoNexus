@@ -379,8 +379,9 @@ class UnknownMessageType(Exception):
 
 
 # 脚本运行载荷。字段与 docs/PROTOCOL.md「脚本运行载荷」表一致，不另加版本号。
+# Nexus 只触发：仓库拉取、定位脚本、读 config.yaml、执行都在 Scout。
 SCRIPT_RUN_CAPABILITY = "script.run"
-SCRIPT_RUN_FIELDS = ("run_id", "session_id", "case_id", "sn", "platform", "script_path", "files")
+SCRIPT_RUN_FIELDS = ("run_id", "session_id", "case_id", "sn", "platform", "repo_url", "branch", "revision", "script_path")
 
 
 @dataclass
@@ -390,8 +391,10 @@ class ScriptRun:
     case_id: str
     sn: str
     platform: str
-    script_path: str
-    files: dict[str, str] = field(default_factory=dict)
+    repo_url: str
+    branch: str = ""
+    revision: str = ""
+    script_path: str = ""
 
 
 def _script_path_unsafe(path: str) -> bool:
@@ -406,6 +409,12 @@ def _script_path_unsafe(path: str) -> bool:
     return any(part in {"", ".", ".."} for part in parts)
 
 
+def _git_token_unsafe(value: str) -> bool:
+    """分支、提交是不透明字符串，但不能被 git 当成命令行选项或带空白控制字符。"""
+    text = str(value or "")
+    return text.startswith("-") or len(text) > 200 or any(ch.isspace() or ord(ch) < 32 for ch in text)
+
+
 def dump_script_run(payload: ScriptRun) -> dict[str, Any]:
     """脚本运行载荷 → dict。只含合同字段，空字符串也保留。"""
     return {
@@ -414,42 +423,45 @@ def dump_script_run(payload: ScriptRun) -> dict[str, Any]:
         "case_id": str(payload.case_id or ""),
         "sn": str(payload.sn or ""),
         "platform": str(payload.platform or ""),
+        "repo_url": str(payload.repo_url or ""),
+        "branch": str(payload.branch or ""),
+        "revision": str(payload.revision or ""),
         "script_path": str(payload.script_path or "").replace("\\", "/"),
-        "files": {str(key).replace("\\", "/"): str(value) for key, value in dict(payload.files or {}).items()},
     }
 
 
 def load_script_run(raw: dict[str, Any]) -> ScriptRun:
-    """dict → 脚本运行载荷。未知字段忽略；缺字段或路径不合法则拒绝。"""
+    """dict → 脚本运行载荷。未知字段忽略；缺字段或不合法则拒绝。
+
+    repo_url 必填且不带内嵌凭据；branch、revision 可空（revision 空表示取分支最新）；
+    script_path 可空（Scout 按 tests/**/<case_id>.py 找），非空时必须是仓库内的 .py。
+    """
     if not isinstance(raw, dict):
         raise ValueError("script_run_invalid")
     missing = [key for key in SCRIPT_RUN_FIELDS if key not in raw]
     if missing:
         raise ValueError("script_run_incomplete")
-    files = raw.get("files")
-    if not isinstance(files, dict):
-        raise ValueError("script_run_files_invalid")
-    cleaned: dict[str, str] = {}
-    for key, value in files.items():
-        path = str(key or "").replace("\\", "/")
-        if not isinstance(value, str) or _script_path_unsafe(path):
-            raise ValueError("script_run_files_invalid")
-        cleaned[path] = value
+    repo_url = str(raw.get("repo_url") or "").strip()
+    if not repo_url or repo_url.startswith("-") or "@" in repo_url.split("//", 1)[-1].split("/", 1)[0]:
+        raise ValueError("script_run_repo_invalid")
+    branch = str(raw.get("branch") or "").strip()
+    revision = str(raw.get("revision") or "").strip()
+    if _git_token_unsafe(branch) or _git_token_unsafe(revision):
+        raise ValueError("script_run_revision_invalid")
     script_path = str(raw.get("script_path") or "").replace("\\", "/")
-    if _script_path_unsafe(script_path) or not script_path.endswith(".py"):
+    if script_path and (_script_path_unsafe(script_path) or not script_path.endswith(".py")):
         raise ValueError("script_run_path_invalid")
-    loaded = ScriptRun(
+    return ScriptRun(
         run_id=str(raw.get("run_id") or ""),
         session_id=str(raw.get("session_id") or ""),
         case_id=str(raw.get("case_id") or ""),
         sn=str(raw.get("sn") or ""),
         platform=str(raw.get("platform") or ""),
+        repo_url=repo_url,
+        branch=branch,
+        revision=revision,
         script_path=script_path,
-        files=cleaned,
     )
-    if dump_script_run(loaded)["files"] != cleaned:
-        raise ValueError("script_run_files_invalid")
-    return loaded
 
 
 @dataclass

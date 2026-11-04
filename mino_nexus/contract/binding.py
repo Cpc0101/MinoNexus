@@ -11,6 +11,8 @@ import hashlib
 import json
 from typing import Any
 
+from mino_nexus.contract.executors import normalize_executor
+
 SCHEMA_VERSION = 1
 CONTRACT = "execution_binding.v1"
 MAX_DEPENDENCIES = 32
@@ -93,6 +95,14 @@ def _dependency_checks(dependencies, facts, operation):
                 missing=[ref for ref, state in zip(refs, statuses) if state != "ready"]),
                 "dependency_facts": deepcopy(checks[-1]["facts"])})
     return checks, diagnostics
+
+
+def _platform_matches(platforms, platform):
+    """Accept the retired `desktop` platform value for a mac/win target."""
+    values = list(platforms or [])
+    if platform in values:
+        return True
+    return platform in {"mac", "win"} and "desktop" in values
 
 
 def _supports_combination(rows, executor, platform, combination):
@@ -193,7 +203,7 @@ def _resolve_execution_binding(requirements, target, capability_snapshot, policy
         # 阶段只缩 prompt，不作为派发准入门（规划 §3）。caller 仍是契约字段。
         if cap.get("caller") != caller:
             diagnostics.append(_diagnostic("event_call_not_allowed", category="authorization", operation=operation)); continue
-        if target["platform"] not in (cap.get("platforms") or []):
+        if not _platform_matches(cap.get("platforms"), target["platform"]):
             diagnostics.append(_diagnostic("event_platform_unsupported", operation=operation)); continue
         if cid in policy_snapshot.get("denied_events", []):
             diagnostics.append(_diagnostic("event_policy_denied", category="authorization", operation=operation)); continue
@@ -204,11 +214,15 @@ def _resolve_execution_binding(requirements, target, capability_snapshot, policy
         for implementation in cap.get("implementations") or []:
             if not isinstance(implementation, dict):
                 continue
-            executor = implementation.get("executor")
+            executor = normalize_executor(implementation.get("executor"), target["platform"])
             runs_on = implementation.get("runs_on")
             local = runs_on == "nexus"
             manifests = policy_snapshot.get("local_executors", {}) if local else available
             manifest = manifests.get(executor)
+            if manifest is None and executor in {"mac", "win"} and "desktop" in manifests:
+                # Transition: old Scout manifests only the retired native id.
+                executor = "desktop"
+                manifest = manifests.get(executor)
             if (not implementation.get("id") or not isinstance(manifest, dict)
                     or manifest.get("available") is not True or (not local and executor not in connected)):
                 continue
@@ -220,7 +234,7 @@ def _resolve_execution_binding(requirements, target, capability_snapshot, policy
             permitted = policy_snapshot.get("allowed_executors")
             if permitted is not None and executor not in permitted:
                 continue
-            if target["platform"] not in implementation.get("platforms", cap["platforms"]):
+            if not _platform_matches(implementation.get("platforms", cap["platforms"]), target["platform"]):
                 continue
             if runs_on not in {"scout", "nexus"} or not isinstance(implementation.get("low_level"), dict):
                 continue
@@ -233,8 +247,10 @@ def _resolve_execution_binding(requirements, target, capability_snapshot, policy
             if cid == "input_text" and (not isinstance(combination, dict) or not _supports_combination(
                     capability_snapshot.get("runtime_capabilities", []), executor, target["platform"], combination)):
                 continue
+            selected_impl = deepcopy(implementation)
+            selected_impl["executor"] = executor
             candidates.append({"implementation_id": implementation["id"], "executor": executor,
-                "runs_on": runs_on, "executor_order": [executor], "selected_impl": deepcopy(implementation),
+                "runs_on": runs_on, "executor_order": [executor], "selected_impl": selected_impl,
                 "low_level": deepcopy(implementation["low_level"]),
                 "params_contract": deepcopy(implementation["params_contract"]),
                 "result_contract": deepcopy(implementation["result_contract"]),

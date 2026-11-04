@@ -382,7 +382,7 @@ def _recompute(doc: dict[str, Any]) -> dict[str, Any]:
     blocked = sum(1 for c in cases if c.get("status") in {"blocked", "tool_blocked", "env_blocked"})
     declined = sum(1 for c in cases if c.get("status") == "declined")
     cancelled = sum(1 for c in cases if c.get("status") == "cancelled")
-    skipped = sum(1 for c in cases if c.get("status") == "skip")
+    skipped = sum(1 for c in cases if c.get("status") in {"skip", "skipped"})
     doc["total"] = len(cases)
     doc["completed"] = completed
     doc["passed"] = passed
@@ -445,6 +445,10 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "failed": doc.get("failed") or 0,
         "blocked": doc.get("blocked") or 0,
         "declined": doc.get("declined") or 0,
+        "skipped": doc.get("skipped") or 0,
+        "revision": doc.get("revision") or "",
+        "repo_url": doc.get("repo_url") or "",
+        "repo_branch": doc.get("repo_branch") or "",
         "untestable": doc.get("untestable") or 0,
         "progress": doc.get("progress") or 0,
         "pass_rate": doc.get("pass_rate") or 0,

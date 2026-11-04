@@ -1,0 +1,36 @@
+id: repo.apps.sync
+title: 同步脚本仓库的应用清单
+description: 脚本仓库根目录 config.yaml 的 apps 改动并 push 后必须调用。revision 填 push 后的 commit，branch 填分支。差异更新：apps 只填这次新增或修改的应用（取自 config.yaml，按 key 整项替换，每个应用含 app_id 和 platform，身份字段只有 package / bundle_id / url，可带 envs 分环境）；删除的应用 key 填进 remove；没出现的应用保持不变。不能含账号密码。Nexus 不读仓库，凭此知道项目能测哪些应用，并在 Workbench 只读展示。
+route: PUT /project/{project_id}/repo-apps
+risk: write
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+    revision:
+      type: string
+      description: push 后的 commit
+    branch:
+      type: string
+    apps:
+      type: object
+      description: 本次新增或修改的应用（config.yaml 里 apps 对应项的原样内容），key 为英文字母开头的英文、数字、下划线；每个应用必须有 app_id（Nexus 里该应用的 id，见 project_list）
+    remove:
+      type: array
+      items:
+        type: string
+      description: 本次从 config.yaml 删除的应用 key
+  required:
+  - project_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- im
+- mcp
+enabled: true

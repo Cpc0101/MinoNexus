@@ -111,6 +111,7 @@ def run_cases(
     client_request_id: str = "",
     derived_from: str = "",
     expected_build: str = "",
+    revision: str = "",
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     phases: list[tuple[str, int]] = []
@@ -130,7 +131,8 @@ def run_cases(
         "platform": platform, "case_ids": case_ids, "start_index": start_index, "run_type": run_type,
         "requirement_id": requirement_id, "release_id": release_id, "slot_id": slot_id,
         "provider_id": provider_id, "playwright_headless": playwright_headless, "env_profile": env_profile,
-        "env_surface": env_surface, "action_scheme": action_scheme, "execution_mode": execution_mode, "expected_build": expected_build})
+        "env_surface": env_surface, "action_scheme": action_scheme, "execution_mode": execution_mode, "expected_build": expected_build,
+        "revision": revision})
     if client_request_id:
         from mino_nexus.core.database import session_scope
         from mino_nexus.models.run_admission import RunAdmission
@@ -200,6 +202,13 @@ def run_cases(
             env_doc = {}
     from mino_nexus.resources.project_env import resolve_run_env_profile
 
+    repo_public_url, repo_branch = "", ""
+    if project_id:
+        from mino_nexus.casework.script_workspace import get_repo, public_url
+
+        _repo = get_repo(project_id)
+        repo_public_url, repo_branch = public_url(_repo.get("url") or ""), str(_repo.get("branch") or "")
+
     plat_for_pkg = task_platform
     if task_platform == "desktop":
         native_os = device_targets[device_sns[0]]["os"]
@@ -249,6 +258,9 @@ def run_cases(
         "request_digest": request_digest,
         "derived_from": derived_from,
         "expected_build": expected_build,
+        "revision": str(revision or "").strip(),
+        "repo_url": repo_public_url,
+        "repo_branch": repo_branch,
         "environment_baseline_digest": digest({"profile": resolved_env, "surface": env_surface_id,
             "package": package, "environment": (env_doc.get("profiles") or {}).get(resolved_env),
             "channels": env_doc.get("channels") or []}),

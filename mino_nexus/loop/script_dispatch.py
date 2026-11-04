@@ -1,4 +1,7 @@
-"""一次运行收成一包脚本，交给持有该设备的 Scout。不在这里逐步决策。"""
+"""一次运行只触发：告诉持有该设备的 Scout 跑哪条用例、用哪个仓库和提交。
+
+拉取仓库、定位脚本、读 config.yaml、执行都在 Scout，Nexus 不参与脚本仓库的执行，也不逐步决策。
+"""
 from __future__ import annotations
 
 import time
@@ -86,9 +89,11 @@ def dispatch_script_case(
         elif project_error:
             status, summary, reason_code = "fail", project_error[:240], "project_scope_invalid"
         else:
-            message, code, script_path, files = _pack(project_id, cid, repo or {}, case)
-            if message:
-                status, summary, reason_code = "fail", message[:240], code
+            from mino_nexus.casework.script_workspace import public_url
+
+            repo_url = public_url((repo or {}).get("url") or "")
+            if not repo_url.strip():
+                status, summary, reason_code = "fail", "项目还没有配置用例脚本仓库", "script_repo_missing"
             else:
                 from mino_nexus.resources.node_registry import get_registry
 
@@ -102,8 +107,10 @@ def dispatch_script_case(
                         case_id=cid,
                         sn=sn,
                         platform=str(platform or ""),
-                        script_path=script_path,
-                        files=files,
+                        repo_url=repo_url,
+                        branch=str((repo or {}).get("branch") or ""),
+                        revision=str(doc.get("revision") or ""),
+                        script_path=str(case.get("script_path") or ""),
                     )))
                     body = P.dump_script_run(payload)
                     admission = ScriptAdmission(
@@ -133,6 +140,7 @@ def dispatch_script_case(
                         params=body,
                         timeout_sec=budget,
                         executor_order=[],
+                        device_hint=_device_hint(node, sn, str(platform or ""), str(getattr(ctx, "env_profile", "") or ""), app_id),
                     )
                     result = run_sync(node.send(P.MsgType.EXECUTE, request, timeout=budget))
                     steps = list(admission.steps)
@@ -173,21 +181,18 @@ def dispatch_script_case(
     )
 
 
-def _pack(project_id: str, case_id: str, repo: dict[str, str], case: dict[str, Any]):
-    if not str(repo.get("url") or "").strip():
-        return "项目还没有配置用例脚本仓库", "script_repo_missing", "", {}
-    from mino_nexus.casework.script_bundle import ScriptPackError, collect_files, locate_case_script
-    from mino_nexus.casework.script_workspace import sync_workspace
-
-    try:
-        checkout = sync_workspace(project_id, repo)
-        script = locate_case_script(checkout, case_id, str(case.get("script_path") or ""))
-        script_path, files = collect_files(checkout, script)
-    except ScriptPackError as exc:
-        return str(exc)[:240], exc.code, "", {}
-    except Exception as exc:
-        return str(exc)[:240] or "准备脚本仓库失败", "script_repo_unavailable", "", {}
-    return "", "", script_path, files
+def _device_hint(node: Any, sn: str, platform: str, env: str, app_id: str) -> dict[str, Any]:
+    """Scout 读仓库里的 config.yaml，Nexus 只给环境、应用 id 和设备标识（设备记录里有什么给什么）。"""
+    hint: dict[str, Any] = {"env": env, "app_id": str(app_id or "")}
+    dev = getattr(node, "devices", {}).get(sn)
+    if platform == "android":
+        serial = ((getattr(dev, "channels", None) or {}).get("serial") or "") if dev is not None else ""
+        hint["adb_serial"] = serial or sn
+        if dev is not None and getattr(dev, "model", ""):
+            hint["model"] = dev.model
+    elif platform == "ios":
+        hint["udid"] = sn
+    return hint
 
 
 def _map_status(value: str) -> str:
@@ -199,7 +204,9 @@ def _map_status(value: str) -> str:
     if text == "blocked":
         return "blocked"
     if text == "declined":
-        return "fail"
+        return "declined"
+    if text in {"skipped", "skip"}:
+        return "skipped"
     return "fail"
 
 

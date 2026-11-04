@@ -37,7 +37,11 @@ def _executor_for(ctx: Any) -> tuple[str, str]:
     if channel == UiChannel.WEB:
         return "playwright", "web"
     if channel == UiChannel.DESKTOP:
-        return "desktop", str(getattr(ctx, "platform", "") or "desktop")
+        plat = str(getattr(ctx, "platform", "") or "")
+        if plat not in {"mac", "win"}:
+            plat = {"macos": "mac", "windows": "win"}.get(
+                str(getattr(ctx, "desktop_os", "") or "").lower(), "desktop")
+        return plat, plat
     if channel == UiChannel.IOS:
         return "ios_wda", "ios"
     return "adb", "android"

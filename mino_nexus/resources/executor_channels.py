@@ -9,7 +9,8 @@ from typing import Any
 
 from mino_nexus.contract.executors import executors_for_platform
 
-_CHANNEL_EXEC = (("desktop", "desktop"), ("playwright", "playwright"), ("adb", "adb"), ("remote", "remote"), ("ios", "ios_wda"))
+_CHANNEL_EXEC = (("mac", "mac"), ("win", "win"), ("desktop", "desktop"),
+                 ("playwright", "playwright"), ("adb", "adb"), ("remote", "remote"), ("ios", "ios_wda"))
 _ONLINE = frozenset({"connected", "online", "available", "authenticated"})
 
 

@@ -12,6 +12,19 @@ WDA_CAPS = frozenset({
 })
 
 
+def normalize_executor(executor: str, platform: str) -> str:
+    """Map the retired native executor id `desktop` onto the real platform.
+
+    Only for values read from persisted catalog rows / old payloads. New writes
+    must use `mac` / `win` directly.
+    """
+    ex = str(executor or "").strip()
+    plat = str(platform or "").strip().lower()
+    if ex == "desktop" and plat in {"mac", "win"}:
+        return plat
+    return ex
+
+
 def cap_uses_wda(capability_id: str) -> bool:
     return str(capability_id or "").strip() in WDA_CAPS
 
@@ -23,8 +36,13 @@ def executors_for_platform(platform: str) -> tuple[str, ...]:
         return ("playwright",)
     if plat in ("ios",):
         return ("ios_wda",)
-    if plat in {"desktop", "mac", "win"}:
-        return ("desktop",)
+    if plat == "mac":
+        return ("mac", "desktop")
+    if plat == "win":
+        return ("win", "desktop")
+    if plat == "desktop":
+        # Legacy platform alias stored before 2026-11; executor ids are mac/win now.
+        return ("mac", "win")
     if plat == "android":
         return ("adb", "remote")
     return ()

@@ -1,6 +1,6 @@
 id: agent.guide
 title: 给其他 agent 的使用说明
-description: 外部 agent 使用 Mino 时先调用。返回工具怎么分组调用，以及脚本、Git、设备分别由谁做。不依赖本机某个仓库里的 skill 文件。编写脚本的目录和 case 指令再调 script_guide。
+description: 外部 agent 使用 Mino 时先调用。返回工具怎么分组调用，以及脚本、Git、设备分别由谁做。不依赖本机某个仓库里的 skill 文件。编写脚本、执行、自检用对应的 agent 技能（write-test-cases、run-test-cases、check-test-cases）。
 route: GET /assistant/agent-guide
 risk: read
 async: false

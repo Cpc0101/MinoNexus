@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 NAV_ENTRY_TABLES = (
     "nav_page_entries",
@@ -25,6 +25,7 @@ CASE_SCRIPT_TABLES = (
     "case_scripts",
     "case_platform_scripts",
     "project_script_repos",
+    "project_repo_apps",
 )
 
 ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES

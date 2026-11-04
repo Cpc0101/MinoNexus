@@ -453,7 +453,8 @@ def _run_in_background(*, run_id: str, package: str, playbook: dict, provider_id
         if not _task_still_running(run_id):
             return
         latest = run_store.get(run_id) or doc
-        failed = int(latest.get("failed") or 0) + int(latest.get("blocked") or 0)
+        failed = (int(latest.get("failed") or 0) + int(latest.get("blocked") or 0)
+                  + int(latest.get("declined") or 0) + int(latest.get("skipped") or 0))
         status = "failed" if failed else "done"
         finished = run_store.finish(run_id, status=status, error=latest.get("error") or "")
         persist_run_finish(finished)

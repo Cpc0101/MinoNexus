@@ -16,6 +16,7 @@ from mino_nexus.models.case import ProjectCase
 from mino_nexus.models.case_script import CaseScript
 from mino_nexus.models.case_platform_script import CasePlatformScript
 from mino_nexus.models.project_script_repo import ProjectScriptRepo
+from mino_nexus.models.project_repo_apps import ProjectRepoApps
 from mino_nexus.models.case_source import CaseSource, CaseSourceRead, CaseSourceRow
 from mino_nexus.models.run_admission import RunAdmission
 from mino_nexus.models.execution_resource import ExecutionResource, ResourceDomain

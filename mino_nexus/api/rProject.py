@@ -353,6 +353,40 @@ def update_app_env(app_id: str, item: AppEnvUpdate, _sess: dict = Depends(curren
     return ok(doc, msg="已保存到项目环境(测试)")
 
 
+class RepoAppsSync(BaseModel):
+    revision: str = ""
+    branch: str = ""
+    apps: dict[str, Any] = {}
+    remove: list[str] = []
+
+
+@router.get("/{project_id}/repo-apps")
+def get_repo_apps(project_id: str, _sess: dict = Depends(current_session)):
+    from mino_nexus.resources import repo_apps
+
+    try:
+        ps.require_project(project_id)
+    except KeyError as exc:
+        _missing(exc)
+    return ok(repo_apps.get(project_id))
+
+
+@router.put("/{project_id}/repo-apps", dependencies=[Depends(project_maintainer)])
+def put_repo_apps(project_id: str, item: RepoAppsSync, sess: dict = Depends(current_session)):
+    from mino_nexus.resources import repo_apps
+
+    try:
+        project = ps.require_project(project_id)
+    except KeyError as exc:
+        _missing(exc)
+    try:
+        doc = repo_apps.save(project["id"], item.revision, item.branch, item.apps,
+                             str(sess.get("user_id") or sess.get("username") or ""), item.remove)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": "repo_apps_invalid", "message": str(exc)}) from exc
+    return ok(doc, msg="已同步仓库应用清单")
+
+
 @router.get("/{project_id}/env")
 def get_project_env(project_id: str, _sess: dict = Depends(current_session)):
     try:
