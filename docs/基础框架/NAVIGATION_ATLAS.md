@@ -1,5 +1,7 @@
 # UI 导航图 + LLM Wiki — 方案（v3.0）
 
+> **V9（2026-10-30）**：`agent_loop` 已删除，文中「agent_loop 每 turn / 集成点」等描述仅作历史记录；当前执行已下沉 Scout 脚本。  
+
 > **v3.0**：**程序作用域键**（`project_id` / `app_id` / …）、**证据落 `data_dir()`**（与 `mino.db` 同根）、配置直接落库。  
 > **状态：0.4 / 0.6 / 1 / 2–6 / B1–B3 工具链已落代码**（见 §18）；**运营模型 v2.5**（§19）将取代「先 walkthrough 再手填」为主路径；当前代码仍含 W1–W5 / `__CALIBRATE__` 手填流程（兼容期保留）。
 > 设计文档仅此文件；校准证据不进 git，见 §0。
@@ -30,7 +32,7 @@ NavFSM 是 **按被测应用** 配置的子系统，键名与 `projects` / `apps
 | 校准证据（hierarchy 片段、walkthrough 记录） | **`data_dir()/nav/calibration/{app_id}/{calibration_id}/`** |
 | 方案 / 协议 | **`docs/NAVIGATION_ATLAS.md`**（本文件）、**`docs/PROTOCOL.md`** |
 
-`data_dir()` 定义见 `mino_nexus/core/paths.py`（默认 `~/.mino-nexus`，与 `mino.db` 同级）。
+`data_dir()` 定义见 `mino_nexus/core/paths.py`（开发 `~/.mino-dev/nexus`，正式 `~/.mino/nexus`，与 `mino.db` 同级）。
 
 ---
 

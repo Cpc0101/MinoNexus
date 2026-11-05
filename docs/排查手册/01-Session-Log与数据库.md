@@ -13,12 +13,12 @@
 
 铁律（与 Harness 对齐）：**凡进入 `decide_next_action` / 改变 `StepCursor` 的事实，应能在 `session_events` 里找到对应 event。**
 
-Agent / 自动化排查：**禁止**为定位问题新增 `tests/test_*.py` 或跑 pytest；以本节 SQL / Console 会话日志为准。若缺关键字段（如 `tool/call` 完整 `params`、`guard/block` 原因），改 `session_log` / `agent_loop` 写入，而不是写测试复现。
+Agent / 自动化排查：**禁止**为定位问题新增 `tests/test_*.py` 或跑 pytest；以本节 SQL / Console 会话日志为准。若缺关键字段（如 `tool/call` 完整 `params`、`guard/block` 原因），改 `records/eventlog` / `loop/script_callback.py` 写入，而不是写测试复现。
 
 ## 2. 数据目录与库文件
 
 开发源码运行默认使用 `~/.mino-dev/nexus/mino.db`，覆盖变量为 `MINO_NEXUS_DEV_DATA_DIR`。
-正式运行使用 `MINO_NEXUS_DATA_DIR`；未指定时 macOS 为 `~/Library/Application Support/Mino/nexus/data/mino.db`，Windows 为 `%APPDATA%/MinoNexus/mino.db`，Linux 为 `~/.mino-nexus/mino.db`。
+正式运行默认使用 `~/.mino/nexus/mino.db`，覆盖变量为 `MINO_NEXUS_DATA_DIR`。
 以当前进程模式和显式配置为准，不能仅因旧目录里存在库文件就去查旧库。开发与正式路径不得共用。
 
 V7 不再自动迁移旧 schema 或环境结构；发现不支持结构时应保留原库、报告问题，不得在排查中直接改库或清空数据。
@@ -111,7 +111,7 @@ Session Log 的事件接口与 turns 投影保留上述字段；Workbench 会话
 ### 5.1 sqlite3
 
 ```bash
-DB="${MINO_NEXUS_DATA_DIR:-$HOME/.mino-nexus}/mino.db"
+DB="${MINO_NEXUS_DATA_DIR:-$HOME/.mino/nexus}/mino.db"
 sqlite3 "$DB"
 ```
 
@@ -153,9 +153,9 @@ cp "$DB" /tmp/mino-copy.db
 
 | 模块 | 作用 |
 |------|------|
-| `mino_nexus/loop/session_log.py` | `open_session` / `SessionWriter.append` |
-| `mino_nexus/services/session_store.py` | ORM 落盘、`list_sessions`、`resolve_session_id` |
-| `mino_nexus/loop/session_project.py` | `project_trajectory` / `project_turns` |
-| `mino_nexus/loop/agent_loop.py` | 双写 stream + session |
+| `mino_nexus/records/eventlog/writer.py` | `open_session` / `SessionWriter.append` |
+| `mino_nexus/records/eventlog/store.py` | ORM 落盘、`list_sessions`、`resolve_session_id` |
+| `mino_nexus/loop/observe/session_project.py` | `project_trajectory` / `project_turns` |
+| `mino_nexus/loop/script_callback.py` | 脚本回执双写 stream + session |
 
-写入发生在 `run_case` 全程；若 `session_meta` 无记录，常见原因是 **用例未真正开循环**（队列取消、设备忙、启动前失败），或 **看错 run_id / case_id**。
+写入发生在脚本执行全程；若 `session_meta` 无记录，常见原因是 **用例未真正开跑**（队列取消、设备忙、启动前失败、脚本未下发），或 **看错 run_id / case_id**。

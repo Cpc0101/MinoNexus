@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prompt_pack import content_sha256, dump_yaml, entry_files, split_blocks  # noqa: E402
 
 TODAY = date.today().isoformat()
-DATA_DB = Path.home() / ".mino-nexus" / "mino.db"
-BACKUP = Path.home() / ".mino-nexus" / f"mino.db.bak-prompt-export-{TODAY}"
+DATA_DB = Path.home() / ".mino" / "nexus" / "mino.db"
+BACKUP = Path.home() / ".mino" / "nexus" / f"mino.db.bak-prompt-export-{TODAY}"
 RAW_DIR = ROOT / "docs" / "prompts" / f"db-export-{TODAY}"
 PROMPTS = ROOT / "mino_nexus" / "prompts"
 

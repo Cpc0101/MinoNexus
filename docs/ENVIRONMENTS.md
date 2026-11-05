@@ -6,7 +6,7 @@
 | Workbench | Vite localhost:60101 | Nexus 包内静态文件，同源 50104 |
 | Scout | 连接对应开发 Nexus | 连接正式 Nexus，容器场景用服务器 IP 或域名 |
 
-开发 Nexus 数据根 `~/.mino-dev/nexus`，正式 macOS 数据根 `~/Library/Application Support/Mino/nexus/data/`，Docker 使用 `/data`。两种环境禁止共用或互相包含目录，环境标记会校验。旧安装目录不自动迁移。
+开发数据根是 `~/.mino-dev/{scout,nexus,workbench}`，正式数据根是 `~/.mino/{scout,nexus,workbench}`。Nexus 的 `mino.db` 在对应 `nexus/` 目录根上。Docker 使用 `/data`。两种环境禁止共用或互相包含目录，环境标记会校验。旧安装目录不自动迁移。
 
 源码默认仍是开发模式；wheel 的生产启动必须用 `--prod` 或 `service` 子命令。开发 Workbench 只允许连接 localhost:50101，默认经 Vite proxy；正式始终使用浏览器 `location.origin`，不发现或选择其他 Nexus。
 

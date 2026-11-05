@@ -234,6 +234,20 @@ def revoke_mcp_token(token_id: int, sess: dict = Depends(current_session)):
     return ok({"id": token_id})
 
 
+@router.get("/oauth-grants")
+def oauth_grants(sess: dict = Depends(current_session)):
+    from mino_nexus.platform import mcp_oauth
+    return ok({"items": mcp_oauth.list_grants(_uid(sess))})
+
+
+@router.delete("/oauth-grants/{family_id}")
+def revoke_oauth_grant(family_id: str, sess: dict = Depends(current_session)):
+    from mino_nexus.platform import mcp_oauth
+    if not mcp_oauth.revoke_grant(_uid(sess), family_id):
+        raise HTTPException(status_code=404, detail="授权不存在")
+    return ok({"family_id": family_id})
+
+
 @router.get("/subscriptions")
 def subscriptions(node_id: str = Query(""), sess: dict = Depends(current_session)):
     return ok({"items": store.list_subscriptions(_uid(sess), node_id=node_id)})

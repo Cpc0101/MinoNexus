@@ -2,7 +2,7 @@
 
 为什么单独一个模块
 ------------------
-`agent_loop` 里 `inspect_slots["hierarchy_text"]` 长期恒空（见 docs/NAVIGATION_ATLAS.md §17.3），
+`inspect_slots["hierarchy_text"]` 早先长期恒空（见 docs/NAVIGATION_ATLAS.md §17.3），
 而 `planner` / `knowledge_hint.infer_screen_role` / `session_gate` / `step_pointer.screen_fingerprint`
 都已经在读它。这里把「取一帧层级」收成一处，顺带把 guard / localize / effect_assert 三处
 要用的匹配语义也收进来 —— 三份各写一遍必然漂移。

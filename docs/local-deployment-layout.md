@@ -2,9 +2,9 @@
 
 macOS 的完整产品由一个 Python wheel 提供，一个 launchd 服务监听 50104。Workbench 是包内 `mino_nexus/web/` 的静态文件，没有独立 60104 服务。
 
-- 业务数据：`~/Library/Application Support/Mino/nexus/data/`。
+- 业务数据：`~/.mino/nexus/`（`mino.db` 在该目录根上）。开发是 `~/.mino-dev/nexus/`。Scout 与 Workbench 并列在 `~/.mino/scout`、`~/.mino/workbench`（开发为 `~/.mino-dev/` 下同名目录）。
 - 服务定义：`~/Library/LaunchAgents/com.mino.nexus.plist`。
-- 日志：`~/Library/Logs/Mino/nexus/nexus.log` 与 `nexus-error.log`。
+- 日志：`~/.mino/nexus/logs/nexus.log` 与 `nexus-error.log`。
 - Python 运行环境：由 pipx 管理，服务引用安装时的解释器路径。
 - 开发环境：`~/.mino-dev/nexus`、Nexus 50101、Vite 60101；禁止与生产数据根重叠。
 - Docker：同一 wheel，非 root UID 10001，数据目录 `/data` 挂 named volume，宿主发布 50104；默认关闭 mDNS。

@@ -19,7 +19,7 @@ ALIASES = {
 
 def enums() -> dict[str, Any]:
     return {
-        "engines": ["agent_loop", "qa_job", "chat"],
+        "engines": ["script", "qa_job", "chat"],
         "pointers": ["case_columns", "none"],
         "views": ["case-three-column", "job-timeline", "flow-doc"],
         "input_types": ["case", "instruction", "requirement", "none"],

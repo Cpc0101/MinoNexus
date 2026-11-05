@@ -33,20 +33,32 @@ def sheets_configuration(config):
     try:
         url = urlsplit(str(config.get("spreadsheet_url") or ""))
         hostname = url.hostname or ""
-        match = re.fullmatch(r"/sheets/([A-Za-z0-9_-]+)/?", url.path)
+        match = re.fullmatch(r"/(sheets|wiki)/([A-Za-z0-9_-]+)/?", url.path)
         if (url.scheme != "https" or url.username or url.password or url.port not in (None, 443)
                 or not any(hostname == domain or hostname.endswith("." + domain) for domain in ("feishu.cn", "larksuite.com"))
                 or not match):
             raise ValueError
-        sheet_id = parse_qs(url.query).get("sheet", [""])[0]
+        queries = parse_qs(url.query)
+        for key, value in parse_qs(url.fragment).items():
+            queries.setdefault(key, value)
+        sheet_id = ""
+        for key in ("sheet", "sheetId", "sheet_id"):
+            values = queries.get(key) or []
+            if values and str(values[0]).strip():
+                sheet_id = str(values[0]).strip()
+                break
     except ValueError:
         raise ValueError("source_sheets_url_invalid") from None
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", sheet_id):
+    if sheet_id and not re.fullmatch(r"[A-Za-z0-9_-]+", sheet_id):
         raise ValueError("source_sheets_tab_required")
     cell_range = str(config.get("range") or "").strip().upper()
     if not re.fullmatch(r"[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*", cell_range):
         raise ValueError("source_explicit_bounded_range_required")
-    return {"node_id": config["node_id"], "spreadsheet_token": match[1], "sheet_id": sheet_id, "range": cell_range}
+    parsed = {"node_id": config["node_id"], "range": cell_range}
+    if sheet_id:
+        parsed["sheet_id"] = sheet_id
+    parsed["wiki_token" if match[1] == "wiki" else "spreadsheet_token"] = match[2]
+    return parsed
 
 
 def read(project_id, kind, config, operation="read"):
@@ -86,7 +98,7 @@ def read(project_id, kind, config, operation="read"):
             filename += "-会话" + config["session_id"]
     else:
         table = result.get("table")
-        filename = "飞书表格-" + config["sheet_id"]
+        filename = "飞书表格-" + (config.get("sheet_id") or str(result.get("sheet_id") or "wiki"))
     if not isinstance(table, list) or len(table) > 10001:
         raise ValueError("source_table_size_invalid")
     for row in table:

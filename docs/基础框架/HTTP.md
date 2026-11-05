@@ -100,7 +100,7 @@ Nexus 在每次发现项目、发现会话和读取用例时注入该地址；�
 - **Console**（`X-Mino-Client: console`）：仅 `admin` 可登录；登录用账号密码。非管理员返回 403「仅管理员可登录控制台」。
 - **Studio**（`X-Mino-Client: studio`）：邮箱登录 / 邮箱注册。注册**不**校验验证码，只查邮箱格式与是否已注册。
 
-数据目录：`MINO_NEXUS_DATA_DIR`，否则 macOS `~/Library/Application Support/MinoNexus`。
+数据目录：开发 `~/.mino-dev/nexus`（`MINO_NEXUS_DEV_DATA_DIR`），正式 `~/.mino/nexus`（`MINO_NEXUS_DATA_DIR`）。
 
 ## 客户端门禁
 
@@ -152,7 +152,7 @@ Console 不提供 Scout 安装或包配置。
 
 HITL 问人界面、排期 cron、基线库、从设计稿/定位抽登录图标（CLIP/视觉）、完整 3500 行 Agent 恢复/拟人化路径。
 
-已经可联：登录、概览、账号、发信、模型 Key、**技能**（`/settings/ai/skills`）与 **Jobs**（`/settings/ai/jobs`）prompt 编辑、角色 prompt / 对话、扩展包只读、节点列表、项目/应用/环境/号池、自动化配置、**Case Runner 下发与轮询**（无 Scout / 无 Key 时任务失败并带中文原因，不再 501）、**项目用例库导入 preview/commit**、Figma 同步（无 Token 时 400）。脑图、草稿推进和一句话指令跑批已关闭。
+已经可联：登录、概览、账号、发信、模型 Key、**技能**（`/settings/ai/skills`）与 **Jobs**（`/settings/ai/jobs`）prompt 编辑、角色 prompt / 对话、扩展包只读、节点列表、项目/应用/环境/号池、自动化配置、**Case Runner 下发与轮询**（无 Scout / 无 Key 时任务失败并带中文原因，不再 501）、**项目用例库导入 preview/commit**、Figma 同步（无 Token 时 400）。脑图和草稿推进已关闭。
 
 ## 项目用例库与导入
 
@@ -219,7 +219,7 @@ Console **Jobs** 页读写下列 API。Studio 写入口经 `client_gate` 拦截�
 |---|---|---|
 | GET | `/settings/ai/skills` | 列表 + `enums`（engine / pointer / view） |
 | GET | `/settings/ai/skills/{id}` | 单条。空 prompt / 坏 SOP 回退 builtin |
-| POST | `/settings/ai/skills` | 新建。`engine` 必须是 `agent_loop` / `qa_job` / `chat` |
+| POST | `/settings/ai/skills` | 新建。`engine` 必须是 `script` / `qa_job` / `chat` |
 | PUT | `/settings/ai/skills/{id}` | 改 prompt / SOP / view。`{ reset: true }` 恢复 builtin prompt |
 | GET | `/settings/ai/roles` | 仍返回产品角色；`skills` 字段已是技能表 |
 | PUT | `/settings/ai/roles/{id}/prompt` | 兼容旧入口；技能 id 会写进 `skills` 表 |
@@ -286,7 +286,7 @@ pip install -e .    # 或 uv sync
 | POST | `/proposals/{id}/review` | 审核提案。body：`status`（`approved` / `rejected`） |
 | GET/POST | `/links` | 跨渠道关联边（补充 `wiki_ref`，不替代 guards 内权威挂接） |
 
-跑批每步由 `agent_loop` 调 `context_pack_for_step`（`wiki_first`），session log 事件 `intel/context_pack`。
+脚本执行在 Scout，Nexus 不再逐步注入 `context_pack`；`context_pack_for_step` 仅保留为检索侧函数。
 
 ## 通用逻辑块（FlowBlocks）
 
@@ -393,7 +393,7 @@ Scout `REGISTER.account_isolation_version=1` 才可接入；旧客户端在安�
 
 | 方法 | 路径 | 行为 |
 |---|---|---|
-| GET | `/case-runner/devices` | 默认 `only_online=false`、`compatible_only=false`，保留账号内离线/未就绪设备。可传 `app_id/env_surface/env_profile/action_scheme/playwright_headless`；逐行返回 `executable/blocking_code/blocked_reason`。`compatible_only=true` 且指定应用时只保留兼容该渠道的设备，未就绪原因仍可展示。原生 macOS/Windows/Linux 渠道要求同 OS Desktop；网站匹配 Web 槽。 |
+| GET | `/case-runner/devices` | 默认 `only_online=false`、`compatible_only=false`，保留账号内离线/未就绪设备。可传 `app_id/env_surface/env_profile/playwright_headless`；逐行返回 `executable/blocking_code/blocked_reason`。`compatible_only=true` 且指定应用时只保留兼容该渠道的设备，未就绪原因仍可展示。原生 macOS/Windows/Linux 渠道要求同 OS Desktop；网站匹配 Web 槽。 |
 | POST | `/case-runner/run`、`/case-runner/explore` | 服务端再次核对 owner、Scout 事实与应用兼容性，在 SQLite 原子获取资源锁后建任务。忽略客户端平台对执行路由的影响；阻塞返回 409（错误详情含 sn、blocking_code、message），他人资源返回 404。 |
 | POST | `/runtime/nodes/{node_id}/claim` | 管理员将无归属历史节点认领到当前账号并关闭旧连接；普通用户 403，已有归属 409。长期凭证同步归属，下次重连仍可用。 |
 | GET | `/packs/desktop-paths` | 旧客户端兼容入口：返回空 changes 和 configuration_required=false；Desktop 工具从当前 Scout 设备清单生成，不写库。 |
@@ -416,6 +416,21 @@ Scout `REGISTER.account_isolation_version=1` 才可接入；旧客户端在安�
 | DELETE | `/project/{project_id}/maintainers/{user_id}` | 仅管理员；创建者不可移除（400 `creator_is_implicit_maintainer`） |
 
 Workbench 入口：项目配置 → 「项目维护者」。
+
+## MCP OAuth 2.1（2026-11-05）
+
+远程 MCP 的主路径是 OAuth 2.1 授权码 + PKCE（S256）。客户端只配置 `POST /mcp`，不携带密钥。未授权请求返回 401，`WWW-Authenticate` 带 `resource_metadata`。发现文档：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/.well-known/oauth-protected-resource` 与 `/.well-known/oauth-protected-resource/mcp` | 资源是 `{origin}/mcp`，授权服务器是同一 origin |
+| GET | `/.well-known/oauth-authorization-server` 与 `/.well-known/openid-configuration` | 授权端点、令牌端点、动态登记、`client_id_metadata_document_supported=true` |
+| GET | `/oauth/authorize` | 校验客户端、回调和 PKCE 后，302 到 Workbench `/oauth/consent` |
+| POST | `/oauth/register` | 动态客户端登记。公开客户端 `token_endpoint_auth_method=none` |
+| POST | `/oauth/token` | `authorization_code` 与 `refresh_token`。刷新令牌每次轮换，重用旧令牌会吊销整组 |
+| GET/POST | `/oauth/requests/{txn}` | 已登录用户查看、允许或拒绝。允许后浏览器跳回客户端回调 |
+
+访问令牌前缀 `mino_oat_`，一小时有效，只能调用 `/mcp`，受众必须是本次 MCP 地址。权限等于同意的那个用户。`assistant_mcp_tokens` 里的手动令牌仍然有效。同意页在开发环境跳到 Workbench 的 60101，与 Nexus 同主机名。
 
 ## MCP 安全读模型与预约（2026-10-27）
 
@@ -496,7 +511,7 @@ Workbench 入口：项目配置 → 「项目维护者」。
 
 ## 普通/严格执行绑定预检（2026-10-15）
 
-`GET /project/{project_id}/cases/{case_id}/execution-preview`，保留 `/v5/execution-preview` 别名。必需 `app_id`、`sn`；可选 `env_profile`、`env_surface`、`action_scheme`、`provider_id`、`execution_mode=legacy|v5`（默认 v5 兼容旧入口）。Workbench 新建任务显式传当前模式。
+`GET /project/{project_id}/cases/{case_id}/execution-preview`，保留 `/v5/execution-preview` 别名。必需 `app_id`、`sn`；可选 `env_profile`、`env_surface`、`provider_id`。
 
 只读返回 `status`、`binding`（仅 ready）、`diagnostics`、`scope=execution_binding_only`、`runnable_now=false`。不写 session、不触发旧环境懒迁移、不租号/预约、不操作设备、不调用模型。项目读权限保持现有共享规则，设备与模型配置仍限定认证账号。编译缺失/原文变化返回 needs_input；离线、隔离、策略拒绝等返回 blocked。诊断包含来源和恢复入口；可选分支有 `blocking:false`。ready 仅表示当前绑定资格，启动时重新解析，不承诺队列许可或业务通过。
 

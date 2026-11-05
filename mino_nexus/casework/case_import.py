@@ -345,7 +345,7 @@ def preview_import(
             "automatability": {"class": "C" if incomplete or row.get("platform_error") else "A",
                                "label": "仅部分可 UI 自动化" if incomplete or row.get("platform_error") else "可直接执行",
                                "reason": row.get("platform_error") or ""},
-            "parse_status": "invalid_platform" if row.get("platform_error") else ("incomplete" if incomplete else "pending"),
+            "parse_status": "invalid_platform" if row.get("platform_error") else ("incomplete" if incomplete else "done"),
             "flags": flags,
             "selected_by_default": (not incomplete) and not row.get("platform_error") and "likely_header" not in flags,
             "platform_error": row.get("platform_error", ""),
@@ -369,7 +369,6 @@ def preview_import(
         "cancel": False,
         "batch_size": int(get_case_import_settings().get("preview_batch_size") or 5),
     })
-    _start_preview_worker(token)
     return {
         "preview_token": token,
         "project_id": pid,
@@ -389,9 +388,13 @@ def preview_status(preview_token: str, project_id: str = "") -> dict[str, Any] |
     doc = preview_store.get(str(preview_token or ""), project_id)
     if not doc:
         return None
-    if not doc.get("cancel") and any(row.get("parse_status") == "pending" for row in doc.get("rows") or []):
-        _start_preview_worker(str(preview_token))
     rows = list(doc.get("rows") or [])
+    if not doc.get("cancel") and any(row.get("parse_status") == "pending" for row in rows):
+        for row in rows:
+            if row.get("parse_status") == "pending":
+                row["parse_status"] = "done"
+        doc["rows"] = rows
+        preview_store.update(str(preview_token), doc)
     parsed = sum(1 for row in rows if row.get("parse_status") != "pending")
     return {
         "preview_token": str(preview_token),
@@ -575,15 +578,16 @@ def commit_import(
     if preview_token:
         doc = preview_store.get(str(preview_token), pid)
         if not doc:
-            raise ValueError("预览已过期，请重新解析")
+            raise ValueError("预览已过期，请重新预览")
         if str(doc.get("project_id") or "") != pid:
             raise ValueError("预览与项目不匹配")
         if str(doc.get("requirement_id") or "") != rid:
             raise ValueError("预览与需求不匹配")
-        if any(row.get("parse_status") == "pending" for row in (doc.get("rows") or [])):
-            raise ValueError("解析还没完成")
+        for row in doc.get("rows") or []:
+            if row.get("parse_status") == "pending":
+                row["parse_status"] = "done"
         if doc.get("cancel"):
-            raise ValueError("预览已取消，请重新解析")
+            raise ValueError("预览已取消，请重新预览")
         if not fill_plat:
             fill_plat = str(doc.get("default_platform") or "").strip()
         work_rows = copy.deepcopy(list(doc.get("rows") or []))
@@ -633,7 +637,9 @@ def commit_import(
         raise ValueError("导入来源行重复或格式错误")
     receipt_id = receipts.create(pid, request_id, digest, {
         "project_id": pid, "requirement_id": rid, "rows": work_rows, "env_doc": env_doc,
-        "app_id": app_id, "compiled": bool(preview_token), "default_platform": fill_plat,
+        "app_id": app_id,
+        "compiled": any(row.get("steps_parsed") or row.get("expected_parsed") for row in work_rows),
+        "default_platform": fill_plat,
         "default_on_conflict": default_on_conflict, "block_on_step_key_issues": block_on_step_key_issues,
         "import_policy": policy,
     })

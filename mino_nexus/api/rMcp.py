@@ -1,6 +1,6 @@
 """MCP 端点（Streamable HTTP，JSON-RPC over POST）。工具来源是助手工具表，不是全量 OpenAPI。
 
-鉴权：Workbench 生成的 MCP token。工具以 token 主人的身份经 run_tool 执行，
+鉴权：OAuth 2.1 访问令牌，或 Workbench 生成的手动 MCP token。工具以令牌主人的身份经 run_tool 执行，
 走的是和 IM 助手同一条路径，所以同样受门禁约束。
 """
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _error_code(status: int | None) -> str:
 
 def _error_hint(code: str) -> str:
     return {
-        "auth_required": "重新生成或更新 MCP token 后再试",
+        "auth_required": "重新连接 MCP，在浏览器里完成授权",
         "forbidden": "当前账号没有该项目的写权限，或该工具不允许经 MCP 调用",
         "not_found": "检查 project_id/app_id/state_id/account_id/control_id/block_id 是否来自同一项目的最新列表",
         "conflict": "先重新读取最新状态（revision/租约）再决定是否重试，不要盲改",
@@ -187,6 +187,44 @@ def _handle_owned(uid: str, msg: dict, token_scope: str):
             dispatch_log.reset(token)
 
 
+def _unauthorized(request: Request, invalid: bool) -> JSONResponse:
+    from mino_nexus.platform import mcp_oauth
+
+    metadata = mcp_oauth.public_origin(str(request.base_url)) + "/.well-known/oauth-protected-resource/mcp"
+    challenge = f'Bearer resource_metadata="{metadata}", scope="mcp"'
+    detail = "需要授权"
+    if invalid:
+        challenge += ', error="invalid_token", error_description="The access token is invalid or expired"'
+        detail = "令牌无效或已过期"
+    return JSONResponse(
+        {"detail": detail},
+        status_code=401,
+        headers={"WWW-Authenticate": challenge, "Cache-Control": "no-store"},
+    )
+
+
+async def _authenticate(request: Request, authorization: str) -> tuple[str, bool] | JSONResponse:
+    from mino_nexus.platform import mcp_oauth
+
+    raw = bearer(authorization)
+    if not raw:
+        return _unauthorized(request, False)
+    if await asyncio.to_thread(assistant_store.resolve_probe_token, raw):
+        return "system:probe", True
+    if raw.startswith("mino_oat_"):
+        try:
+            uid = await asyncio.to_thread(
+                mcp_oauth.resolve_access_token, raw, mcp_oauth.canonical_resource(str(request.base_url)),
+            )
+        except mcp_oauth.OAuthPage:
+            return _unauthorized(request, True)
+        return (uid, False) if uid else _unauthorized(request, True)
+    if raw.startswith("mino_mcp_"):
+        uid = await asyncio.to_thread(assistant_store.resolve_mcp_token, raw)
+        return (uid, False) if uid else _unauthorized(request, True)
+    return _unauthorized(request, True)
+
+
 @router.post("/mcp")
 async def mcp_post(request: Request, authorization: str = Header(default="")):
     origin = request.headers.get("origin", "")
@@ -194,13 +232,13 @@ async def mcp_post(request: Request, authorization: str = Header(default="")):
     allowed.add(str(request.base_url).rstrip("/"))
     if origin and origin.rstrip("/") not in allowed:
         return JSONResponse({"detail": "MCP Origin 未获允许"}, status_code=403)
+    auth = await _authenticate(request, authorization)
+    if isinstance(auth, JSONResponse):
+        return auth
+    uid, probe = auth
     requested_version = request.headers.get("mcp-protocol-version")
     if requested_version and requested_version != PROTOCOL:
         return JSONResponse({"detail": f"仅支持 MCP {PROTOCOL}"}, status_code=400)
-    probe = await asyncio.to_thread(assistant_store.resolve_probe_token, bearer(authorization))
-    uid = "system:probe" if probe else await asyncio.to_thread(assistant_store.resolve_mcp_token, bearer(authorization))
-    if not uid:
-        return JSONResponse({"detail": "MCP token 无效或已吊销"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
@@ -227,6 +265,9 @@ async def mcp_post(request: Request, authorization: str = Header(default="")):
 
 
 @router.get("/mcp")
-async def mcp_get() -> Response:
-    # 不提供服务端主动推送流；客户端会回落到纯 POST
+async def mcp_get(request: Request, authorization: str = Header(default="")) -> Response:
+    # 未授权时先给出 OAuth 发现信息。授权后仍不提供服务端推送流。
+    auth = await _authenticate(request, authorization)
+    if isinstance(auth, JSONResponse):
+        return auth
     return Response(status_code=405, headers={"Allow": "POST"})

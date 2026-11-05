@@ -1,11 +1,7 @@
-"""RouterProxy：签名兼容上游 `CapabilityRouter`，内部把动作发给 Scout。
+"""RouterProxy：把 Nexus 侧动作发给 Scout，统一处理节点选择、重试与结果归一。
 
-这是本次拆分**最省力的一处**（CLAUDE.md §2.2）。上游 `agent_executor.py`(3,533 行)、
-`recovery.py`、`orchestrator.py` 只依赖一个签名：
-
-    result: EventResult = router.dispatch(event, ctx, ...)
-
-本类提供同签名实现，于是那几千行循环代码搬过来**基本不用改** —— 改的是注入进去的对象。
+历史上它兼容上游 `CapabilityRouter.dispatch(event, ctx, ...)` 签名，供已删除的逐步决策循环使用；
+V9（2026-10-30）之后脚本执行在 Scout，本类只保留 Nexus 需要的节点通信职责。
 
 职责（选路在 Nexus，执行在 Scout）：
   1. 按 **这台 sn** 的设备（platform + 已连通通道）定点选 executor，不是按节点上挂了哪些插件
@@ -16,7 +12,7 @@
   6. 发 EXECUTE，等 RESULT；超时按协议 §6 重发一次
   7. RESULT → EventResult（五态、attempts、executor_used 原样透传）
 
-**循环代码不该知道 Scout 存在。** 网络、重试、节点选择都在这里。
+**业务代码不该直接感知 Scout 连接。** 网络、重试、节点选择都在这里。
 """
 from __future__ import annotations
 
@@ -109,7 +105,7 @@ def _trace_device_result(
             writer.append("device/action" if req.step_idx > 0 or purpose == "recovery_action" else "device/probe", fields)
 
 
-# case_runner 在后台线程跑同步 agent_loop，Scout WS 却在 FastAPI 主 loop。
+# case_runner 在后台线程同步等待 Scout 回执，Scout WS 却在 FastAPI 主 loop。
 # 若用 asyncio.run() 临时 loop 去 await node.send，RESULT 回在主 loop 上，
 # waiter 永远等不到 → observe/action 每次都顶满 timeout+pad（17s / 35s）。
 from mino_nexus.core.async_util import run_sync as _run_sync, set_main_loop  # noqa: E402

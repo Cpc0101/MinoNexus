@@ -1029,7 +1029,7 @@ async def command_node(
                 "节点未应答（更新可能仍在下载/安装，或进程已退出未重连）。"
                 "请到执行机查看 Scout 日志并执行 mino-scout start 或 launchctl kickstart；"
                 "勿用 PATH 里旧的 pip mino-scout（无 update）。"
-                "升级请用 Application Support 下 bin/mino-scout update 或 Studio 远程安装命令。"
+                "升级请用 ~/.mino/scout/bin/mino-scout update，或在 Workbench 里远程安装。"
             )
         raise HTTPException(status_code=504, detail=hint)
     extra: dict[str, Any] = dict(getattr(result, "extra", None) or {})
@@ -1098,13 +1098,3 @@ async def create_node_tool_task(node_id: str, body: NodeToolTaskBody, sess: dict
 async def read_node_tool_task(node_id: str, task_id: str, sess: dict = Depends(current_session)):
     from mino_nexus.resources import node_tools as service
     return ok(await service.refresh_task(node_id, str(sess.get("user_id") or ""), task_id))
-
-
-@router.get("/execution-version")
-def execution_version(_session=Depends(current_session)):
-    """Report only an actually imported execution module, never a disk VERSION."""
-    import sys
-    module = sys.modules.get("mino_nexus.loop.agent_loop")
-    revision = getattr(module, "EXECUTION_REVISION", "") if module else ""
-    return ok({"execution_module_loaded": module is not None, "execution_revision": revision,
-               "resolved_contract_loaded": bool(module and "resolved_case" in module._run_loop.__code__.co_varnames)})

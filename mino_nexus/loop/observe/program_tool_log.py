@@ -1,4 +1,4 @@
-"""程序链 / 逻辑块 dispatch 写入 session_events（与 agent_loop 主路径对齐）。"""
+"""程序链 / 逻辑块 dispatch 写入 session_events（与执行主路径事件对齐）。"""
 from __future__ import annotations
 
 from typing import Any

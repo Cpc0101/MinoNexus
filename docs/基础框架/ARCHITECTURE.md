@@ -55,86 +55,17 @@ UI 只跟 Nexus 说话，端口仍是 `10104`。Scout 主动 dial 进来，可�
 （`ui_sms_request` 是「屏幕上哪个是手机号框和发送钮」，所以进 `navigation/geometry/`，
 不是 `runtime/`）。
 
-## 3. 循环
+## 3. 执行：脚本在 Scout
 
-```
-AgentExecutor.run()                       ← mino_nexus/loop/agent_executor.py
-  每一步：
-   1. screen = RouterProxy.observe(screenshot)  ──► EXECUTE screenshot ──► Scout
-   2. dump   = RouterProxy.observe(hierarchy)   ──► EXECUTE hierarchy ──► Scout
-   3. decision = planner.decide_next_action(screen, menu, history)   本地 LLM
-   4. 若 impl 声明 locate 且 params 无坐标：
-        planner.locate_element(screen)                              本地 LLM
-   5. cap 属于 hitl / vlm / ai_persona / internal ？
-        是 → local_executors 本地执行，不出网
-        否 → RouterProxy.dispatch(event)          ──► EXECUTE ──► Scout
-   6. emit_agent_event(...) → _RUNS + broadcast_to_observers → UI WS
-   7. 恢复判定：recovery.recover_if_needed(ctx, router_proxy)
-```
+V9（2026-10-30）起，`case_run` 不再在 Nexus 逐步决策。一次运行只做三步：
 
-### 3.0 `_run_loop` 与 `loop/execution/`
+1. **准入**：设备占用、账号租约、写安全（`loop/case_runner.py` / `loop/case_exec.py`）。失败不下发。
+2. **下发**：把 `script.run` 载荷（`repo_url` / `branch` / `revision` / `script_path` / `sn` / `platform`）交给持有该 `sn` 的 Scout（`loop/script_dispatch.py`）；Scout 自己拉仓库，Nexus 不读、不打包脚本。
+3. **回调与记账**：Scout 执行脚本；租约、账号、步骤、证据、失败经 `loop/script_callback.py` 回调（`script.lease` / `case.account` / `case.step` / `case.note` / `case.fail`），步骤事件写入 `session_events`。
 
-`agent_loop._run_loop` 仍是唯一编排者，但阶段性的叶子逻辑已经搬到 `mino_nexus/loop/execution/`：
+`agent_loop` 与 `loop/execution/` 已删除，没有逐步决策入口。`loop/router_proxy.py` 仍负责 Nexus → Scout 的节点通信，但不再有循环依赖它。
 
-| 模块 | 职责 |
-|---|---|
-| `setup.py` | `prepare_run()`：预算 / 游标 / 导航 / 槽位 / skill 装配 |
-| `state.py` | `RunState`：跨阶段状态与闭包句柄 |
-| `preflight.py` | `run_preflight()`：冷启动、打开应用、版本探针、登录提示、截止时间 |
-| `guard_ctx.py` | `build_guard_ctx()`：守卫能看到的全部字段 |
-| `nav_bookkeeping.py` | FSM 衰退计数 / 到达确认 / 无底栏页签 |
-| `progress_pass.py` | 成功后写进展门（指纹 + 登录流 + 里程碑焦点） |
-| `visual_prior.py` | do 阶段视觉先验探针 |
-| `step_navigation.py` | 换步时清导航/登录宏 + 算导航计划提示 |
-| `turn_outcome.py` | 派发结果归一（状态/摘要/耗时/错误/执行器） |
-| `auto_finish.py` / `signal_done.py` | 收尾信号：返回 `bool` / `Signal` 由主循环决定 `continue` |
-| `phase_contract.py` | 阶段契约的只记录校验：落 `phase/contract` 事件，不拒绝 |
-| `model_done.py` / `model_stop.py` | 模型主动结束的两种：说"做完了"的判定链（`DoneFlow`）/ give_up·ask_human·skip（`StopFlow`） |
-| `check_phase.py` | 校验阶段：脚本化检查与里程碑检查（`CheckFlow`） |
-| `login_nav.py` / `login_tap.py` / `login_branch.py` | 登录链与导航协同 / 点控件后的处置 / 链推进 |
-| `guard_skip.py` / `nav_verdict.py` | 守卫否决后的善后（`SkipFlow`）/ 导航守卫否决（`NavVerdictFlow`） |
-| `turn_prior.py` / `fail_branch.py` / `tap_params.py` | 同回合先看后动 / fail·declined 处置 / 派发前参数装配 |
-| `foreground.py` / `tool_pass.py` / `nav_degraded.py` / `lease_account.py` / `tap_focus.py` / `inspections_gate.py` | 每回合的前台保障 / 工具成功后六件事 / 降级回执 / 租号记账 / 输入聚焦绑定 / 阶段检查触发 |
-
-**硬规则**：`execution/*` 不得 import `agent_loop`，否则环会立刻回来。
-搬迁进度与踩坑记录见 [docs/架构/V8/代码分层方案-20261022.md](../架构/V8/代码分层方案-20261022.md) §11.1。
-
-### 3.1 `RouterProxy`：让循环代码不感知网络
-
-上游 `agent_executor.py` / `recovery.py` / `orchestrator.py` 只依赖一个签名：
-
-```python
-result: EventResult = router.dispatch(event, ctx, ...)
-```
-
-`mino_nexus/loop/router_proxy.py` 提供**同签名**实现，内部：
-
-```
-dispatch(event, ctx)
-  ├── 查能力目录：这条 cap 在当前 connectivity 下允许哪些 executor
-  ├── 合成 executor_order（AI 的 expected_executor → fallback_executors → 菜单兜底）
-  ├── 从 YAML 取 low_level / selected_impl
-  ├── 注入 device_hint（sn → adb_serial / password，带 TTL）
-  ├── 发 EXECUTE，等 RESULT（超时按 PROTOCOL.md §6 重发一次）
-  └── RESULT → EventResult（五态、attempts、executor_used 原样透传）
-```
-
-**因此上游那 3,533 行循环代码基本原样搬过来即可**，改的是注入进去的对象。这是本次拆分最省力的一处，也是 `CLAUDE.md` §2.2 那条铁律的由来。
-
-同理 `capture_screen(...)` 的调用点改为 `RouterProxy.observe(...)`，返回值保持 `CapturedScreen` 形状。
-
-### 3.2 trace 与 UI：零改造
-
-`agent_stream.emit_agent_event()` 的唯一调用方是 `agent_executor.py`。它做两件事：
-
-1. 写进程内 `_RUNS`（`OrderedDict`，上限 20 个 run）
-2. 广播 `{"type": "agent_step", data}` 给 UI observers
-
-因为循环留在 Nexus，**trace 天然写在 UI 要读的这个进程里**。`agent_stream.py` 一行不改，UI 的 `/case-runner/agent/runs`、`/agent/steps/{run_id}`、WS `agent_step` 一行不改。
-
-> 这是选定「循环留 Nexus」方案的一个直接收益。若循环放在 Scout，就需要一整套 trace 回流管道（emitter / sink / 断连补传 / 缩略图归属），并且 UI 在 trace 到达前什么都看不到。
-
-**已知的多节点隐患**：`_RUNS` 上限 20 是单机假设。多节点并发时会被挤爆 —— 要么按 `node_id` 分桶，要么改成落库 + 短 TTL 内存缓存。见 `docs/DATA_MODEL.md`。
+回放只读已有 `session_events`（`api/replay.py`），不会重新决策。脚本执行细节见 [V9/Nexus.md](../架构/V9/Nexus.md)。
 
 ## 4. 能力菜单怎么产生
 

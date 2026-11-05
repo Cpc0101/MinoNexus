@@ -4,7 +4,7 @@
 
 ## 1. 归属总表
 
-库文件是 `mino.db`（`data_dir()`，默认 `~/.mino-nexus`，可用 `MINO_NEXUS_DATA_DIR` 覆盖）。SQLAlchemy，`create_all` + 启动时 `run_auto_migration()`。
+库文件是 `mino.db`（`data_dir()`。开发默认 `~/.mino-dev/nexus`，正式默认 `~/.mino/nexus`，分别用 `MINO_NEXUS_DEV_DATA_DIR` / `MINO_NEXUS_DATA_DIR` 覆盖）。SQLAlchemy，`create_all` + 启动时 `run_auto_migration()`。
 
 | 数据 | 表 | 权威来源 |
 |---|---|---|
@@ -17,6 +17,7 @@
 | 分端用例脚本 | `case_platform_scripts`（`project_id` + `case_id` + `platform`） | 仓库未配置时，按端覆盖库内脚本 |
 | 用例脚本仓库 | `project_script_repos`（`project_id` → `url`、`branch`） | 只存仓库位置。用例的 `script_path` 记录仓库内相对路径。执行前同步到 `case_workspaces/{project_id}/`，用该目录下的虚拟环境运行这个文件 |
 | 仓库应用清单 | `project_repo_apps`（`project_id` 主键 → `revision`、`branch`、`apps` JSON、`synced_by`、`synced_at`） | agent 通过 MCP `repo_apps_sync` 同步 config.yaml 的 apps，Nexus 不读仓库；Workbench 只读展示，`case_run` 用它核对 app_id。按差异更新（apps 按 key 新增或整项替换，remove 删除，其余保留），不含账号密码。SCHEMA_VERSION=7 新增此表 |
+| MCP OAuth | `oauth_clients`、`oauth_requests`、`oauth_codes`、`oauth_tokens` | 客户端授权码和轮换令牌只存哈希。访问令牌主人即 Workbench 用户。SCHEMA_VERSION=8 新增这四张表，不改 `assistant_mcp_tokens` |
 | 用例导入预览 | `case_import_previews`（账号与项目隔离，24 小时有效；解析结果逐行持久化，生命周期独立于提交回执） | 导入预览 API；工作租约避免多进程重复解析，进程退出后恢复未完成行 |
 | 用例导入回执 | `case_import_receipts` / `case_import_receipt_lines`（账号、项目、提交身份唯一；不随预览过期删除） | 确认导入与回执查询/续交 API；保存原始行、决策及实际用例 revision 快照，每行用例与结果原子提交 |
 | 跑批任务 | `app_regression_runs`。任务号 `CR` + 本地时间 `yyMMddHHmmss` + 3 位毫秒 | 任务中心 |
@@ -78,7 +79,7 @@ Workbench V4：`users.email` 为规范化后的可空邮箱，数据库唯一约
 
 Studio 读取顺序：**先内存 `_RUNS`，兜底 session log 投影**。
 
-**说明**：session log 双写于 `agent_loop`（结构化 event + `stream/emit` 镜像）；服务重启后轨迹仍可从 DB 恢复。
+**说明**：session log 由 `loop/script_callback.py` 与 `records/eventlog` 写入（结构化 event + `stream/emit` 镜像）；服务重启后轨迹仍可从 DB 恢复。
 
 ## 4. 从 sqlite 到 PG
 

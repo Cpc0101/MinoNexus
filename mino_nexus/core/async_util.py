@@ -17,7 +17,7 @@ def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 
 def run_sync(coro):
-    """同步壳。agent_loop 在后台线程；Scout WS 在主 loop —— 必须桥接。"""
+    """同步壳。脚本回调/跑批在后台线程；Scout WS 在主 loop —— 必须桥接。"""
     try:
         asyncio.get_running_loop()
     except RuntimeError:

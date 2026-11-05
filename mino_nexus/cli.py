@@ -458,9 +458,14 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--data-dir must not be empty")
     if raw_dir:
         target = Path(raw_dir).expanduser().resolve()
-        default = (Path(os.environ.get("APPDATA", Path.home())) / "MinoNexus"
-                   if os.name == "nt" else Path.home() / ".mino-nexus").resolve()
-        production_roots = [default, (Path.home() / "Mino" / "nexus").resolve()]
+        home = Path.home()
+        production_roots = [
+            (home / ".mino" / "nexus").resolve(),
+            (home / ".mino-nexus").resolve(),
+            (home / "Mino" / "nexus").resolve(),
+            (home / "Library/Application Support/Mino/nexus").resolve(),
+            (Path(os.environ.get("APPDATA", home)) / "MinoNexus").resolve(),
+        ]
         if args.dev and any(target == root or root in target.parents or target in root.parents for root in production_roots):
             ap.error("development data root must not overlap the default production root")
         os.environ["MINO_NEXUS_DEV_DATA_DIR" if args.dev else "MINO_NEXUS_DATA_DIR"] = str(target)

@@ -14,6 +14,9 @@ CALLBACKS = frozenset({
     "account", "note", "step", "fail",
 })
 STEP_CAP = "script.step"
+SESSION_CAP = "script.session"
+LEASE_CAP = "script.lease"
+_EVIDENCE_CAPS = frozenset({STEP_CAP, SESSION_CAP})
 _ALIASES = {
     "account": "case.account",
     "note": "case.note",
@@ -59,6 +62,8 @@ def unregister(run_id: str) -> None:
 def handle(node_id: str, req: P.Execute) -> P.Result:
     cap = str(req.capability_id or "")
     params = dict(req.params or {})
+    if not str(params.get("run_id") or "").strip() and req.run_id:
+        params["run_id"] = str(req.run_id)
     if cap == "script.callback":
         cap = str(params.get("op") or "")
     cap = _ALIASES.get(cap, cap)
@@ -115,9 +120,11 @@ def _call(admission: ScriptAdmission, cap: str, params: dict[str, Any]) -> dict[
     from mino_nexus.contract.ownership import execution_user
 
     owner = admission.owner_user_id
-    if cap == STEP_CAP:
+    if cap in _EVIDENCE_CAPS:
         _write_step(admission, params)
-        return {"_summary": "已写入步骤"}
+        return {"_summary": "已写入动作"}
+    if cap == LEASE_CAP:
+        return _lease(admission, params)
     if not owner:
         raise PermissionError("这次运行没有执行账号")
     with execution_user(owner):
@@ -234,12 +241,25 @@ def _note(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
     return {"_summary": body[:300]}
 
 
+def _lease(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
+    case_id = str(params.get("case_id") or "").strip()
+    if case_id and case_id != admission.case_id:
+        raise PermissionError("case_id 与这次运行不一致")
+    return {
+        "_summary": "这次运行仍占用该节点和设备",
+        "occupied": True,
+        "sn": admission.sn,
+        "node_id": admission.node_id,
+    }
+
+
 def _write_step(admission: ScriptAdmission, params: dict[str, Any]) -> None:
     event = params.get("event") if isinstance(params.get("event"), dict) else params
-    body = {key: value for key, value in dict(event).items() if key not in {"run_id", "session_id", "image_base64", "event"}}
+    body = {key: value for key, value in dict(event).items() if key not in {"run_id", "session_id", "image_base64", "image_mime", "event"}}
     image = str(params.get("image_base64") or event.get("image_base64") or "")
     if image and admission.writer is not None:
-        _store_image(admission, image, str(params.get("image_mime") or "image/png"))
+        mime = str(params.get("image_mime") or event.get("image_mime") or "image/png")
+        _store_image(admission, image, mime)
     cap = str(body.get("capability_id") or "script")[:80]
     status = str(body.get("status") or "pass")[:40]
     record = {
@@ -250,10 +270,16 @@ def _write_step(admission: ScriptAdmission, params: dict[str, Any]) -> None:
         "executor_used": "scout",
         "source": "script_run",
     }
-    for key in ("app", "script_sha256", "script_length"):
+    for key in ("app", "script_sha256", "script_length", "role"):
         value = body.get(key)
         if isinstance(value, (str, int)) and value != "":
             record[key] = value if isinstance(value, int) else value[:80]
+    elapsed = body.get("elapsed_ms")
+    if isinstance(elapsed, int):
+        record["elapsed_ms"] = elapsed
+    case_step = body.get("case_step")
+    if isinstance(case_step, int) or (isinstance(case_step, str) and case_step.strip()):
+        record["case_step"] = case_step if isinstance(case_step, int) else case_step.strip()[:300]
     if admission.writer is not None:
         call = {"capability_id": cap, "params": {}, "source": "script_run"}
         if record.get("app"):

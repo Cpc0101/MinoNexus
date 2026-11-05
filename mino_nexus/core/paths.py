@@ -7,24 +7,23 @@ import 数据库。这里拆开 —— `dispatch_log` 只是要个落盘位置�
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 
 def get_app_data_dir() -> Path:
     from mino_nexus.core.runtime_mode import is_development
     development = is_development()
-    prod_default = (Path(os.environ.get("APPDATA", Path.home())) / "MinoNexus" if os.name == "nt"
-                    else Path.home() / "Library/Application Support/Mino/nexus/data" if sys.platform == "darwin"
-                    else Path.home() / ".mino-nexus")
-    dev_default = Path.home() / ".mino-dev" / "nexus"
+    home = Path.home()
+    prod_default = home / ".mino" / "nexus"
+    dev_default = home / ".mino-dev" / "nexus"
     # Only this process's environment selects its data root. IDEs may retain an
     # old MINO_NEXUS_DATA_DIR pointing at dev; it is not a production instance.
     variable = "MINO_NEXUS_DEV_DATA_DIR" if development else "MINO_NEXUS_DATA_DIR"
     default = dev_default if development else prod_default
     p = Path(os.environ.get(variable) or default).expanduser().resolve()
-    forbidden = ([prod_default, Path.home() / ".mino-nexus", Path.home() / "Mino" / "nexus",
-                  Path.home() / "Library" / "Application Support" / "Mino" / "nexus"]
+    forbidden = ([prod_default, home / ".mino-nexus", home / "Mino" / "nexus",
+                  home / "Library" / "Application Support" / "Mino" / "nexus",
+                  Path(os.environ.get("APPDATA") or home) / "MinoNexus"]
                  if development else [dev_default])
     for other in forbidden:
         other = other.resolve()

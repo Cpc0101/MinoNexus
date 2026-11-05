@@ -396,7 +396,7 @@ def harvest_sessions(
 
 
 def fork_state_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """agent_loop 可用的 fork 注入状态。"""
+    """fork 注入状态。"""
     hint = dict(plan.get("cursor_hint") or {})
     return {
         "parent_session_id": str(plan.get("parent_session_id") or ""),

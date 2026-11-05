@@ -17,7 +17,7 @@ def _history_has(history: list[str], cap: str, status: str = "pass") -> bool:
     return any(needle in line for line in (history or []))
 
 
-# Web 英文发码按钮与中文文案统一识别（须与 agent_loop 发码 tap 后处理一致）
+# Web 英文发码按钮与中文文案统一识别（发码 tap 后处理复用同一套正则）
 SMS_SEND_TAP_RE = re.compile(
     r"发送验证码|重新发送|获取验证码|"
     r"(?:^|[^a-z])(Send(?:\s+(?:code|verification|otp))?|Get\s+code|Resend)(?:[^a-z]|$)",
@@ -467,7 +467,7 @@ def run_login_otp_submit_chain(
     hierarchy_nodes: list[dict[str, Any]] | None,
     login_module_case: bool = False,
 ) -> list[dict[str, Any]]:
-    """发码后同一轮或下轮初：程序 get_otp → 填码 → 点登录。返回已执行的步骤摘要（供 agent_loop 写 history）。"""
+    """发码后同一轮或下轮初：程序 get_otp → 填码 → 点登录。返回已执行的步骤摘要（供调用方写 history）。"""
     out: list[dict[str, Any]] = []
     otp = try_auto_otp_fill(
         proxy,

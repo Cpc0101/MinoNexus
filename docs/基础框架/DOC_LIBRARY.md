@@ -9,7 +9,7 @@
 | 内容形态 | 原始 PDF / `.md` 全文 | 短条「可验证口径」（标题 + 正文） |
 | 写入方式 | **上传文件**（离线 ingest） | 手填 / 跑批沉淀 / 失败分析 |
 | 检索 | **FTS5 全文检索**（执行期可预加载索引） | `knowledge_match` 情境匹配 |
-| 注入 prompt | 二期：检索 top-K 片段；一期仅 API 搜索 | 已在 `agent_loop` / `nav_compiler` |
+| 注入 prompt | 二期：检索 top-K 片段；一期仅 API 搜索 | 检索侧与 `nav_compiler` 已接入 |
 | 与 NavFSM | 无直接绑定 | `wiki_ref: knowledge:<id>` |
 
 NavFSM 守卫上的 `wiki_ref` **只挂执行知识条**，不挂文档分片。文档库内容若要进跑批，须经 **DOC_LEARN 抽取** 落成 `knowledge_entries` 后再挂。
@@ -75,13 +75,13 @@ Console「知识库」页与 Studio 后续共用 `/settings/docs*`（需登录�
 
 ---
 
-## 5. 跑批注入（Serve）
+## 5. 检索接口（Serve）
 
-每步 `agent_loop` 在 `match_step_knowledge` 之后调用 `match_step_docs`：
+`match_step_docs` 仍是文档库检索函数（`app_intel.context_pack_for_step` 内可调用），在 `match_step_knowledge` 之后执行：
 
 - 用同一套 `build_query`（用例意图 + 步骤焦点 + 屏文案）对文档库做 FTS；
-- 命中结果格式化为 `doc_context` 槽（≤1200 字），写入 `agent-decide` prompt（`prompt_version >= 9`）；
-- 校验步 `assert_visual` 的 `knowledge_context` 也会附带文档摘录；
+- 命中结果格式化为 `doc_context` 槽（≤1200 字）；
+- 脚本执行在 Scout，Nexus 不再逐步把它注入 `agent-decide` prompt；
 - session log 事件：`doc/match`。
 
 检索失败或库为空 → **降级为空串**，不阻断跑批。

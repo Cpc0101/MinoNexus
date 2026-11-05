@@ -65,7 +65,7 @@ def main(argv: list[str]) -> int:
                 os.environ["MINO_NEXUS_DATA_DIR"] = args.data_dir
             from mino_nexus.core.paths import get_app_data_dir
             data = get_app_data_dir()
-            logs = Path.home() / "Library/Logs/Mino/nexus"
+            logs = data / "logs"
             doc = service_document(data, logs, args.host, args.port)
             if path.exists():
                 if path.is_symlink() or plistlib.loads(path.read_bytes()) != doc:

@@ -1,10 +1,10 @@
 id: run-case
 label: 执行测试用例
-summary: 看图按前置 / 操作 / 预期推进，调用能力目录里的 function。
+summary: 用例脚本由 Scout 执行；Nexus 负责下发、准入与回调。
 category: device
 role: test-engineer
 role_label: 测试工程师
-engine: agent_loop
+engine: script
 sop:
   phases:
   - id: prep

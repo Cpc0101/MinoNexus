@@ -4,11 +4,13 @@
 > **前端架构硬约束（2026-10-14）**：Mino 项目只有 **MinoWorkbench** 一个前端。MinoConsole 与 MinoStudio 已取消，不再开发、构建、交付或作为配置/验收入口。管理、用例、环境、控件配置和证据查看全部在 Workbench；Nexus 与 Scout 保持后端和执行节点职责。历史文档中的 Console/Studio 入口均以 Workbench 为准。“三端”仅指 Web、移动、PC 被测平台。
 本文件是给 Claude Code / 任何在本仓库工作的人的**硬约束清单**。写代码前先读这里。
 
+> **执行架构（2026-10-30 V9）**：`mino_nexus/loop/agent_loop.py` 已删除，逐步决策循环不再存在。开跑只下发脚本（`script_dispatch`），Scout 执行并回调（`script_callback`）；本文涉及 agent_loop / `EXECUTE` 循环的描述以本节和 [docs/架构/V9/Nexus.md](docs/架构/V9/Nexus.md) 为准。
+
 ---
 
 ## 0. 本仓库的定位
 
-MinoNexus 是服务端大脑。它决定"下一步做什么"，让 [MinoScout](../MinoScout) 去做。
+MinoNexus 是服务端中枢：持有数据、准入、会话与协议，把用例脚本下发给 [MinoScout](../MinoScout) 执行。
 
 上游来源是 [MiniOrangeServer](../MiniOrangeServer)（**已停止维护，只读参考，禁止改动**）。搬迁映射见 [docs/MIGRATION.md](docs/基础框架/MIGRATION.md)。
 
@@ -34,32 +36,19 @@ MinoNexus 是服务端大脑。它决定"下一步做什么"，让 [MinoScout](.
 
 `catalog_entries` 声明"能做什么、用什么实现"，**不写"什么时候做、按什么顺序做"** —— 后者是 LLM 的事。`kind` 为 `prep` / `do` / `check` / `generic` / `recovery`，与执行阶段和 `/packs?kind=` 同一套。业务能力由 Workbench 维护。程序直接派发的系统能力由程序在启动时自动注册与升级，不要求用户在 Workbench 点升级；代码声明维护其平台、caller、phases 和版本合同，不能仅改常量而遗留现库旧平台。
 
-Scout 不读 YAML。所以**凡是 Scout 执行时需要知道的东西，必须由 Nexus 算完塞进 `EXECUTE` 载荷**：`executor_order`、`low_level`、`selected_impl`、`device_hint`。
+Scout 不读 `catalog_entries`。能力目录仍由 Workbench 维护，但脚本执行不再现场拼 `executor_order` / `selected_impl`；页面配置由 Scout 从脚本仓库读取，Nexus 不打包。
 
-漏塞一个字段的后果不是报错，而是 Scout 用默认值默默走了另一条路。
+### 2.2 执行在 Scout，Nexus 只派发与回调
 
-### 2.2 循环在本仓，但循环代码不该知道 Scout 存在
+V9（2026-10-30）起，Nexus 不再逐步决策，也没有 `agent_loop`。开跑由 `loop/script_dispatch.py` 下发 `script.run` 载荷（`repo_url` / `branch` / `revision` / `script_path` / `sn` / `platform` 等）；Scout 自行拉取仓库并在设备上执行脚本，Nexus 不读、不打包脚本仓库。
 
-`agent_executor.py` / `recovery.py` / `orchestrator.py` 只依赖一个签名：
+Scout 需要租约、账号或回执时，通过 `loop/script_callback.py` 回调 Nexus（`script.lease` / `case.account` / `case.step` / `case.note` / `case.fail`）；验证码与模型调用在 Scout 本机完成。**不要在 Nexus 里重新引入逐步决策循环，也不要在回调里补做决策。**
 
-```python
-result: EventResult = router.dispatch(event, ctx, ...)
-```
+### 2.3 设备动作与脚本进度都不落本仓
 
-本仓提供 `mino_nexus/loop/router_proxy.py`，**签名与上游 `CapabilityRouter.dispatch` 完全一致**，内部序列化成 `EXECUTE` 发给 Scout。
+设备动作、页面定位、脚本运行都在 Scout；Nexus 只保存会话、准入、租约与回调结果。脚本步骤事件仍写入同一份 `session_events`。
 
-**不要在循环代码里出现 `if scout_connected` / `await send_to_scout(...)`。** 网络是 `RouterProxy` 的事。这条守住，上游那 3,533 行循环代码才能基本原样搬过来。
-
-### 2.3 四个非设备 executor 留在本仓，不出网
-
-| executor | 为什么在 Nexus |
-|---|---|
-| `hitl_executor` | 问人 —— 人在 UI 那一侧 |
-| `vlm_executor` | 视觉断言 —— 是 LLM 调用 |
-| `ai_persona_executor` | 拟人化编排 —— 展开成子事件再逐条派发 |
-| `internal_executor` | `wait_ms` / `noop` —— 不需要设备 |
-
-循环里决出的 capability 若属于这四类，**本地执行，不发 `EXECUTE`**。搞错会让 Scout 收到它 `supports()` 返回 False 的能力，白跑一圈 fallback。
+`loop/local_executors.py` 等旧本地执行器仅为兼容引用保留，不是执行入口；不要再把它们接成新的循环。
 
 ---
 
@@ -91,8 +80,7 @@ mino_nexus/
 ├── assistant/           10 层：对话 / 通知 / 媒体 / 网关
 │   ├── workspace/        协作工作区（collab_* · workspace_*）
 │   └── connectors/       飞书 · 禅道 · Figma · IM（plugins_store · wechat_ilink · im_hold）
-├── loop/                11 层：agent_loop · case_runner · router_proxy · local_executors
-│   └── execution/        循环内的可命名阶段（35 个模块，见 ARCHITECTURE §3.0）
+├── loop/                11 层：case_runner · script_dispatch · script_callback · router_proxy
 ├── api/                 12 层：HTTP 与实时通道
 │   ├── r*.py             路由，沿用上游 r* 命名 + deps.py
 │   ├── ws/observers.py   UI /ws
@@ -155,12 +143,12 @@ mino_nexus/
 
 - 不要为了"快一点"在 Nexus 里直接 `subprocess adb ...` —— 那是拆分失败的第一步
 - 不要把设备连通性当成本地可查的状态 —— 它只来自 Scout 的 `REGISTER` / `HEARTBEAT`
-- 不要在循环代码里感知网络（见 §2.2）
+- 不要在 Nexus 里重新引入逐步决策循环；脚本执行只在 Scout（见 §2.2）
 - 不要把 CLIP / OCR / 组件检测搬回来 —— 拆分时已确认批次路径零调用
 - 不要改 `../MiniOrangeServer` 的任何文件
 - 不要假设至少有一个 Scout 在线 —— 无节点时必须能启动并在 UI 上说清楚
 - 不要让 Workbench 去发现 Nexus —— origin 编译进前端，登录失败只提示「无法连接服务器」
-- 不要在 `EXECUTE` 里省 `executor_order` —— Scout 不会自己算，会直接无路可走
+- 不要在 `script.run` 载荷里省字段或塞本机绝对路径 / 模型密钥 —— 路径、大小与凭据校验在 Nexus 完成
 - **不要**为排查或自证修复去新增 `tests/test_*.py` 或跑 pytest（§1 约束 5）；查 `cr-…::case-…::sn` 的 `session_events`
 
 ---

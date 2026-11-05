@@ -12,6 +12,7 @@ from mino_nexus.models.assistant import (
 )
 from mino_nexus.models.atlas import AtlasAlias
 from mino_nexus.models.auth import AuthSession, AuthState, User
+from mino_nexus.models.mcp_oauth import OauthClient, OauthCode, OauthRequest, OauthToken
 from mino_nexus.models.case import ProjectCase
 from mino_nexus.models.case_script import CaseScript
 from mino_nexus.models.case_platform_script import CasePlatformScript

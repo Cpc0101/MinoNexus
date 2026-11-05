@@ -307,7 +307,7 @@ def invalidate_evidence_cache(ctx) -> None:
 def collect_evidence(ctx, router, *, target_package: str = "") -> Evidence:
     """短 TTL 去重：同一回合内多处（显示守卫/恢复/中断检测）重复取证只打一次设备。
 
-    动作执行后由 agent_loop 调 invalidate_evidence_cache；取证失败的结果不缓存。
+    动作执行后由调用方调 invalidate_evidence_cache；取证失败的结果不缓存。
     """
     import copy
     import time as _t

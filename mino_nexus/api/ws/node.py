@@ -230,10 +230,10 @@ class NodeConnection:
     async def _on_inbound_execute(self, env: P.Envelope) -> None:
         req: P.Execute = env.payload
         cap = str(req.capability_id or "")
-        from mino_nexus.loop.script_callback import CALLBACKS, STEP_CAP, handle as handle_script_callback
+        from mino_nexus.loop.script_callback import CALLBACKS, LEASE_CAP, SESSION_CAP, STEP_CAP, handle as handle_script_callback
 
         op = str((req.params or {}).get("op") or "") if cap == "script.callback" else ""
-        if cap in CALLBACKS or cap == STEP_CAP or (cap == "script.callback" and op in CALLBACKS):
+        if cap in CALLBACKS or cap in {STEP_CAP, SESSION_CAP, LEASE_CAP} or (cap == "script.callback" and op in CALLBACKS):
             result = await asyncio.to_thread(handle_script_callback, self.node_id, req)
             await self._reply_result(env, result)
             return

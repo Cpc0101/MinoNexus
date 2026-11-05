@@ -50,8 +50,10 @@ class ClientGateMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         auth = str(request.headers.get("authorization") or "").strip()
         raw = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
-        if raw.startswith("mino_probe_") and request.url.path != "/mcp":
-            return JSONResponse({"detail": "probe token 不能访问普通 HTTP API"}, status_code=403)
+        if raw.startswith(("mino_probe_", "mino_oat_")) and request.url.path != "/mcp":
+            return JSONResponse({"detail": "这个令牌只能访问 MCP"}, status_code=403)
+        if raw.startswith("mino_ort_") and request.url.path != "/mcp":
+            return JSONResponse({"detail": "刷新令牌不能当作访问令牌"}, status_code=403)
         if raw.startswith(("mino_mcp_", "mino_ast_")):
             if request.url.path == "/mcp" and raw.startswith("mino_mcp_"):
                 return await call_next(request)
