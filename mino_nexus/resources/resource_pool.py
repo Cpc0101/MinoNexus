@@ -481,6 +481,32 @@ def merge_observed_facets(
     return out
 
 
+def _reference_score(
+    facets: dict[str, str],
+    requirements: dict[str, Any],
+    *,
+    field_defs: dict[str, dict[str, Any]] | None = None,
+) -> tuple[int, list[str]]:
+    """前置只参与排序。未满足的条款记 0，不把账号排除。"""
+    reasons: list[str] = []
+    score = 0
+    for clause in requirements.get("all") or []:
+        if not isinstance(clause, dict):
+            continue
+        if _eval_clause(facets, clause, field_defs=field_defs):
+            score += 8
+            reasons.append(f"{clause.get('facet')} ok")
+        else:
+            reasons.append(f"参考 {clause.get('facet')}={clause.get('value')}")
+    for clause in requirements.get("prefer") or []:
+        if isinstance(clause, dict) and _eval_clause(facets, clause, field_defs=field_defs):
+            score += 6
+            reasons.append(f"偏好 {clause.get('facet')}")
+    if not reasons:
+        reasons.append("无前置可对，匹配度 0")
+    return score, reasons
+
+
 def match_requirements(
     facets: dict[str, str],
     requirements: dict[str, Any],
@@ -547,8 +573,6 @@ def pick_accounts_by_requirements(
     }
 
     for row in rows or []:
-        if hints and not account_row_matches_hints(row, hints):
-            continue
         row_env = str(row.get("env") or "")
         if env_key and row_env and row_env != env_key:
             continue
@@ -559,7 +583,11 @@ def pick_accounts_by_requirements(
             facets, requirements, observed=observed, field_defs=defs_by_key
         )
         if not ok:
-            continue
+            score, reasons = _reference_score(
+                merge_observed_facets(facets, observed if isinstance(observed, dict) else None),
+                requirements,
+                field_defs=defs_by_key,
+            )
 
         if row.get("locked") or facets.get("health") in {"dirty", "quarantine", "bad"}:
             continue
@@ -590,6 +618,9 @@ def pick_accounts_by_requirements(
         cred = account_lease_match_blob(row)
         q_low = str(q or "").strip().lower()
         if q_low and q_low in cred:
+            score += 20
+            reasons.append("号码命中")
+        elif hints and account_row_matches_hints(row, hints):
             score += 20
             reasons.append("号码命中")
 

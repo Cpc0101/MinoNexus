@@ -257,13 +257,11 @@ def _pick_row(
         env_surface=surface,
     )
     kind = login_kind_from_secrets(secrets)
-    ranked = filter_accounts_for_login_kind(ranked, kind=kind)
-    rid = str(run_id or "").strip()
+    matched_kind = filter_accounts_for_login_kind(ranked, kind=kind)
+    if matched_kind:
+        ranked = matched_kind
     for row in ranked:
         if bool(row.get("locked")):
-            continue
-        score = int(row.get("score") or 0)
-        if score < 0:
             continue
         return dict(row)
     return None

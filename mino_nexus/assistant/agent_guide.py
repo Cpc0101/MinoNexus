@@ -38,8 +38,8 @@ def agent_guide() -> dict[str, Any]:
             },
             {
                 "name": "编写或修改用例脚本",
-                "tools": ["project_list", "case_list"],
-                "then": "使用已安装的 agent 技能 write-test-cases 编写脚本（先读 repo-config 了解仓库构成，project_list 返回 repo_url / repo_branch），写完用 check-test-cases 自检，再 commit 并 push。",
+                "tools": ["project_list", "case_list", "device_list", "case_run", "task_get", "session_events", "session_screenshot"],
+                "then": "使用 write-test-cases。先选一台 executable 设备。页面定位、点击、截图和界面结构都写进用例脚本，用 app.hierarchy()、app.screenshot()、app.tap() 等 Scout 运行时方法，经 case_run 触发 Scout 的 script.run。从这次运行的 tool/result（capability_id=hierarchy 的 nodes 或 hierarchy_text）和截图写 pages。一步不是单个控件能完成时写成 flows/（连续动作）或 scripts/（不碰设备的逻辑），随同一轮 case_run 调试。写成覆盖原文的可执行脚本后，push，再用同一台设备 case_run 一次。不要用浏览器、adb 或其他工具另采页面参数。",
             },
             {
                 "name": "让 Scout 跑整份脚本",

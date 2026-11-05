@@ -253,6 +253,34 @@ def _lease(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]
     }
 
 
+_HIERARCHY_KEYS = ("resource_id", "text", "content_desc", "class", "role", "clickable", "editable")
+
+
+def _hierarchy_nodes(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    nodes: list[dict[str, Any]] = []
+    for node in raw:
+        if not isinstance(node, dict):
+            continue
+        row: dict[str, Any] = {}
+        for key in _HIERARCHY_KEYS:
+            value = node.get(key)
+            if isinstance(value, bool):
+                row[key] = value
+            elif isinstance(value, str) and value.strip():
+                row[key] = value.strip()[:160]
+        bounds = node.get("bounds")
+        if isinstance(bounds, (list, tuple)) and len(bounds) == 4 and all(isinstance(n, (int, float)) for n in bounds):
+            row["bounds"] = [int(n) for n in bounds]
+        labeled = bool(row.get("resource_id") or row.get("text") or row.get("content_desc"))
+        if labeled or row.get("clickable") or row.get("editable"):
+            nodes.append(row)
+        if len(nodes) >= 160:
+            break
+    return nodes
+
+
 def _write_step(admission: ScriptAdmission, params: dict[str, Any]) -> None:
     event = params.get("event") if isinstance(params.get("event"), dict) else params
     body = {key: value for key, value in dict(event).items() if key not in {"run_id", "session_id", "image_base64", "image_mime", "event"}}
@@ -280,6 +308,13 @@ def _write_step(admission: ScriptAdmission, params: dict[str, Any]) -> None:
     case_step = body.get("case_step")
     if isinstance(case_step, int) or (isinstance(case_step, str) and case_step.strip()):
         record["case_step"] = case_step if isinstance(case_step, int) else case_step.strip()[:300]
+    if cap == "hierarchy":
+        nodes = _hierarchy_nodes(body.get("nodes"))
+        if nodes:
+            record["nodes"] = nodes
+        tree = body.get("hierarchy_text")
+        if isinstance(tree, str) and tree.strip():
+            record["hierarchy_text"] = tree[:8000]
     if admission.writer is not None:
         call = {"capability_id": cap, "params": {}, "source": "script_run"}
         if record.get("app"):

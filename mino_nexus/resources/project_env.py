@@ -686,8 +686,10 @@ def save_one_test_account(
             for d in merged_pool_field_defs(doc)
             if str(d.get("key") or "")
         }
-        # 五维核心键不在模板 def 里，但 Studio 保存时会带 health
-        allowed_facet_keys = def_keys | {"health"}
+        # 五维核心键不在模板 def 里，显式改过的 session / profile_data 也必须落盘。
+        from mino_nexus.resources.account_facet_schema import CORE_KEYS
+
+        allowed_facet_keys = def_keys | set(CORE_KEYS)
         prev_f = old.get("facets") if isinstance(old.get("facets"), dict) else {}
         merged_f = dict(prev_f)
         incoming = payload["facets"]
