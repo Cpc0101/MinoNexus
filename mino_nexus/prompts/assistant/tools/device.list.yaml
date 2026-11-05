@@ -20,14 +20,6 @@ params_schema:
     env_profile:
       type: string
       description: 本次运行环境，例如 test/pre/prod
-    action_scheme:
-      type: string
-      enum:
-      - dom_preferred
-      - visual
-      - dom
-      default: dom_preferred
-      description: 执行策略；默认 dom_preferred，有有效结构用 DOM，无法定位时用截图兜底；visual 为纯视觉，旧 dom 兼容映射到 dom_preferred。平台执行能力由设备与渠道准入判断。
     playwright_headless:
       type: boolean
       description: 无头浏览器模式；候选容量与最终准入使用同一模式

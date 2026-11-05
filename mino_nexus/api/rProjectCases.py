@@ -325,7 +325,7 @@ def v5_case_preview(project_id: str, case_id: str, _sess: dict = Depends(current
 @router.get("/{project_id}/cases/{case_id}/v5/execution-preview")
 def v5_execution_preview(project_id: str, case_id: str, sn: str = Query(..., min_length=1),
                          app_id: str = Query(..., min_length=1), env_profile: str = '', env_surface: str = '',
-                         action_scheme: str = 'dom_preferred', provider_id: str = '',
+                         provider_id: str = '',
                          _sess: dict = Depends(current_session)):
     from mino_nexus.casework.execution_binding_runtime import binding_target_config
     try:
@@ -340,12 +340,11 @@ def v5_execution_preview(project_id: str, case_id: str, sn: str = Query(..., min
     try:
         from mino_nexus.casework.execution_requirements import ordinary_requirements
         from mino_nexus.resources.node_registry import get_registry
-        from mino_nexus.action_space.scheme import normalize_action_scheme
         snapshot = get_registry().execution_snapshot(sn)
         if not snapshot:
             raise ValueError('binding_target_unavailable')
         requirements = ordinary_requirements(case, app_id, platform=snapshot['device']['platform'],
-            action_scheme=normalize_action_scheme(action_scheme), provider_id=provider_id)
+            provider_id=provider_id)
         result = resolve_live(requirements, {'sn': sn, 'env_profile': env_profile, 'env_surface': env_surface})
     except (ValueError, KeyError) as exc:
         return ok({'status': 'needs_input' if str(exc).endswith('need_compile') else 'blocked', 'binding': None,

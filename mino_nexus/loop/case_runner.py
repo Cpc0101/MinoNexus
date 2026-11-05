@@ -123,8 +123,6 @@ def run_cases(
     action_scheme = normalize_action_scheme(action_scheme)
     require_user_id(plugin_user_id or None)
     from mino_nexus.core.stable_digest import digest
-    if str(run_type or "").strip().lower() == "copilot":
-        raise ValueError("copilot_run_removed")
     if client_request_id and (len(client_request_id) > 160 or not all(character.isalnum() or character in "_.:-" for character in client_request_id)):
         raise ValueError("run_request_id_invalid")
     request_digest = digest({"app_id": app.get("id"), "sn": sn, "sns": sns, "coverage": coverage,

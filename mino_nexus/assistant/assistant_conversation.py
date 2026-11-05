@@ -16,7 +16,7 @@ from mino_nexus.assistant.assistant_envelope import lane_for
 
 ARG_KEYS = {'project_id', 'app_id', 'env_surface', 'env_profile', 'sn', 'case_ids', 'module',
             'search', 'ordinal', 'modules', 'intent', 'scope', 'scope_revision', 'task_id', 'limit', 'offset',
-            'action_scheme', 'playwright_headless', 'all_cases'}
+            'playwright_headless', 'all_cases'}
 DISPLAY_PREFERENCES = {'detail': {'brief', 'full'}, 'language': {'zh-CN', 'en-US'}, 'process': {'show', 'hide'}}
 TERMINAL = {'submitted', 'cancelled', 'expired', 'failed', 'uncertain', 'done'}
 

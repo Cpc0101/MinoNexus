@@ -56,10 +56,6 @@ def agent_guide() -> dict[str, Any]:
                 "tools": ["task_list", "task_get", "session_list", "session_events", "session_screenshot"],
             },
             {
-                "name": "自己操作设备并记到任务里",
-                "tools": ["case_external_begin", "case_external_report", "case_external_screenshot", "case_external_finish"],
-            },
-            {
                 "name": "看资源够不够",
                 "tools": ["resource_overview", "resource_device_list", "resource_account_list"],
             },

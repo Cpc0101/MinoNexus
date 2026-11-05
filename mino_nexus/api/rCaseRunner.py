@@ -1,8 +1,6 @@
 """CaseRunner：启动、取消、重跑任务。会话轨迹的读接口在 rObserve。"""
 from __future__ import annotations
 
-from mino_nexus.action_space.scheme import normalize_action_scheme
-
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -58,7 +56,6 @@ class RunRequest(BaseModel):
     async_exec: bool = True
     use_persisted_baseline: bool = True
     use_cache: bool = True
-    instruction: str = ""
     run_type: str = "manual"
     slot_id: str = ""
     requirement_id: str = ""
@@ -67,7 +64,6 @@ class RunRequest(BaseModel):
     playwright_headless: bool = True
     env_profile: str = ""
     env_surface: str = ""
-    action_scheme: str = "dom_preferred"
     revision: str = ""
 
 
@@ -103,7 +99,7 @@ class TaskAccountTemplateStateBody(BaseModel):
 
 
 @router.get("/devices")
-def list_devices(only_online: bool = Query(False), compatible_only: bool = False, app_id: str = "", env_surface: str = "", env_profile: str = "", action_scheme: str = "dom_preferred", playwright_headless: bool = True, _sess: dict = Depends(current_session)):
+def list_devices(only_online: bool = Query(False), compatible_only: bool = False, app_id: str = "", env_surface: str = "", env_profile: str = "", playwright_headless: bool = True, _sess: dict = Depends(current_session)):
     from mino_nexus.resources.device_targets import evaluate
     app = None
     if app_id:
@@ -123,7 +119,7 @@ def list_devices(only_online: bool = Query(False), compatible_only: bool = False
                 continue
             compatible.append(row)
         rows = compatible
-    items = [evaluate(row, app=app, surface=env_surface, profile=env_profile, headless=playwright_headless, action_scheme=action_scheme) for row in rows]
+    items = [evaluate(row, app=app, surface=env_surface, profile=env_profile, headless=playwright_headless) for row in rows]
     if only_online:
         items = [d for d in items if d.get("status") == "online"]
     running = run_store.running_index()
@@ -148,8 +144,6 @@ def list_devices(only_online: bool = Query(False), compatible_only: bool = False
 
 @router.post("/run")
 def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
-    if str(body.instruction or "").strip() or str(body.run_type or "").strip().lower() == "copilot":
-        raise HTTPException(status_code=400, detail="一句话指令跑批已关闭")
     if not str(body.app_id or "").strip():
         raise HTTPException(status_code=400, detail="缺少 app_id")
     try:
@@ -183,7 +177,6 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             playwright_headless=bool(body.playwright_headless),
             env_profile=str(body.env_profile or "").strip(),
             env_surface=str(body.env_surface or "").strip(),
-            action_scheme=normalize_action_scheme(body.action_scheme),
             plugin_user_id=_plugin_user(sess),
             execution_mode="agent",
             client_request_id=body.client_request_id,

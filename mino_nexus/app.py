@@ -34,6 +34,7 @@ from mino_nexus.api import (
     rDocs,
     rFlowBlocks,
     rMcp,
+    rOAuth,
     rMe,
     rNavFsm,
     rNavEntries,
@@ -223,8 +224,6 @@ def create_app() -> FastAPI:
     app.include_router(rDevice.router)
     app.include_router(rCaseRunner.router)
     app.include_router(rObserve.router)
-    from mino_nexus.api import rExternalRun
-    app.include_router(rExternalRun.router)
     app.include_router(rSettings.router)
     app.include_router(rDocs.router)
     app.include_router(rPacks.router)
@@ -242,6 +241,7 @@ def create_app() -> FastAPI:
     app.include_router(rAppIntel.router)
     app.include_router(rAssistant.router)
     app.include_router(rMcp.router)
+    app.include_router(rOAuth.router)
     from mino_nexus.assistant.assistant_tools import bind_app
 
     bind_app(app)

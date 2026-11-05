@@ -539,7 +539,7 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
             from mino_nexus.casework.run_store import get
 
             previous = get(str(args["task_id"])) or {}
-            device_args = {**{k: previous.get(k) for k in ("app_id", "env_surface", "env_profile", "action_scheme")}, **args}
+            device_args = {**{k: previous.get(k) for k in ("app_id", "env_surface", "env_profile")}, **args}
         devices = compatible_devices(device_args, _visible_devices(user_id))
         if args.get("sn"):
             device = next((row for row in devices if str(row.get("sn") or "") == str(args["sn"])), None)
