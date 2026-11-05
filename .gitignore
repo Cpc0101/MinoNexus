@@ -255,6 +255,9 @@ coverage/
 .claude/
 .cursor/
 
+# IDE 本地运行配置（JetBrains .run/）属于本机开发环境，不入库。
+.run/
+
 # 本地 Mino 测试环境、凭据及 SQLite 数据文件不提交。
 .mino-test/
 .mino-test/**/token*
