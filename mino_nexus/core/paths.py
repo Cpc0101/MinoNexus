@@ -51,7 +51,7 @@ APP_DATA_DIR = str(get_app_data_dir())
 
 
 def nav_calibration_dir(app_id: str, calibration_id: str = "") -> Path:
-    """NavFSM 校准证据目录（docs/NAVIGATION_ATLAS.md §0.2.2）。
+    """NavFSM 校准证据目录（docs/专题/导航图谱.md §0.2.2）。
 
     与 `mino.db` 同根，**不进 git**：运维备份整个数据目录即可。
     `calibration_id` 为空时返回该 app 的证据根目录，供列表用。
@@ -63,7 +63,7 @@ def nav_calibration_dir(app_id: str, calibration_id: str = "") -> Path:
 
 
 def nav_capture_dir(app_id: str, session_id: str = "") -> Path:
-    """v2.5 被动 hierarchy 样本（docs/NAVIGATION_ATLAS.md §19.4）。
+    """v2.5 被动 hierarchy 样本（docs/专题/导航图谱.md §19.4）。
 
     `{data_dir}/nav/capture/{app_id}/{session_id}/turn_NNNN.*`
     """

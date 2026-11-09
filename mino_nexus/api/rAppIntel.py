@@ -1,4 +1,4 @@
-"""AppIntel 信息基座 HTTP API。设计稿 docs/9月12日_AppIntel信息基座.md §7。"""
+"""AppIntel 信息基座 HTTP API。设计稿 docs/专题/AppIntel信息基座.md §7。"""
 from __future__ import annotations
 
 from typing import Any

@@ -1,6 +1,6 @@
 """NavFSM 运行时：在满足守卫的前提下，下一步转移是什么 + 本步允许哪些动作。
 
-设计稿 docs/NAVIGATION_ATLAS.md §3、§5、§10.4。
+设计稿 docs/专题/导航图谱.md §3、§5、§10.4。
 
 **配置全部来自 DB**（`nav_fsm_store`），本文件不含任何被测 App 的文案、包名、resource-id。
 guards 是单一真源（§0.1「guards 单一真源」），不另建 Rule Cards。

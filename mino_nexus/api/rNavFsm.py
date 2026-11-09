@@ -1,4 +1,4 @@
-"""NavFSM 配置与校准证据。设计稿 docs/NAVIGATION_ATLAS.md §0.2.3、§10.2。
+"""NavFSM 配置与校准证据。设计稿 docs/专题/导航图谱.md §0.2.3、§10.2。
 
 配置真源在 `mino.db`（`nav_fsm*` 三张表），校准证据在 `data_dir()`。两者都不进 git。
 

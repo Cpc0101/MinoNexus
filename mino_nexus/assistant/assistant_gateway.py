@@ -287,7 +287,7 @@ def _handle_owned_inbound(inbound: dict[str, Any], owner: str) -> None:
         return
     bound = dispatch_log.bind(assistant_inbound_key=key, assistant_inbound_token=token, assistant_mutation_scope=key)
     try:
-        _process_claimed_inbound(inbound, owner, key)
+        outcome = _process_claimed_inbound(inbound, owner, key)
     except Exception as exc:
         diagnostic = _failure_diagnostic(exc, "inbound")
         if diagnostic.get("error_reason") == "generation_superseded":
@@ -298,13 +298,23 @@ def _handle_owned_inbound(inbound: dict[str, Any], owner: str) -> None:
             receipts.finish(key, token, "retryable")
         SLog.w(TAG, f"入站处理失败，可恢复状态已记录：{diagnostic['error_type']} reason={diagnostic['error_reason']} site={diagnostic['error_site']}")
     else:
+        if outcome != "deferred":
+            # 内建助手已给出答复；被外接 agent 接管的消息保持待处理，等 im.ack。
+            from mino_nexus.assistant import im_inbox
+
+            im_inbox.mark_handled(owner, key, "mino")
         receipts.finish(key, token, "done")
         _ack(inbound)
     finally:
         dispatch_log.reset(bound)
 
 
-def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> None:
+def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> str:
+    """处理一条已抢占的入站消息。
+
+    返回 "deferred" 表示这条消息被外接 agent 接管，内建助手已跳过回复；
+    其他情况（含早退）返回空串，调用方按「内建助手已处理」记账。
+    """
     channel, chat_id, sender = (str(inbound.get(k) or "") for k in ("channel", "chat_id", "sender_id"))
     text = str(inbound.get("text") or "").strip()
     user_id = store.find_identity(channel, str(inbound.get("tenant") or ""), sender,
@@ -313,6 +323,18 @@ def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> N
         user_id = _bind_authorized_owner(inbound, owner)
     if user_id and user_id != owner:
         return
+    binding = store.find_route_identity(channel, str(inbound.get("tenant") or ""), sender,
+        instance_id=str(inbound.get("instance_id") or ""), node_id=str(inbound.get("node_id") or ""))
+    if binding and binding["user_id"] == user_id:
+        inbound["reply_ctx"]["binding_key"] = binding["binding_key"]
+        # LangBot 入站先落收件箱（只存路由，不存正文）。接管开启时内建助手整条都不回复，
+        # 连 /帮助 和限流提示也不发，消息留给 MCP agent 处理。
+        from mino_nexus.assistant import im_inbox
+
+        im_inbox.record(owner, inbound, key)
+        if im_inbox.takeover(owner, channel):
+            SLog.i(TAG, f"外接 agent 接管 channel={channel}，内建助手跳过回复")
+            return "deferred"
     if inbound.get("chat_type") == "group" and text.startswith("/绑定"):
         _send(inbound, "请在私聊中绑定账号。")
         return
@@ -328,8 +350,6 @@ def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> N
         _send(inbound, "这一分钟的消息太多了，请稍后再发。")
         return
     SLog.i(TAG, f"inbound channel={channel} chat={chat_id} len={len(text)}")
-    binding = store.find_route_identity(channel, str(inbound.get("tenant") or ""), sender,
-        instance_id=str(inbound.get("instance_id") or ""), node_id=str(inbound.get("node_id") or ""))
     if not binding or binding["user_id"] != user_id:
         return
     inbound["reply_ctx"]["binding_key"] = binding["binding_key"]

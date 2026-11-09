@@ -1,7 +1,7 @@
 """FastAPI 应用。
 
 UI（Console / Studio）只打这里。Scout 走 `WS /node`。
-登录与运行态的契约见 `docs/HTTP.md`。`/debug/*` 仍是脚手架。
+登录与运行态的契约见 `docs/接口/HTTP.md`。`/debug/*` 仍是脚手架。
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from mino_nexus.api import (
     rDevice,
     rDocs,
     rFlowBlocks,
+    rForward,
     rMcp,
     rOAuth,
     rMe,
@@ -222,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(rRuntime.router)
     app.include_router(rReleases.router)
     app.include_router(rDevice.router)
+    app.include_router(rForward.router)
     app.include_router(rCaseRunner.router)
     app.include_router(rObserve.router)
     app.include_router(rSettings.router)

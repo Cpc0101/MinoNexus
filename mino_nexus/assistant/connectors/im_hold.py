@@ -20,20 +20,24 @@ _pinned: dict[tuple[str, str, str], str] = {}  # 渠道 → 手动指定的持�
 
 
 def _scope(node, channel: str) -> tuple[str, str, str] | None:
+    """scope 的 channel 一律归一成 langbot:<平台>；入站传裸名也能对上。"""
+    from mino_nexus.assistant.im_inbox import langbot_channel, platform_of
+
+    key = f"langbot:{platform_of(channel)}" if langbot_channel(channel) else channel
     if not node or not node.owner_user_id:
         return None
     for row in node.plugins or []:
-        if channel == "feishu_cli" and row.get("class") == "cli" and row.get("id") == "feishu":
+        if key == "feishu_cli" and row.get("class") == "cli" and row.get("id") == "feishu":
             status = row.get("status") or {}
-        elif channel == "wechat" and row.get("id") == "wechat":
+        elif key == "wechat" and row.get("id") == "wechat":
             status = row.get("status") or {}
-        elif channel.startswith("langbot:") and row.get("id") == "langbot":
-            status = (row.get("platforms") or {}).get(channel.split(":", 1)[1]) or {}
+        elif key.startswith("langbot:") and row.get("id") == "langbot":
+            status = (row.get("platforms") or {}).get(platform_of(key)) or {}
         else:
             continue
         instance = str(status.get("instance_id") or "")
         if instance:
-            return str(node.owner_user_id), channel, instance
+            return str(node.owner_user_id), key, instance
     return None
 
 
@@ -83,13 +87,15 @@ def _push(node_id: str, channel: str, hold: bool) -> None:
     node = get_registry().get_node(node_id)
     if node is None or node.send is None:
         return
-    if channel == "feishu_cli":
+    from mino_nexus.assistant.im_inbox import langbot_channel, platform_of
+
+    key = f"langbot:{platform_of(channel)}" if langbot_channel(channel) else channel
+    if key == "feishu_cli":
         params = {"class": "cli", "id": "feishu", "im_hold": hold}
-    elif channel == "wechat":
+    elif key == "wechat":
         params = {"class": "bot", "id": "wechat", "im_hold": hold}
     else:
-        _, _, plat = channel.partition(":")
-        params = {"class": "im", "id": "langbot", "platform": plat, "im_hold": hold}
+        params = {"class": "im", "id": "langbot", "platform": platform_of(key), "im_hold": hold}
     from mino_nexus.core.async_util import run_sync as _run_sync
 
     async def _once():

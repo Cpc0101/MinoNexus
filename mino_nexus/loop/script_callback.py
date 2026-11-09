@@ -9,10 +9,8 @@ from mino_nexus.core import protocol as P
 from mino_nexus.core.log import SLog
 
 TAG = "ScriptCallback"
-CALLBACKS = frozenset({
-    "case.account", "case.note", "case.step", "case.fail",
-    "account", "note", "step", "fail",
-})
+# 脚本回调不再是一张固定白名单：认不认识由 `_call()` 的分支决定，
+# 不认识的 op 直接回 FAIL 并带上名字，不再静默吞掉。
 STEP_CAP = "script.step"
 SESSION_CAP = "script.session"
 LEASE_CAP = "script.lease"
@@ -23,6 +21,10 @@ _ALIASES = {
     "step": "case.step",
     "fail": "case.fail",
 }
+HANDLED = frozenset({
+    "case.account", "case.note", "case.step", "case.fail",
+    "account", "note", "step", "fail", STEP_CAP, SESSION_CAP, LEASE_CAP,
+})
 
 _GUARD = threading.Lock()
 _ADMISSIONS: dict[str, "ScriptAdmission"] = {}
@@ -149,6 +151,12 @@ def _account(admission: ScriptAdmission) -> dict[str, Any]:
         row = dict(leased or getattr(admission.ctx, "picked_account", None) or {})
         if not str(row.get("id") or row.get("account_id") or "").strip():
             raise ScriptAbort(err or "这条用例没有租到账号", reason_code="resource_account_missing")
+    otp = str(row.get("otp") or row.get("sms_code") or "").strip()
+    if not otp:
+        # 账号行没有码时，按项目环境策略给固定码（mode=fixed）；邮箱取码仍由 Scout 本机完成。
+        from mino_nexus.resources.otp_resolve import resolve_otp
+
+        otp = str(resolve_otp(getattr(admission, "ctx", None))[0] or "").strip()
     return {
         "_summary": "已返回本次租到的账号",
         "id": str(row.get("id") or row.get("account_id") or ""),
@@ -156,8 +164,32 @@ def _account(admission: ScriptAdmission) -> dict[str, Any]:
         "phone": str(row.get("phone") or ""),
         "username": str(row.get("username") or ""),
         "password": str(row.get("password") or ""),
-        "otp": str(row.get("otp") or ""),
+        "otp": otp,
         "ident": str(row.get("ident") or ""),
+        "login_policy": _login_policy(admission),
+    }
+
+
+def _login_policy(admission: ScriptAdmission) -> dict[str, Any]:
+    """把这条用例生效的登录策略交给脚本，由脚本按账号决定验证码从哪来。"""
+    from mino_nexus.resources.otp_resolve import otp_context
+
+    try:
+        _env_doc, secrets, otp_slot = otp_context(getattr(admission, "ctx", None))
+    except Exception:
+        return {}
+    slot = otp_slot if isinstance(otp_slot, dict) else {}
+    login = secrets.get("login") if isinstance(secrets, dict) else {}
+    if not slot and not login:
+        return {}
+    return {
+        "otp_mode": str(slot.get("mode") or "auto"),
+        "otp_fixed": str(slot.get("fixed") or ""),
+        "otp_from_allowlist": [str(x) for x in (slot.get("from_allowlist") or []) if str(x).strip()],
+        "otp_subject_contains": str(slot.get("subject_contains") or ""),
+        "otp_poll_interval_ms": int(slot.get("poll_interval_ms") or 200),
+        "otp_max_wait_ms": int(slot.get("max_wait_ms") or 90000),
+        "login_kind": str((login or {}).get("kind") or "phone"),
     }
 
 

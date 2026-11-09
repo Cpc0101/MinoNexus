@@ -217,7 +217,7 @@ def _session_cli(argv: list[str]) -> int:
 
 
 def _nav_cli(argv: list[str]) -> int:
-    """NavFSM 配置与校准。没有 Studio 时的等价入口（docs/NAVIGATION_ATLAS.md §8.4、§8.5）。"""
+    """NavFSM 配置与校准。没有 Studio 时的等价入口（docs/专题/导航图谱.md §8.4、§8.5）。"""
     from mino_nexus.resources import project_store as ps
     from mino_nexus.navigation.atlas import nav_fsm_template as tpl
     import json

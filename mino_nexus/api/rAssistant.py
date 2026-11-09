@@ -76,6 +76,8 @@ def _im_nodes(sess: dict[str, Any]) -> list[dict[str, Any]]:
 
 @router.get("/status")
 def status(request: Request, sess: dict = Depends(current_session)):
+    from mino_nexus.assistant import im_inbox
+
     uid = _uid(sess)
     nodes = _im_nodes(sess)
     enabled = store.get_profile(uid)["enabled"]
@@ -87,6 +89,7 @@ def status(request: Request, sess: dict = Depends(current_session)):
         "mcp_available": enabled,
         "mcp_url": _mcp_url(request),
         "im_nodes": nodes,
+        "im_handoff": im_inbox.handoff(uid),
     })
 
 
@@ -195,10 +198,16 @@ def turn_messages(turn_id: str, sess: dict = Depends(current_session)):
     binding = store.find_route_identity(channel, str(ctx.get("tenant") or ""), str(ctx.get("sender_id") or ""),
         instance_id=str(ctx.get("instance_id") or ""), node_id=node_id)
 
+    from mino_nexus.platform.im_channels import im_route
+
+    try:
+        kind, plugin_id, _row, _scout = im_route(channel)
+    except ValueError:
+        return ok({"available": False, "reason": "渠道不支持读取正文", "messages": []})
     try:
         data = call_plugin(
-            kind="bot",
-            plugin_id=channel,
+            kind=kind,
+            plugin_id=plugin_id,
             node_id=node_id,
             capability_id="plugin.im.history",
             params={"channel": channel, "chat_id": chat_id, "limit": 40, "reply_ctx": ctx,
@@ -279,11 +288,129 @@ def set_im_hold(body: ImHoldBody, sess: dict = Depends(current_session)):
     return ok({"channel": channel, "node_id": node.node_id, "yielded": [n for _, n in yielded]})
 
 
+class ImInboxBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    channel: str = ""
+    limit: int = 20
+    wait_seconds: int = 0
+    include_text: bool = True
+    history_limit: int = 8
+    only_pending: bool = True
+
+
+class ImAckBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ids: list[str] = []
+
+
+class ImHandoffBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    channels: list[str] = []
+
+
+def _im_conversation_text(uid: str, item: dict[str, Any], *, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """正文只在调用时从 Scout 现取；Nexus 不缓存原话。"""
+    from mino_nexus.platform.identity import execution_user
+    from mino_nexus.platform.im_channels import im_route
+    from mino_nexus.resources.node_plugin_call import PluginCallError, call_plugin
+
+    channel, node_id = str(item.get("channel") or ""), str(item.get("node_id") or "")
+    ctx = dict(item.get("reply_ctx") or {})
+    try:
+        store.require_im_binding(uid, channel, node_id, ctx)
+    except PermissionError:
+        return [], "binding_missing"
+    try:
+        kind, plugin_id, _row, _scout = im_route(channel)
+    except ValueError:
+        return [], "channel_unsupported"
+    with execution_user(uid):
+        try:
+            data = call_plugin(
+                kind=kind,
+                plugin_id=plugin_id,
+                node_id=node_id,
+                capability_id="plugin.im.history",
+                params={"channel": channel, "chat_id": str(item.get("chat_id") or ""),
+                        "sender_id": str(item.get("sender_id") or ""), "reply_ctx": ctx,
+                        "after_ts": max(0, int(item.get("created_at") or 0) - 180), "limit": limit},
+                timeout=15,
+            )
+        except PluginCallError as exc:
+            return [], str(exc)[:160]
+    raw = data.get("messages") if isinstance(data.get("messages"), list) else []
+    messages: list[dict[str, Any]] = []
+    for row in raw[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        messages.append({"role": str(row.get("role") or ""), "text": str(row.get("text") or "")[:1500],
+                         "ts": int(row.get("ts") or 0)})
+    return messages, ""
+
+
+@router.post("/im/inbox")
+def im_inbox_list(body: ImInboxBody, sess: dict = Depends(current_session)):
+    """MCP `im.inbox`：拉取 LangBot 入站消息；wait_seconds 用于长轮询等待新消息。"""
+    from mino_nexus.assistant import im_inbox
+
+    uid = _uid(sess)
+    limit = max(1, min(int(body.limit or 20), 50))
+    channel = body.channel.strip()
+    deadline = time.time() + max(0, min(int(body.wait_seconds or 0), 25))
+    rows = im_inbox.pending(uid, channel=channel, limit=limit, only_pending=bool(body.only_pending))
+    while not rows and time.time() < deadline:
+        time.sleep(1)
+        rows = im_inbox.pending(uid, channel=channel, limit=limit, only_pending=bool(body.only_pending))
+    items = [im_inbox.public(row) for row in rows]
+    if body.include_text and items:
+        history_limit = max(1, min(int(body.history_limit or 8), 20))
+        for index, item in enumerate(items[:3]):
+            messages, reason = _im_conversation_text(uid, rows[index], limit=history_limit)
+            item["messages"] = messages
+            if reason:
+                item["text_reason"] = reason
+    return ok({"items": items, "handoff": im_inbox.handoff(uid), "server_time": int(time.time())})
+
+
+@router.post("/im/ack")
+def im_inbox_ack(body: ImAckBody, sess: dict = Depends(current_session)):
+    """MCP `im.ack`：把已回复或确认无需回复的条目标为已处理。"""
+    from mino_nexus.assistant import im_inbox
+
+    ids = [str(value) for value in (body.ids or []) if str(value).strip()][:50]
+    if not ids:
+        raise HTTPException(status_code=422, detail="需要至少一个条目 id")
+    done, missing = im_inbox.ack(_uid(sess), ids)
+    return ok({"acked": done, "missing": missing})
+
+
+@router.get("/im/handoff")
+def im_handoff_get(sess: dict = Depends(current_session)):
+    from mino_nexus.assistant import im_inbox
+
+    return ok(im_inbox.handoff(_uid(sess)))
+
+
+@router.post("/im/handoff")
+def im_handoff_set(body: ImHandoffBody, sess: dict = Depends(current_session)):
+    """MCP `im.handoff`：接管后 Nexus 内建助手不再自动回复对应 LangBot 渠道。"""
+    from mino_nexus.assistant import im_inbox
+
+    try:
+        state = im_inbox.set_handoff(_uid(sess), bool(body.enabled), body.channels)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ok(state)
+
+
 class RequestReplyBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     revision: int
     values: dict[str, Any]
-
 
 class RequestRevisionBody(BaseModel):
     revision: int

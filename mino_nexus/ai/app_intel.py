@@ -1,6 +1,6 @@
 """AppIntel 信息基座：三渠道（Nav / Knowledge / Doc）统一检索与 context-pack 编排。
 
-设计稿 docs/9月12日_AppIntel信息基座.md
+设计稿 docs/专题/AppIntel信息基座.md
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """MinoNexus ⇄ MinoScout shared wire contract; stdlib only.
 
-Contract: synchronized docs/PROTOCOL.md and this module. Local fixtures are not shipped.
+Contract: synchronized docs/接口/协议.md and this module. Local fixtures are not shipped.
 """
 from __future__ import annotations
 
@@ -55,30 +55,13 @@ class EventStatus(str, Enum):
     DECLINED = "declined"
 
 
-# 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
-# Strategy is task metadata; actual point_policy remains node/coordinate.
 OBSERVATION_STRATEGIES = ("visual", "dom_preferred")
 OBSERVATION_CONTRACT_VERSION = 1
 
-NODE_COMMAND_CAPS = frozenset({
-    "node.stop", "node.restart", "node.update", "node.log_tail",
-    "node.sleep", "node.wake",
-    "node.plugin_install", "node.plugin_remove", "node.plugin_config",
-    "node.config_export", "node.config_import",
-    "node.tools", "node.tool_task_submit", "node.tool_task_get",
-})
-NODE_EVENT_CAPS = frozenset({
-    "node.device_lost",
-    "node.device_found",
-    "node.channel_changed",
-    "node.engine_crashed",
-    "node.shutting_down",
-    "node.update_progress",
-    "node.plugin_progress",
-    "node.plugin_wechat_message",
-    "node.plugin_im_message",
-})
-FRAMEWORK_CAPS = NODE_COMMAND_CAPS | NODE_EVENT_CAPS
+# 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
+# 这里不再维护指令/事件白名单：N→S 由 Scout 的 `core._NODE_COMMANDS` 分发，
+# S→N 由 Nexus 的 `node_registry._NODE_EVENT_HANDLERS` 分发。收到不认识的
+# capability 时，两端都回 FAIL 并带上名字，不再靠静态清单互相猜。
 
 OBSERVE_CAPS = {
     "screenshot": "screenshot",
@@ -259,7 +242,7 @@ PAYLOAD_BY_TYPE: dict[MsgType, type] = {
     MsgType.RESULT: Result,
 }
 
-# ACK 必须的消息（发送方超时未收到应答需按 docs/PROTOCOL.md §6 重试）
+# ACK 必须的消息（发送方超时未收到应答需按 docs/接口/协议.md §6 重试）
 ACK_REQUIRED: frozenset[MsgType] = frozenset(
     {
         MsgType.REGISTER,
@@ -375,10 +358,10 @@ def loads(raw: dict[str, Any]) -> Envelope:
 
 
 class UnknownMessageType(Exception):
-    """收到未知 type。按 docs/PROTOCOL.md §7，接收方记 warn 并忽略，不可关连接。"""
+    """收到未知 type。按 docs/接口/协议.md §7，接收方记 warn 并忽略，不可关连接。"""
 
 
-# 脚本运行载荷。字段与 docs/PROTOCOL.md「脚本运行载荷」表一致，不另加版本号。
+# 脚本运行载荷。字段与 docs/接口/协议.md「脚本运行载荷」表一致，不另加版本号。
 # Nexus 只触发：仓库拉取、定位脚本、读 config.yaml、执行都在 Scout。
 SCRIPT_RUN_CAPABILITY = "script.run"
 SCRIPT_RUN_FIELDS = ("run_id", "session_id", "case_id", "sn", "platform", "repo_url", "branch", "revision", "script_path")

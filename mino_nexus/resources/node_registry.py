@@ -1,6 +1,6 @@
 """节点登记表：node_id ↔ 连接 ↔ 设备。
 
-这是拆分新引入的一层（docs/NODE_REGISTRY.md）。上游 MiniOrangeServer 只有 `sn`，
+这是拆分新引入的一层（docs/架构/节点与设备.md）。上游 MiniOrangeServer 只有 `sn`，
 它既是设备标识又是连接端点；多节点下必须显式建 `node_id → devices[]` 的归属，
 否则 Nexus 答不出"这台设备该派给哪个节点"。
 
@@ -30,6 +30,32 @@ TAG = "NodeRegistry"
 # 协议 §1：Scout 每 15s 心跳，Nexus 45s 未收到视为掉线
 HEARTBEAT_TIMEOUT_SEC = 45.0
 _ONLINE_CHANNEL = frozenset({"connected", "online", "available"})
+
+
+@dataclass
+class NodeEventContext:
+    """一条 S→N 框架事件。处理函数只读它，不自己解析载荷。"""
+
+    node_id: str
+    event: str
+    sn: str
+    detail: str
+    params: dict[str, Any] = field(default_factory=dict)
+    platform: str = ""
+
+
+@dataclass
+class NodeEventOutcome:
+    """事件处理结果。
+
+    `handled=False` 时调用方必须回 FAIL：不能一边丢弃一边回 PASS，
+    否则 Scout 以为事件已被消费，Nexus 侧其实什么都没发生。
+    """
+
+    handled: bool = True
+    reason: str = ""
+    interrupted: list[str] = field(default_factory=list)
+    inbound: dict[str, Any] | None = None
 
 
 def _channel_value(value: Any) -> str:
@@ -624,76 +650,37 @@ class NodeRegistry:
             node.plugins_reported.set()
             node.last_seen = time.time()
 
-    def node_event(self, req: P.Execute, *, node_id: str = "") -> list[str]:
-        """处理 S→N 框架 EXECUTE（node.device_lost 等）。`shutting_down` 返回在途 run_id。"""
+    def node_event(self, req: P.Execute, *, node_id: str = "") -> "NodeEventOutcome":
+        """处理 S→N 框架 EXECUTE。
+
+        事件名按 `_NODE_EVENT_HANDLERS` 查表分发，不再在这里堆 if/elif 链：
+        新增 Scout 事件只需在表里登记一个处理函数，Nexus 不需要改判定逻辑。
+        表里没有的事件返回 `handled=False`，调用方必须回 FAIL —— 以前这里静默
+        丢弃却回 PASS，导致事件「收到了、丢掉了、还告诉 Scout 成功」。
+        """
         params = dict(req.params or {})
         nid = str(node_id or params.get("node_id") or "").strip()
         cap = str(req.capability_id or "")
         event = cap.split(".", 1)[-1] if cap.startswith("node.") else cap
-        sn = str(req.sn or req.device_id or params.get("sn") or "").strip()
-        detail = str(params.get("detail") or "")
-        interrupted: list[str] = []
-        inbound: dict[str, Any] | None = None
+        ctx = NodeEventContext(
+            node_id=nid,
+            event=event,
+            sn=str(req.sn or req.device_id or params.get("sn") or "").strip(),
+            detail=str(params.get("detail") or ""),
+            params=params,
+            platform=str(req.platform or ""),
+        )
+        handler = _NODE_EVENT_HANDLERS.get(event)
         with self._lock:
             node = self._nodes.get(nid)
             if node is None:
-                return []
-            if event == "device_lost" and sn in node.devices:
-                for ch in node.devices[sn].channels:
-                    node.devices[sn].channels[ch] = "disconnected"
-                from mino_nexus.contract.runs import running_run_ids_for_sn
-
-                interrupted.extend(running_run_ids_for_sn(sn))
-            elif event == "device_found" and sn:
-                if sn not in node.devices:
-                    node.devices[sn] = P.DeviceManifest(
-                        sn=sn, platform=str(req.platform or ""), channels={},
-                    )
-                self._place_device(sn, nid, device=node.devices[sn], session=node)
-            elif event == "shutting_down":
-                node.draining = True
-                node.busy = False
-                interrupted = list(node.active_runs or [])
-                node.active_runs = []
-            elif event == "update_progress":
-                raw = params.get("progress")
-                if isinstance(raw, dict):
-                    node.update_job = dict(raw)
-                else:
-                    node.update_job = {
-                        "active": bool(params.get("active", True)),
-                        "stage": str(params.get("stage") or ""),
-                        "label": str(params.get("label") or detail),
-                        "percent": int(params.get("percent") or 0),
-                        "layer": str(params.get("layer") or ""),
-                        "error": str(params.get("error") or ""),
-                    }
-                if not node.update_job.get("active"):
-                    node.update_job = dict(node.update_job)
-            elif event == "plugin_progress":
-                raw = params.get("progress")
-                if isinstance(raw, dict):
-                    node.plugin_job = _public_plugin_job(raw)
-                    from mino_nexus.resources.node_tools import note_progress
-                    note_progress(nid, node.owner_user_id, node.plugin_job)
-            elif event in ("plugin_im_message", "plugin_wechat_message"):
-                im = params.get("im") if isinstance(params.get("im"), dict) else {}
-                if event == "plugin_wechat_message" and not im:
-                    im = {
-                        "channel": "wechat",
-                        "chat_id": str(params.get("from_user_id") or ""),
-                        "sender_id": str(params.get("from_user_id") or ""),
-                        "text": str(params.get("text") or "")[:2000],
-                        "mentioned": True,
-                        "chat_type": "private",
-                        "msg_id": "",
-                        "reply_ctx": {"context_token": str(params.get("context_token") or "")},
-                    }
-                inbound = dict(im)
-                inbound["node_id"] = nid
-            if node is not None:
-                node.persist_snapshot()
-        SLog.i(TAG, f"EXECUTE {cap} node={nid} sn={sn} {detail}")
+                return NodeEventOutcome(handled=False, reason="node_unknown")
+            outcome = handler(self, node, ctx) if handler is not None else NodeEventOutcome(
+                handled=False, reason=f"nexus 不认识事件 {event or cap}",
+            )
+            node.persist_snapshot()
+        interrupted, inbound = outcome.interrupted, outcome.inbound
+        SLog.i(TAG, f"EXECUTE {cap} node={nid} sn={ctx.sn} {ctx.detail}")
         if inbound and inbound.get("text"):
             import threading
 
@@ -705,7 +692,7 @@ class NodeRegistry:
                 name="im-inbound",
                 daemon=True,
             ).start()
-        return interrupted
+        return outcome
 
     def disconnect(self, node_id: str, *, send: Callable[..., Any] | None = None) -> list[str]:
         """连接断了。**不清除设备归属** —— 否则 UI 上的设备会闪现闪灭
@@ -792,6 +779,147 @@ class NodeRegistry:
 
 _registry: Optional[NodeRegistry] = None
 _registry_lock = threading.Lock()
+
+
+# ---------------- S→N 事件处理表 ----------------
+# 每个处理函数只做「把这一个事件落到 node 上」。新增 Scout 事件 = 在这里加一行，
+# 不再改 node_event 的判定逻辑，也不需要在多张白名单里同步登记。
+
+
+def _ev_device_lost(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    if not ctx.sn:
+        return NodeEventOutcome(handled=False, reason="device_lost 缺少 sn")
+    device = node.devices.get(ctx.sn)
+    if device is None:
+        return NodeEventOutcome(handled=False, reason=f"节点 {ctx.node_id} 名下没有设备 {ctx.sn}")
+    for channel in device.channels:
+        device.channels[channel] = "disconnected"
+    from mino_nexus.contract.runs import running_run_ids_for_sn
+
+    return NodeEventOutcome(interrupted=list(running_run_ids_for_sn(ctx.sn)))
+
+
+def _ev_device_found(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    if not ctx.sn:
+        return NodeEventOutcome(handled=False, reason="device_found 缺少 sn")
+    if ctx.sn not in node.devices:
+        node.devices[ctx.sn] = P.DeviceManifest(sn=ctx.sn, platform=ctx.platform, channels={})
+    reg._place_device(ctx.sn, ctx.node_id, device=node.devices[ctx.sn], session=node)
+    return NodeEventOutcome()
+
+
+def _ev_channel_changed(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    """通道上下线。Scout 已经对比出变化才发这条，Nexus 只需把缓存对齐。
+
+    以前的实现没有这个分支：事件进了白名单、回 PASS、然后被丢掉，
+    只能等下一次心跳兜底。这里按 Scout 随事件带来的 channels 覆盖缓存。
+    """
+    if not ctx.sn:
+        return NodeEventOutcome(handled=False, reason="channel_changed 缺少 sn")
+    device = node.devices.get(ctx.sn)
+    if device is None:
+        return NodeEventOutcome(handled=False, reason=f"节点 {ctx.node_id} 名下没有设备 {ctx.sn}")
+    raw = ctx.params.get("channels")
+    if not isinstance(raw, dict) or not raw:
+        # 没带明细时不能假装已收敛；让调用方回 FAIL，由心跳兜底。
+        SLog.w(TAG, f"channel_changed 未带 channels 明细 node={ctx.node_id} sn={ctx.sn}")
+        return NodeEventOutcome(handled=False, reason="channel_changed 缺少 channels 明细")
+    device.channels = {str(k): str(v) for k, v in raw.items()}
+    return NodeEventOutcome()
+
+
+def _ev_shutting_down(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    node.draining = True
+    node.busy = False
+    interrupted = list(node.active_runs or [])
+    node.active_runs = []
+    return NodeEventOutcome(interrupted=interrupted)
+
+
+def _ev_engine_crashed(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    """执行引擎崩溃：在途 run 必须立刻判失败，不能等超时。"""
+    node.busy = False
+    SLog.e(TAG, f"节点 {ctx.node_id} 上报执行引擎崩溃：{ctx.detail[:200]}")
+    return NodeEventOutcome(interrupted=list(node.active_runs or []))
+
+
+def _ev_update_progress(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    raw = ctx.params.get("progress")
+    if isinstance(raw, dict):
+        node.update_job = dict(raw)
+    else:
+        node.update_job = {
+            "active": bool(ctx.params.get("active", True)),
+            "stage": str(ctx.params.get("stage") or ""),
+            "label": str(ctx.params.get("label") or ctx.detail),
+            "percent": int(ctx.params.get("percent") or 0),
+            "layer": str(ctx.params.get("layer") or ""),
+            "error": str(ctx.params.get("error") or ""),
+        }
+    return NodeEventOutcome()
+
+
+def _ev_plugin_progress(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    raw = ctx.params.get("progress")
+    if not isinstance(raw, dict):
+        return NodeEventOutcome(handled=False, reason="plugin_progress 缺少 progress")
+    node.plugin_job = _public_plugin_job(raw)
+    from mino_nexus.resources.node_tools import note_progress
+
+    note_progress(ctx.node_id, node.owner_user_id, node.plugin_job)
+    return NodeEventOutcome()
+
+
+def _inbound_from(ctx: NodeEventContext) -> dict[str, Any] | None:
+    im = ctx.params.get("im")
+    if ctx.event == "plugin_wechat_message" and not isinstance(im, dict):
+        im = {
+            "channel": "wechat",
+            "chat_id": str(ctx.params.get("from_user_id") or ""),
+            "sender_id": str(ctx.params.get("from_user_id") or ""),
+            "text": str(ctx.params.get("text") or "")[:2000],
+            "mentioned": True,
+            "chat_type": "private",
+            "msg_id": "",
+            "reply_ctx": {"context_token": str(ctx.params.get("context_token") or "")},
+        }
+    if not isinstance(im, dict) or not im:
+        return None
+    inbound = dict(im)
+    inbound["node_id"] = ctx.node_id
+    return inbound
+
+
+def _ev_im_message(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
+    inbound = _inbound_from(ctx)
+    if inbound is None:
+        return NodeEventOutcome(handled=False, reason=f"{ctx.event} 缺少 im 载荷")
+    return NodeEventOutcome(inbound=inbound)
+
+
+_NODE_EVENT_HANDLERS: dict[str, Callable[[NodeRegistry, NodeSession, NodeEventContext], NodeEventOutcome]] = {
+    "device_lost": _ev_device_lost,
+    "device_found": _ev_device_found,
+    "channel_changed": _ev_channel_changed,
+    "engine_crashed": _ev_engine_crashed,
+    "shutting_down": _ev_shutting_down,
+    "update_progress": _ev_update_progress,
+    "plugin_progress": _ev_plugin_progress,
+    "plugin_im_message": _ev_im_message,
+    "plugin_wechat_message": _ev_im_message,
+}
+
+
+def register_node_event(name: str, handler: Callable[..., NodeEventOutcome]) -> None:
+    """新事件从这里登记，协议白名单不再需要手工同步。"""
+    key = str(name or "").strip()
+    if not key:
+        raise ValueError("事件名不能为空")
+    _NODE_EVENT_HANDLERS[key] = handler
+
+
+def known_node_events() -> tuple[str, ...]:
+    return tuple(sorted(_NODE_EVENT_HANDLERS))
 
 
 def get_registry() -> NodeRegistry:

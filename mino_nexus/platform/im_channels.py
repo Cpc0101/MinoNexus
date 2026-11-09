@@ -4,6 +4,23 @@ from __future__ import annotations
 from typing import Any
 
 
+def im_route(channel: str) -> tuple[str, str, str, str]:
+    """渠道名 → (插件 class, 插件 id, 节点快照渠道名, Scout 渠道名)。
+
+    只接受已建模的三类宿主：飞书 CLI、微信 iLink、LangBot（飞书/企微/钉钉）。
+    发送、入站确认、历史读取、收件箱必须共用这一张映射，避免各自拼 kind/plugin_id。
+    """
+    key = str(channel or "").strip()
+    if key == "feishu_cli":
+        return "cli", "feishu", "feishu_cli", "feishu_cli"
+    if key == "wechat":
+        return "bot", "wechat", "wechat", "wechat"
+    name = key.removeprefix("langbot:")
+    if name in ("feishu", "wecom", "dingtalk"):
+        return "im", "langbot", f"langbot:{name}", name
+    raise ValueError("渠道只能是 feishu_cli、wechat、feishu、wecom 或 dingtalk")
+
+
 def normalize_im_channels(plugins: Any) -> list[dict[str, Any]]:
     channels = []
     for plugin in plugins or []:

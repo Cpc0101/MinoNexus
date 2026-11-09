@@ -1,4 +1,4 @@
-"""NavFSM 配置表。设计稿 docs/NAVIGATION_ATLAS.md §0.2.1。
+"""NavFSM 配置表。设计稿 docs/专题/导航图谱.md §0.2.1。
 
 三张表按 `app_id` 隔离、冗余 `project_id` 便于按项目查询。**被测 App 的文案、包名、
 resource-id 全部在这里**，代码里一律不硬编码（设计稿 §0）。

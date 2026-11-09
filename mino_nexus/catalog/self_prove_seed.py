@@ -8,7 +8,7 @@ so the same fallback still applies. ``device_hint.udid`` is already
 filled for iOS devices.
 
 ``RESULT.data.schema`` is ``self_prove.v1``. The fields live in
-``docs/基础框架/PROTOCOL.md`` §4.4.3. This module does not declare a
+``docs/接口/协议.md`` §4.4.3. This module does not declare a
 second result schema. Requires a Scout that implements MinoScout #2.
 """
 from __future__ import annotations

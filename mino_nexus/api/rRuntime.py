@@ -235,16 +235,13 @@ def read_case_api(body: CaseApiReadBody, sess: dict = Depends(current_session)):
 
 
 def _im_route(channel: str) -> tuple[str, str, str, str]:
-    """(kind, plugin_id, 节点渠道名, Scout 渠道名)。只接受已建模的三类宿主。"""
-    key = str(channel or '').strip()
-    if key == 'feishu_cli':
-        return 'cli', 'feishu', 'feishu_cli', 'feishu_cli'
-    if key == 'wechat':
-        return 'bot', 'wechat', 'wechat', 'wechat'
-    key = key.removeprefix('langbot:')
-    if key in ('feishu', 'wecom', 'dingtalk'):
-        return 'im', 'langbot', f'langbot:{key}', key
-    raise HTTPException(status_code=400, detail='渠道只能是 feishu_cli、wechat、feishu、wecom 或 dingtalk')
+    """(kind, plugin_id, 节点渠道名, Scout 渠道名)。映射真源在 platform.im_channels。"""
+    from mino_nexus.platform.im_channels import im_route
+
+    try:
+        return im_route(channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post('/im/send')
@@ -939,14 +936,6 @@ async def remove_node_plugin(
     return ok(out)
 
 
-_PLUGIN_CALLS = frozenset({
-    "plugin.cli.feishu",
-    "plugin.cli.meego",
-    "plugin.bot.send",
-    "plugin.bot.wechat",
-})
-
-
 @router.post("/nodes/{node_id}/plugins/call")
 async def call_node_plugin(
     node_id: str,
@@ -954,10 +943,11 @@ async def call_node_plugin(
     studio_id: str = Query(default=""),
     sess: dict = Depends(current_session),
 ):
+    """把插件调用原样转给节点。不做能力白名单：Scout 不认识会自己回 FAIL。"""
     _node_row_for_session(node_id, studio_id=studio_id, sess=sess)
     cap = str(body.capability_id or "").strip()
-    if cap not in _PLUGIN_CALLS:
-        raise HTTPException(status_code=400, detail="不支持的插件调用")
+    if not cap:
+        raise HTTPException(status_code=400, detail="capability_id 不能为空")
     kind = "cli" if cap.startswith("plugin.cli.") else "bot"
     plugin_id = cap.rsplit(".", 1)[-1]
     if cap == "plugin.bot.send":

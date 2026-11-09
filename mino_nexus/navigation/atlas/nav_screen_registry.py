@@ -1026,7 +1026,7 @@ def _turn_cap_id(turn: dict[str, Any]) -> str:
     return str(turn.get("cap_id") or "").strip()
 
 
-# Atlas 观测边：仅保留真实设备操作造成的相邻帧跳转（见 docs/9月16日—架构图连线与布局问题梳理.md）
+# Atlas 观测边：仅保留真实设备操作造成的相邻帧跳转（见 docs/专题/导航图谱.md）
 _ATLAS_OBSERVED_NAV_CAPS = frozenset(
     {
         "tap_element",

@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 NAV_ENTRY_TABLES = (
     "nav_page_entries",
@@ -35,7 +35,11 @@ OAUTH_TABLES = (
     "oauth_tokens",
 )
 
-ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES
+IM_INBOX_TABLES = (
+    "im_inbox_items",
+)
+
+ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + IM_INBOX_TABLES
 
 RETIRED_TABLES = (
     "m_case_run_trace",

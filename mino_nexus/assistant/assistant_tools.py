@@ -116,12 +116,18 @@ def tool_by_function_name(name: str) -> dict[str, Any] | None:
 
 
 def route_allowed(method: str, path: str) -> bool:
-    """助手 token 和 MCP token 只能打工具表里的路由，以及 MCP 端点本身。删除一律拒绝。"""
+    """助手 token 和 MCP token 只能打工具表里的路由，以及 MCP 端点本身。删除一律拒绝。
+
+    转给 Scout 的统一入口 `/forward/*` 也放行：它不新增能力，只是把
+    `capability_id` 原样交给节点，能力判定在 Scout 侧。
+    """
     method = method.upper()
     path = path.split("?", 1)[0]
     if method == "DELETE" or "/delete" in path.lower():
         return False
     if method == "POST" and path == "/mcp":
+        return True
+    if path in _FORWARD_PATHS:
         return True
     for spec in all_tools():
         route = str(spec.get("route") or "")
@@ -723,4 +729,186 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
         elapsed_ms=elapsed,
         tool_id=str(spec.get("id") or ""),
         args=args,
+    )
+
+
+# ---------------- 转给 Scout 的统一入口 ----------------
+# 这一节只管「把一次 capability 调用交给节点执行」。它不替代工具表：
+# 工具表里那些 Nexus 自己的业务能力（case./task./project./session./resource./
+# logic./scout./app./repo.）仍然照原样走 run_tool。
+#
+# 为什么单独一处：这些调用 Nexus 不解释参数、不做能力白名单——Scout 不认识
+# 就自己回 FAIL，Nexus 原样透出。以前散在 node_plugin_call / rRuntime /
+# 各个调用方里，每个地方各自维护一份允许列表，加一条 Scout 能力要改三处。
+
+_FORWARD_PATH_CALL = "/forward/call"
+_FORWARD_PATH_RESOLVE = "/forward/resolve"
+_FORWARD_PATHS = frozenset({_FORWARD_PATH_CALL, _FORWARD_PATH_RESOLVE})
+
+# 离线兜底只用这套码，不再散落「节点离线 / 设备离线 / 节点未应答」多种措辞。
+OFFLINE_DEVICE = "device_offline"
+OFFLINE_NODE = "node_offline"
+OFFLINE_UNKNOWN = "target_unresolved"
+
+
+def _auth_headers(user_id: str) -> dict[str, str]:
+    """进程内调用也要带 token：/forward/* 与 /mcp 走同一套鉴权。"""
+    from mino_nexus.assistant.store import ensure_assistant_token
+
+    return {"Authorization": f"Bearer {ensure_assistant_token(user_id)}", "X-Mino-Client": "assistant"}
+
+
+def forward_call(
+    *,
+    capability_id: str,
+    params: dict[str, Any] | None = None,
+    sn: str = "",
+    node_id: str = "",
+    platform: str = "",
+    timeout_sec: float = 60.0,
+    executor_order: list[str] | None = None,
+    selected_impl: dict[str, Any] | None = None,
+    user_id: str = "",
+) -> ToolOutcome:
+    """把一次 capability 调用交给节点执行，取回 Scout 的原始结果。
+
+    不校验 `capability_id`：Scout 不认识就自己回 FAIL，这里原样透出它的 error。
+    """
+    from mino_nexus.platform.identity import execution_user
+
+    cap = str(capability_id or "").strip()
+    if not cap:
+        return ToolOutcome(ok=False, status=400, summary="capability_id 不能为空", tool_id="")
+    started = time.time()
+    body = {
+        "capability_id": cap,
+        "params": dict(params or {}),
+        "sn": str(sn or ""),
+        "node_id": str(node_id or ""),
+        "platform": str(platform or ""),
+        "timeout_sec": float(timeout_sec),
+        "executor_order": list(executor_order or []),
+        "selected_impl": dict(selected_impl or {}),
+    }
+    with execution_user(user_id):
+        response = _asgi_request("POST", _FORWARD_PATH_CALL, body, _auth_headers(user_id),
+                                 timeout=float(timeout_sec) + 35.0)
+    elapsed = int((time.time() - started) * 1000)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {"detail": response.text[:500]}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if response.status_code >= 400:
+        if isinstance(detail, dict):
+            return ToolOutcome(ok=False, status=response.status_code,
+                               summary=str(detail.get("message") or detail.get("code") or "调用失败"),
+                               data=detail, elapsed_ms=elapsed, tool_id=cap, args=body)
+        return ToolOutcome(ok=False, status=response.status_code,
+                           summary=str(detail or "调用失败")[:300],
+                           elapsed_ms=elapsed, tool_id=cap, args=body)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    merged = dict(data) if isinstance(data, dict) else {"data": data}
+    merged.setdefault("capability_id", cap)
+    return ToolOutcome(ok=True, status=response.status_code, data=merged,
+                       summary=str((payload or {}).get("msg") or ""), elapsed_ms=elapsed,
+                       tool_id=cap, args=body)
+
+
+def forward_resolve(*, sn: str = "", node_id: str = "", user_id: str = "") -> ToolOutcome:
+    """只查目标落在哪个节点、是否在线，不执行。"""
+    from mino_nexus.platform.identity import execution_user
+
+    started = time.time()
+    with execution_user(user_id):
+        response = _asgi_request("POST", _FORWARD_PATH_RESOLVE,
+                                 {"sn": str(sn or ""), "node_id": str(node_id or "")},
+                                 _auth_headers(user_id), timeout=30)
+    elapsed = int((time.time() - started) * 1000)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {"detail": response.text[:500]}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if response.status_code >= 400:
+        summary = str(detail.get("message") if isinstance(detail, dict) else detail or "找不到目标")
+        return ToolOutcome(ok=False, status=response.status_code, summary=summary[:300],
+                           data=detail if isinstance(detail, dict) else None, elapsed_ms=elapsed,
+                           tool_id="forward.resolve")
+    return ToolOutcome(ok=True, status=response.status_code, data=payload.get("data"),
+                       summary=str(payload.get("msg") or ""), elapsed_ms=elapsed,
+                       tool_id="forward.resolve")
+
+
+def forward_tool_specs() -> list[dict[str, Any]]:
+    """两个转发工具的 MCP 规格。与工具表合并后一起出现在 tools/list。"""
+    return [
+        {
+            "name": "nexus_forward",
+            "title": "转发一次能力调用给 Scout",
+            "description": (
+                "把一次 capability 调用原样转给持有目标的 Scout 并返回它的结果。"
+                "Nexus 不做能力白名单：capability_id 用 Scout 协议名即可，例如 "
+                "hierarchy / screenshot / sample / tap_element / input_text / launch_app / "
+                "plugin.im.send / plugin.im.history / plugin.im.ack / plugin.im.upload_image / "
+                "plugin.gmail.fetch_otp / node.plugin_config / node.tools / node.log_tail / "
+                "node.sleep / node.wake / script.run。"
+                "设备动作要给 sn；只操作节点时给 node_id。"
+                "目标离线时返回 409，code 是 device_offline / node_offline / target_unresolved；"
+                "Scout 拒绝时返回 502，code=scout_rejected——读它的 message，不要当成 Nexus 故障。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "capability_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "params": {"type": "object", "default": {}},
+                    "sn": {"type": "string", "description": "设备 SN；设备动作必须给"},
+                    "node_id": {"type": "string", "description": "目标节点；不给时按 sn 解析"},
+                    "platform": {"type": "string", "enum": ["android", "ios", "web", "mac", "win", ""]},
+                    "timeout_sec": {"type": "number", "minimum": 1, "maximum": 1800, "default": 60},
+                    "executor_order": {"type": "array", "items": {"type": "string"},
+                                       "description": "设备动作需要恰好一个 executor；不给由 Scout 按平台定"},
+                    "selected_impl": {"type": "object", "default": {}},
+                },
+                "required": ["capability_id"],
+            },
+            "annotations": {"title": "转发调用", "readOnlyHint": False, "destructiveHint": False,
+                            "idempotentHint": False, "openWorldHint": True},
+        },
+        {
+            "name": "nexus_resolve",
+            "title": "查询目标落在哪个节点",
+            "description": (
+                "只做寻址，不执行：给 sn 或 node_id，返回它当前所在的节点和在线状态。"
+                "转发前想确认目标是否在线时用这个。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"sn": {"type": "string"}, "node_id": {"type": "string"}},
+            },
+            "annotations": {"title": "查询目标", "readOnlyHint": True, "destructiveHint": False,
+                            "idempotentHint": True, "openWorldHint": False},
+        },
+    ]
+
+
+def call_forward_tool(name: str, args: dict[str, Any], *, user_id: str) -> ToolOutcome:
+    """MCP tools/call 落到转发工具时的执行入口。"""
+    if name == "nexus_resolve":
+        return forward_resolve(sn=str(args.get("sn") or ""), node_id=str(args.get("node_id") or ""),
+                               user_id=user_id)
+    try:
+        timeout = float(args.get("timeout_sec") or 60.0)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    return forward_call(
+        capability_id=str(args.get("capability_id") or ""),
+        params=args.get("params") if isinstance(args.get("params"), dict) else {},
+        sn=str(args.get("sn") or ""),
+        node_id=str(args.get("node_id") or ""),
+        platform=str(args.get("platform") or ""),
+        timeout_sec=max(1.0, min(timeout, 1800.0)),
+        executor_order=args.get("executor_order") if isinstance(args.get("executor_order"), list) else [],
+        selected_impl=args.get("selected_impl") if isinstance(args.get("selected_impl"), dict) else {},
+        user_id=user_id,
     )

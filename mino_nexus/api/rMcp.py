@@ -44,7 +44,10 @@ def _annotations(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tools_payload() -> list[dict[str, Any]]:
-    return [
+    """工具表里的 Nexus 自有能力 + 两个转给 Scout 的转发入口。"""
+    from mino_nexus.assistant.assistant_tools import forward_tool_specs
+
+    rows = [
         {
             "name": function_name(t["id"]),
             "title": str(t.get("title") or t["id"]),
@@ -55,6 +58,45 @@ def _tools_payload() -> list[dict[str, Any]]:
         for t in all_tools()
         if "mcp" in (t.get("surfaces") or ["mcp"])
     ]
+    return rows + forward_tool_specs()
+
+
+def _call_forward(uid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """转发工具的执行与回包。错误码与工具表那批保持一致，方便客户端统一处理。"""
+    import time
+
+    from mino_nexus.assistant.assistant_tools import call_forward_tool
+
+    started = time.time()
+    out = call_forward_tool(name, args, user_id=uid)
+    code = "" if out.ok else _error_code(out.status)
+    body = {"ok": out.ok, "summary": out.summary, "data": out.data}
+    if code:
+        body["code"] = code
+        body["retryable"] = code in {"conflict", "rate_limited", "result_uncertain"}
+        body["hint"] = _error_hint(code)
+    # 离线/拒绝时 Scout 给的原始 code 优先透出，别被通用 code 盖掉。
+    if not out.ok and isinstance(out.data, dict) and out.data.get("code"):
+        body["code"] = str(out.data["code"])
+    assistant_store.save_turn({
+        "turn_id": assistant_store.new_turn_id(), "user_id": uid, "surface": "mcp", "channel": "mcp",
+        "status": "ok" if out.ok else "error",
+        "intent": str(args.get("capability_id") or name),
+        "steps": [{"tool": name, "label": str(args.get("capability_id") or name),
+                   "status": "ok" if out.ok else "error",
+                   "ms": int((time.time() - started) * 1000),
+                   "args_brief": json.dumps({k: v for k, v in args.items() if k != "params"},
+                                             ensure_ascii=False)[:180]}],
+        "elapsed_ms": int((time.time() - started) * 1000),
+    })
+    payload = json.dumps(body, ensure_ascii=False, default=str)
+    if len(payload.encode("utf-8")) > 262144:
+        return {"isError": True, "content": [{"type": "text", "text": json.dumps({
+            "ok": False, "code": "response_too_large", "retryable": True,
+            "summary": "响应超过 256KB，未返回。请缩小参数范围。",
+            "hint": "不要重复相同调用；缩小参数后重试",
+        }, ensure_ascii=False)}]}
+    return {"isError": not out.ok, "content": [{"type": "text", "text": payload}]}
 
 
 def _error_code(status: int | None) -> str:
@@ -85,6 +127,9 @@ def _error_hint(code: str) -> str:
 def _call(uid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
     import time
 
+    # 两个转发入口先接：它们不在工具表里，走的是「原样交给 Scout」这条路。
+    if name in {"nexus_forward", "nexus_resolve"}:
+        return _call_forward(uid, name, args if isinstance(args, dict) else {})
     spec = tool_by_function_name(name)
     if spec is None or "mcp" not in (spec.get("surfaces") or ["mcp"]):
         return {"isError": True, "content": [{"type": "text", "text": f"没有这个工具：{name}"}]}

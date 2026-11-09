@@ -1,6 +1,6 @@
 """NavFSM 校准证据：hierarchy 片段 + 有序 walkthrough 记录。
 
-设计稿 docs/NAVIGATION_ATLAS.md §0.2.2、§8.4。
+设计稿 docs/专题/导航图谱.md §0.2.2、§8.4。
 
 **证据不进库、不进 git**，只落 `data_dir()`：
 

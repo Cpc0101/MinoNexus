@@ -1,4 +1,4 @@
-"""ORM：一张表一个文件。这里的类名对应 mino.db 的表，改字段要同步 docs/DATA_MODEL.md。"""
+"""ORM：一张表一个文件。这里的类名对应 mino.db 的表，改字段要同步 docs/架构/数据模型.md。"""
 from mino_nexus.models.node_tool_task import NodeToolTask
 from mino_nexus.models.account_fact_candidate import AccountFactCandidate
 from mino_nexus.models.app_intel import AppIntelLink, AppIntelProposal
@@ -10,6 +10,7 @@ from mino_nexus.models.assistant import (
     ImBindCode,
     ImIdentity,
 )
+from mino_nexus.models.im_inbox import ImInboxItem
 from mino_nexus.models.atlas import AtlasAlias
 from mino_nexus.models.auth import AuthSession, AuthState, User
 from mino_nexus.models.mcp_oauth import OauthClient, OauthCode, OauthRequest, OauthToken
@@ -65,6 +66,7 @@ __all__ = [
     "AssistantTurn",
     "ImBindCode",
     "ImIdentity",
+    "ImInboxItem",
     "AppIntelLink",
     "AppIntelProposal",
     "App",

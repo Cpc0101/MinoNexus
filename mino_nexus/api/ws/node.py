@@ -230,27 +230,40 @@ class NodeConnection:
     async def _on_inbound_execute(self, env: P.Envelope) -> None:
         req: P.Execute = env.payload
         cap = str(req.capability_id or "")
-        from mino_nexus.loop.script_callback import CALLBACKS, LEASE_CAP, SESSION_CAP, STEP_CAP, handle as handle_script_callback
+        from mino_nexus.loop.script_callback import HANDLED, handle as handle_script_callback
 
         op = str((req.params or {}).get("op") or "") if cap == "script.callback" else ""
-        if cap in CALLBACKS or cap in {STEP_CAP, SESSION_CAP, LEASE_CAP} or (cap == "script.callback" and op in CALLBACKS):
+        if cap in HANDLED or (cap == "script.callback" and op in HANDLED):
             result = await asyncio.to_thread(handle_script_callback, self.node_id, req)
             await self._reply_result(env, result)
             return
-        if cap not in P.NODE_EVENT_CAPS:
-            SLog.w(TAG, f"[{self.node_id}] 忽略非框架入站 EXECUTE cap={cap}")
+        from mino_nexus.resources.node_registry import known_node_events
+
+        event = cap.split(".", 1)[-1] if cap.startswith("node.") else cap
+        if event not in known_node_events():
+            SLog.w(TAG, f"[{self.node_id}] 忽略未登记的事件 cap={cap}")
             await self._reply_result(env, P.Result(
                 run_id=req.run_id, step_idx=req.step_idx,
-                status=P.EventStatus.FAIL, summary=f"Nexus 不处理 cap={cap}",
-                error=f"Nexus 不处理 cap={cap}", executor_used="nexus",
+                status=P.EventStatus.FAIL, summary=f"Nexus 不认识事件 {cap}",
+                error=f"unknown_event:{event}", executor_used="nexus",
             ))
             return
-        interrupted = get_registry().node_event(req, node_id=self.node_id)
-        if interrupted:
+        outcome = get_registry().node_event(req, node_id=self.node_id)
+        if not outcome.handled:
+            # 收到但没处理必须说清楚，不能回 PASS 让 Scout 以为事件已被消费。
+            reason = outcome.reason or f"Nexus 未处理 {cap}"
+            SLog.w(TAG, f"[{self.node_id}] 拒绝 {cap}：{reason}")
+            await self._reply_result(env, P.Result(
+                run_id=req.run_id, step_idx=req.step_idx,
+                status=P.EventStatus.FAIL, summary=reason,
+                error=reason, executor_used="nexus",
+            ))
+            return
+        if outcome.interrupted:
             from mino_nexus.loop.run_interrupt import interrupt_runs
 
             event = cap.split(".", 1)[-1]
-            interrupt_runs(interrupted, reason=f"节点 {self.node_id} {event}")
+            interrupt_runs(outcome.interrupted, reason=f"节点 {self.node_id} {event}")
         await self._reply_result(env, P.Result(
             run_id=req.run_id, step_idx=req.step_idx,
             status=P.EventStatus.PASS, summary=f"acked {cap}",

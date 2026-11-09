@@ -1,6 +1,6 @@
 """RouteAssist 编译：把 NavPlan 编成注入 prompt 的一段文本。
 
-设计稿 docs/NAVIGATION_ATLAS.md §5、§6。
+设计稿 docs/专题/导航图谱.md §5、§6。
 文案必须让人和大模型都能读懂：用 Tab/屏面中文名，不要裸 state_id / edge_id。
 """
 from __future__ import annotations

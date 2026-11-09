@@ -1,6 +1,6 @@
 """NavFSM 配置读写。真源是 `mino.db` 的 nav_fsm / nav_fsm_states / nav_fsm_edges。
 
-设计稿 docs/NAVIGATION_ATLAS.md §0.2、§10.5、§11.4。
+设计稿 docs/专题/导航图谱.md §0.2、§10.5、§11.4。
 
 三条硬规则：
   1. **`__CALIBRATE__` 不得进 runtime** —— load 与 PUT 双向门禁（§10.5）；

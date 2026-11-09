@@ -1,4 +1,8 @@
-"""把具名插件调用发到持有密钥的那台 Scout。这里不保存密钥。"""
+"""把具名插件调用发到持有密钥的那台 Scout。这里不保存密钥。
+
+**没有能力白名单。** 只要节点在线且归属正确，`capability_id` 与 `params` 原样下发；
+Scout 不认识就自己回 FAIL，本模块原样抛出。唯一保留的是密钥字段的出口脱敏。
+"""
 from __future__ import annotations
 
 import inspect
@@ -8,20 +12,6 @@ from mino_nexus.core import protocol as P
 from mino_nexus.core.wire_identity import assign_execute_identity
 from mino_nexus.core.async_util import run_sync as _run_sync
 from mino_nexus.resources.node_registry import get_registry
-
-_ALLOWED = frozenset({
-    "plugin.cli.feishu",
-    "plugin.cli.meego",
-    "plugin.bot.send",
-    "plugin.bot.wechat",
-    "plugin.gmail.fetch_otp",
-    "plugin.im.send",
-    "plugin.im.stream",
-    "plugin.im.history",
-    "plugin.im.ack",
-    "plugin.im.attachment",
-    "plugin.im.upload_image",
-})
 
 _HIDDEN = ("secret", "password", "webhook", "bot_token", "app_secret", "plugin_secret")
 
@@ -69,8 +59,6 @@ def _plugin_result(
     node_id: str = "",
     timeout: float = 60,
 ):
-    if capability_id not in _ALLOWED:
-        raise PluginCallError(f"不允许的插件能力 {capability_id}")
     node = node_for_plugin(kind, plugin_id, node_id)
     if capability_id == 'plugin.cli.meego' and (params.get('attachments') or params.get('attachment_ref')):
         if not any(row.get('class') == 'cli' and row.get('id') == 'meego' and row.get('attachment_upload_version') == 1

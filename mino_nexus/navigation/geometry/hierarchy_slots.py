@@ -2,12 +2,12 @@
 
 为什么单独一个模块
 ------------------
-`inspect_slots["hierarchy_text"]` 早先长期恒空（见 docs/NAVIGATION_ATLAS.md §17.3），
+`inspect_slots["hierarchy_text"]` 早先长期恒空（见 docs/专题/导航图谱.md §17.3），
 而 `planner` / `knowledge_hint.infer_screen_role` / `session_gate` / `step_pointer.screen_fingerprint`
 都已经在读它。这里把「取一帧层级」收成一处，顺带把 guard / localize / effect_assert 三处
 要用的匹配语义也收进来 —— 三份各写一遍必然漂移。
 
-形态由协议钉死：`docs/PROTOCOL.md` §4.4.2，`RESULT.data["nodes"]` 结构化节点数组
+形态由协议钉死：`docs/接口/协议.md` §4.4.2，`RESULT.data["nodes"]` 结构化节点数组
 （`extra["nodes"]` 是镜像）。**文本形态是派生物**，只喂 prompt；所有判定走结构化 `nodes`。
 
 坐标警告：节点的 `bounds` / `center` 是**设备像素**，与 `EXECUTE.params` 的 0–1000 千分比

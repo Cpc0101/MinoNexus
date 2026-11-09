@@ -58,7 +58,7 @@ class EventResult(BaseModel):
     """单个动作执行后的结果。
 
     字段与上游逐字一致 —— Nexus 侧的 trace、覆盖度、时间线都按这个形状读。
-    `status` 是五态（小写），语义见 docs/PROTOCOL.md §4.6.1。
+    `status` 是五态（小写），语义见 docs/接口/协议.md §4.6.1。
     """
 
     model_config = ConfigDict(extra="allow")

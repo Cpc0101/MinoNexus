@@ -1,6 +1,6 @@
 """v2.5 被动 hierarchy 采集：跑用例时每 turn 落盘，不依赖 walkthrough 批次。
 
-设计稿 docs/NAVIGATION_ATLAS.md §19.2–§19.4。
+设计稿 docs/专题/导航图谱.md §19.2–§19.4。
 """
 from __future__ import annotations
 

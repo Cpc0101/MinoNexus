@@ -1,4 +1,4 @@
-"""我现在在哪一屏。设计稿 docs/NAVIGATION_ATLAS.md §2。
+"""我现在在哪一屏。设计稿 docs/专题/导航图谱.md §2。
 
 主路径**不调 VLM**：规则信号 + 置信度就够跑通主链，VLM 的延迟/成本/误判会把迭代拖死。
 `extra_signals` 是给 pHash / VLM 预留的入口，默认没人传。
