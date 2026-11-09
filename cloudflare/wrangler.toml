@@ -15,7 +15,5 @@ class_name = "NexusHub"
 tag = "v1"
 new_sqlite_classes = ["NexusHub"]
 
-[vars]
-# Shared install/pair token for first REGISTER. Override per env in dashboard or .dev.vars.
-SCOUT_PAIR_TOKEN = "dev-pair-token"
-MCP_BEARER_TOKEN = "dev-mcp-token"
+# SCOUT_PAIR_TOKEN / MCP_BEARER_TOKEN: local via .dev.vars, production via `wrangler secret put`.
+# Do not put them in [vars] — that overwrites remote secrets on deploy.
