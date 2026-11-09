@@ -1,0 +1,21 @@
+name = "mino-nexus"
+main = "src/index.ts"
+compatibility_date = "2026-11-08"
+workers_dev = true
+
+[observability]
+enabled = true
+
+# Free-tier path: one SQLite-backed Durable Object holds Scout sockets + device state.
+[[durable_objects.bindings]]
+name = "NEXUS_HUB"
+class_name = "NexusHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NexusHub"]
+
+[vars]
+# Shared install/pair token for first REGISTER. Override per env in dashboard or .dev.vars.
+SCOUT_PAIR_TOKEN = "dev-pair-token"
+MCP_BEARER_TOKEN = "dev-mcp-token"
