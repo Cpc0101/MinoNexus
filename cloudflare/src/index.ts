@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { hubStub } from "./env";
 import { handleMcp } from "./mcp";
 import { NexusHub } from "./hub";
+import { preflight, withCors } from "./cors";
 
 export { NexusHub };
 
@@ -16,33 +17,29 @@ function health(): Response {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === "OPTIONS") {
+      return preflight(request);
+    }
+
     const url = new URL(request.url);
+    let response: Response;
 
     if (url.pathname === "/health") {
-      return health();
-    }
-
-    if (url.pathname === "/mcp") {
-      return handleMcp(request, env);
-    }
-
-    if (url.pathname === "/node") {
+      response = health();
+    } else if (url.pathname === "/mcp") {
+      response = await handleMcp(request, env);
+    } else if (url.pathname === "/node") {
+      // WebSocket upgrades must pass through unchanged.
       return hubStub(env).fetch(request);
-    }
-
-    if (url.pathname === "/v1/scouts") {
-      return hubStub(env).fetch(new Request("https://hub/internal/scouts"));
-    }
-
-    if (url.pathname === "/v1/devices") {
+    } else if (url.pathname === "/v1/scouts") {
+      response = await hubStub(env).fetch(new Request("https://hub/internal/scouts"));
+    } else if (url.pathname === "/v1/devices") {
       const onlineOnly = url.searchParams.get("online_only") === "1";
-      return hubStub(env).fetch(
+      response = await hubStub(env).fetch(
         new Request(`https://hub/internal/devices?online_only=${onlineOnly ? "1" : "0"}`),
       );
-    }
-
-    if (url.pathname === "/") {
-      return Response.json({
+    } else if (url.pathname === "/") {
+      response = Response.json({
         service: "mino-nexus-cloudflare",
         version: "0.0.1",
         endpoints: {
@@ -53,8 +50,10 @@ export default {
           devices: "GET /v1/devices",
         },
       });
+    } else {
+      response = new Response("Not found", { status: 404 });
     }
 
-    return new Response("Not found", { status: 404 });
+    return withCors(request, response);
   },
 } satisfies ExportedHandler<Env>;

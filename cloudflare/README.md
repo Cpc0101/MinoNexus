@@ -53,12 +53,29 @@ npm run deploy
 
 Set `SCOUT_PAIR_TOKEN` / `MCP_BEARER_TOKEN` as Worker secrets for non-dev.
 
-## Custom domain
+## Custom domains
 
-Production hub: **`https://nexus.minocc.top`**
+| Host | Product | Role |
+|---|---|---|
+| `https://nexus.minocc.top` | Worker `mino-nexus` | Scout / MCP / device sync |
+| `https://minocc.top` | Pages `mino-workbench` | Workbench UI |
+
+Hub endpoints:
 
 - Scout WS: `wss://nexus.minocc.top/node`
 - MCP: `POST https://nexus.minocc.top/mcp`
 - Health: `GET https://nexus.minocc.top/health`
 
-Zone `minocc.top` must stay on Cloudflare NS (`david.ns.cloudflare.com` / `julissa.ns.cloudflare.com`).
+Workbench is built with `VITE_NEXUS_URL=https://nexus.minocc.top` and deployed via:
+
+```bash
+cd ../MinoWorkbench
+VITE_NEXUS_URL=https://nexus.minocc.top npm run build
+npx wrangler pages deploy dist --project-name mino-workbench --branch main
+```
+
+Apex DNS for Pages (same Cloudflare zone):
+
+- Type `CNAME`, name `@`, target `mino-workbench.pages.dev`, proxied
+
+This CF hub is still the thin free scope (Scout/MCP/devices). Full Workbench APIs are not on the Worker yet.
