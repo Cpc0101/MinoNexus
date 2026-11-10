@@ -1,4 +1,5 @@
 const ALLOWED = new Set([
+  "https://workbench.minocc.top",
   "https://minocc.top",
   "https://www.minocc.top",
 ]);
