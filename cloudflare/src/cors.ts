@@ -2,6 +2,7 @@ const ALLOWED = new Set([
   "https://workbench.minocc.top",
   "https://minocc.top",
   "https://www.minocc.top",
+  "https://mino-workbench.pages.dev",
 ]);
 
 export function corsHeaders(request: Request): Headers {

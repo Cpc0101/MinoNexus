@@ -78,4 +78,13 @@ DNS for Pages (same Cloudflare zone):
 
 - Type `CNAME`, name `workbench`, target `mino-workbench.pages.dev`, proxied
 
-This CF hub is still the thin free scope (Scout/MCP/devices). Full Workbench APIs are not on the Worker yet.
+Workbench-compatible HTTP (same envelopes as main / MCP tools):
+
+| Workbench path | MCP tool | Notes |
+|---|---|---|
+| `GET /runtime/nodes` | `scout_list` | requires `Authorization: Bearer <MCP_BEARER_TOKEN>` |
+| `GET /device/list` | `device_list` | same auth |
+| `POST /auth/login` | — | password = `MCP_BEARER_TOKEN` |
+| `GET /auth/status` | — | guest session for CF free hub |
+
+Login on https://workbench.minocc.top with any username and password = MCP bearer token. Case run / projects / full admin APIs are still out of scope.

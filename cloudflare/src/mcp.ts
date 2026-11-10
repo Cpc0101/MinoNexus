@@ -14,7 +14,7 @@ const TOOLS = [
   {
     name: "agent_guide",
     description:
-      "Cloudflare free hub scope: Scout online channel, device sync, and these MCP tools. No case authoring, no Workbench, no script dispatch yet.",
+      "Cloudflare free hub: Scout online, device sync, MCP tools, and Workbench-compatible /runtime/nodes + /device/list. No case_run yet.",
     inputSchema: { type: "object", properties: {} },
   },
   {

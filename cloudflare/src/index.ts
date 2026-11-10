@@ -3,17 +3,9 @@ import { hubStub } from "./env";
 import { handleMcp } from "./mcp";
 import { NexusHub } from "./hub";
 import { preflight, withCors } from "./cors";
+import { enhancedHealth, handleCompat } from "./compat";
 
 export { NexusHub };
-
-function health(): Response {
-  return Response.json({
-    ok: true,
-    service: "mino-nexus-cloudflare",
-    version: "0.0.1",
-    scope: ["scout_online", "mcp", "device_sync"],
-  });
-}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -25,7 +17,7 @@ export default {
     let response: Response;
 
     if (url.pathname === "/health") {
-      response = health();
+      response = await enhancedHealth(env);
     } else if (url.pathname === "/mcp") {
       response = await handleMcp(request, env);
     } else if (url.pathname === "/node") {
@@ -48,10 +40,17 @@ export default {
           mcp: "POST /mcp",
           scouts: "GET /v1/scouts",
           devices: "GET /v1/devices",
+          workbench_compat: [
+            "GET /runtime/nodes",
+            "GET /device/list",
+            "POST /auth/login",
+            "GET /auth/status",
+          ],
         },
       });
     } else {
-      response = new Response("Not found", { status: 404 });
+      const compat = await handleCompat(request, env, url.pathname);
+      response = compat || new Response("Not found", { status: 404 });
     }
 
     return withCors(request, response);
