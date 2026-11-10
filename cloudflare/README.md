@@ -78,13 +78,7 @@ DNS for Pages (same Cloudflare zone):
 
 - Type `CNAME`, name `workbench`, target `mino-workbench.pages.dev`, proxied
 
-Workbench-compatible HTTP (same envelopes as main / MCP tools):
+**Do not point full Workbench at this hub.** It only supports Scout WS + MCP + device sync.
+`https://workbench.minocc.top` is a landing page explaining that; auth-login-with-MCP-token was removed.
 
-| Workbench path | MCP tool | Notes |
-|---|---|---|
-| `GET /runtime/nodes` | `scout_list` | requires `Authorization: Bearer <MCP_BEARER_TOKEN>` |
-| `GET /device/list` | `device_list` | same auth |
-| `POST /auth/login` | — | password = `MCP_BEARER_TOKEN` |
-| `GET /auth/status` | — | guest session for CF free hub |
-
-Login on https://workbench.minocc.top with any username and password = MCP bearer token. Case run / projects / full admin APIs are still out of scope.
+Protected reads (`/mcp`, `/v1/scouts`, `/v1/devices`) require `Authorization: Bearer <MCP_BEARER_TOKEN>` — keep that secret server-side / in agent config, never as a Workbench password.

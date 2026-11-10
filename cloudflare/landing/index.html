@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mino Cloudflare Free Hub</title>
+    <style>
+      :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; background: #f6f7f9; color: #111; }
+      main { max-width: 40rem; margin: 12vh auto; padding: 0 1.25rem; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.75rem; }
+      p, li { line-height: 1.55; color: #333; }
+      code { background: #e8eaee; padding: 0.1em 0.35em; border-radius: 4px; }
+      .card { background: #fff; border: 1px solid #e2e5ea; border-radius: 12px; padding: 1.25rem 1.4rem; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>这里不是完整 Workbench</h1>
+      <p>
+        <code>workbench.minocc.top</code> 曾误挂过完整前端。Cloudflare 免费 hub 只提供：
+      </p>
+      <ul>
+        <li>Scout 在线通道 <code>wss://nexus.minocc.top/node</code></li>
+        <li>设备状态同步</li>
+        <li>Agent MCP <code>https://nexus.minocc.top/mcp</code>（需要 Bearer token）</li>
+      </ul>
+      <p>
+        完整登录、项目、用例、跑批等页面需要完整 Nexus，不能把整站 Workbench 接到这个精简 hub 上冒充可用。
+      </p>
+      <p>健康检查：<a href="https://nexus.minocc.top/health">nexus.minocc.top/health</a></p>
+    </main>
+  </body>
+</html>
