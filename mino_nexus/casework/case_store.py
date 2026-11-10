@@ -32,30 +32,6 @@ def _public(row) -> dict[str, Any]:
         "index": row.sort_index,
         "updated_at": row.updated_at or "",
     }
-    from mino_nexus.contract.case_preview import stored_preview_lines
-
-    if out.get("source_revision_id"):
-        from mino_nexus.casework.case_compilation import readiness
-        meta = dict(out.get("meta") or {})
-        issue = readiness(out)
-        if issue:
-            spk = meta.get("step_program_keys") if isinstance(meta.get("step_program_keys"), dict) else {}
-            job_status = str((out.get("compile_job") or {}).get("status") or out.get("compile_state") or "").lower()
-            in_flight = job_status in ("queued", "running", "claimed", "preparing")
-            if not (spk and in_flight):
-                # Do not display an old frozen plan as the understanding of new text.
-                meta["step_program_keys"] = {}
-                for key in ("steps_parsed", "expected_parsed", "automation_details", "precondition_parsed", "payload"):
-                    out.pop(key, None)
-                out["meta"] = meta
-                return out
-            out["meta"] = meta
-        if "v5_draft_step_program_keys" in meta:
-            meta["step_program_keys"] = meta["v5_draft_step_program_keys"]
-            out["meta"] = meta
-    steps_parsed, expected_parsed = stored_preview_lines(out)
-    out["steps_parsed"] = steps_parsed
-    out["expected_parsed"] = expected_parsed
     return out
 
 
@@ -106,8 +82,6 @@ def list_case_page(project_id: str, *, limit: int, offset: int = 0, search: str 
             query = query.filter(ProjectCase.case_id.not_in(list(results)))
         total = query.count()
         rows = query.order_by(ProjectCase.sort_index, ProjectCase.pk).limit(limit).offset(offset).all()
-        from mino_nexus.casework.case_key_registry import step_keys_summary_for_case
-
         cases = []
         for row in rows:
             public = _public(row)
@@ -122,14 +96,7 @@ def list_case_page(project_id: str, *, limit: int, offset: int = 0, search: str 
                     "precondition": (row.precondition or "")[:2000],
                     "steps": [str(value)[:2000] for value in (row.steps or [])],
                     "expected": [str(value)[:2000] for value in (row.expected or [])],
-                    "steps_parsed": list(public.get("steps_parsed") or []),
-                    "expected_parsed": list(public.get("expected_parsed") or []),
                     "meta": dict(public.get("meta") or {}),
-                    "step_keys_summary": step_keys_summary_for_case(public),
-                    **{
-                        key: (row.extra or {}).get(key)
-                        for key in ("source_revision", "source_revision_id", "compile_state", "compile_job", "effective_artifact")
-                    },
                 }
             )
         return {"cases": cases, "total": total, "limit": limit, "offset": offset, "project_id": project_id}
@@ -247,37 +214,15 @@ def _row_fields(
     compiled: bool = False,
 ) -> dict[str, Any]:
     from copy import deepcopy
-    from mino_nexus.casework.v5_publication import guard_case_row
-    from mino_nexus.casework.case_compilation import CHAIN_FIELDS, COMPILED_META
     raw = deepcopy(raw)
     cid = str(raw.get("case_id") or "").strip()
-    old = get_case(project_id, cid)
-    for key in CHAIN_FIELDS:
-        raw.pop(key, None)
-    meta = dict(raw.get("meta") or {})
-    bootstrap = (
-        {key: deepcopy(meta[key]) for key in COMPILED_META if key in meta and meta[key]}
-        if compiled
-        else {}
-    )
-    for key in COMPILED_META:
-        meta.pop(key, None)
-    if old:
-        for key in COMPILED_META:
-            if key in (old.get("meta") or {}):
-                meta[key] = deepcopy(old["meta"][key])
-    if bootstrap and (not old or compiled):
-        meta.update(bootstrap)
-    raw["meta"] = meta
-    # The source transaction is deterministic. Preview/client compiled output is
-    # never an authoritative artifact; only the fenced worker can activate it.
     raw["name"] = str(raw.get("name") or raw.get("title") or cid)
     raw["precondition"] = str(raw.get("precondition") or raw.get("pre") or "")
     for field in ("steps", "expected"):
         raw[field] = list(raw.get(field) or [])
         raw[field + "_raw"] = str(raw.get(field + "_raw") or "")
     raw["platform"] = str(raw.get("platform") or "")
-    raw = guard_case_row({**raw, "project_id": project_id})
+    raw["meta"] = dict(raw.get("meta") or {})
     if force_recompile_resource_key:
         raw.pop("resource_key", None)
         raw["meta"].pop("resource_key", None)
@@ -304,24 +249,8 @@ def _row_fields(
     )
 
 
-def _retain_publication(obj, fields):
-    """Re-read server-owned state in the writing transaction."""
-    from copy import deepcopy
-    old = dict(obj.extra or {})
-    new = dict(fields["extra"])
-    from mino_nexus.casework.v5_publication import source_view
-    # Rebase server-owned revision/history on the row held by this transaction.
-    new["v5_draft_revision"] = int(old.get("v5_draft_revision") or 1) + int(source_view(_public(obj)) != source_view(new))
-    if old.get("v5_publication"):
-        new["v5_publication"] = deepcopy(old["v5_publication"])
-        # Preserve historical publication as evidence, never as the active plan.
-    fields["extra"] = new
-
-
-
 def _persist_fields(db, fields, obj=None, *, origin=None):
     from mino_nexus.models.case import ProjectCase
-    from mino_nexus.casework.case_compilation import record_change
     previous = _public(obj) if obj is not None else None
     binding = (obj.extra or {}).get("source_binding") if obj is not None else None
     fields["extra"].pop("source_binding", None)
@@ -339,11 +268,8 @@ def _persist_fields(db, fields, obj=None, *, origin=None):
         obj = ProjectCase(**fields)
         db.add(obj)
     else:
-        _retain_publication(obj, fields)
         for key, value in fields.items():
             setattr(obj, key, value)
-    db.flush()
-    record_change(db, obj, previous, origin=origin)
     db.flush()
     return obj
 
@@ -413,7 +339,7 @@ def upsert_cases(
         incoming_ids = {fields["case_id"] for fields in prepared}
         if replace and rid:
             for old in db.query(ProjectCase).filter_by(project_id=pid, requirement_id=rid).all():
-                if old.case_id not in incoming_ids and not (old.extra or {}).get("v5_publication") and not (old.extra or {}).get("source_binding"):
+                if old.case_id not in incoming_ids and not (old.extra or {}).get("source_binding"):
                     db.delete(old)
         for fields in prepared:
             obj = db.query(ProjectCase).filter_by(project_id=pid, case_id=fields["case_id"]).one_or_none()
@@ -429,7 +355,7 @@ def apply_import_row(
     on_conflict: ConflictAction = "skip",
     compiled: bool = False,
 ) -> tuple[str, dict[str, Any] | None]:
-    """Legacy callers share the same transactional revision/job path."""
+    """Legacy callers share the same transactional write path."""
     from sqlalchemy import text
     from mino_nexus.core.database import session_scope
     prepared = prepare_import_row(project_id, requirement_id, row, on_conflict=on_conflict, compiled=compiled)

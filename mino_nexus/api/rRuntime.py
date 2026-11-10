@@ -134,19 +134,6 @@ class ImSendBody(BaseModel):
     client_request_id: str = Field(default='', max_length=160)
 
 
-class GmailOtpBody(BaseModel):
-    """从当前账号节点上的 Gmail 插件取一封邮件的验证码。"""
-    model_config = ConfigDict(extra='forbid')
-    node_id: str = Field(default='', max_length=128)
-    to_address: str = Field(default='', max_length=320)
-    since_ts: float | None = Field(default=None, ge=0)
-    lookback_seconds: int = Field(default=600, ge=10, le=86400)
-    max_wait_ms: int = Field(default=15000, ge=1000, le=45000)
-    poll_interval_ms: int = Field(default=200, ge=200, le=10000)
-    subject_contains: str = Field(default='', max_length=200)
-    from_allowlist: list[str] = Field(default_factory=list, max_length=10)
-
-
 async def _cli_command(body: CliCommandBody, sess: dict, mode: str):
     from mino_nexus.platform.identity import execution_user
     from mino_nexus.resources.node_plugin_call import PluginCallError, PluginCapabilityError, call_plugin
@@ -306,64 +293,6 @@ def send_im_message(body: ImSendBody, sess: dict = Depends(current_session)):
                'channel': body.channel, 'chat_id': body.chat_id,
                'provider_message_id': provider_message_id,
                'delivery_id': delivery_id}, msg=str(data.get('summary') or '已发送'))
-
-
-@router.post('/gmail/otp')
-def fetch_gmail_otp(body: GmailOtpBody, sess: dict = Depends(current_session)):
-    """从当前账号节点上的 Gmail 插件取码；只返回验证码和有限诊断，不回传邮件正文。"""
-    import re
-    import time
-
-    from mino_nexus.platform.identity import execution_user
-    from mino_nexus.resources.node_plugin_call import PluginCallError, call_plugin_with_raw, node_for_plugin
-
-    uid = str(sess.get('user_id') or '')
-    with execution_user(uid):
-        try:
-            node = node_for_plugin('mail', 'gmail', body.node_id)
-        except PluginCallError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        to_address = body.to_address.strip()
-        if not to_address:
-            for plugin in node.plugins or []:
-                if plugin.get('class') == 'mail' and plugin.get('id') == 'gmail':
-                    to_address = str((plugin.get('values') or {}).get('inbox_address') or '').strip()
-                    break
-        if to_address and ('@' not in to_address or any(ch.isspace() for ch in to_address)):
-            raise HTTPException(status_code=422, detail='收件地址不合法')
-        now = time.time()
-        since_ts = float(body.since_ts) if body.since_ts else now - body.lookback_seconds
-        import math
-        if not math.isfinite(since_ts) or since_ts > now + 60 or since_ts < now - 86400 * 7:
-            raise HTTPException(status_code=422, detail='since_ts 只能取最近 7 天，且不能晚于当前时间')
-        try:
-            data, raw, summary, _node = call_plugin_with_raw(
-                kind='mail', plugin_id='gmail', node_id=node.node_id,
-                capability_id='plugin.gmail.fetch_otp',
-                params={'to_address': to_address, 'since_ts': since_ts,
-                        'deadline_ts': now + body.max_wait_ms / 1000.0 + 5,
-                        'poll_interval_ms': body.poll_interval_ms, 'max_wait_ms': body.max_wait_ms,
-                        'from_allowlist': body.from_allowlist, 'subject_contains': body.subject_contains},
-                timeout=body.max_wait_ms / 1000.0 + 10,
-            )
-        except PluginCallError as exc:
-            error_text = str(exc)
-            error_text = {
-                'otp_mail_not_received': '等待窗口内没有收到验证码邮件',
-                'otp_mail_filter_no_match': '有邮件，但没有匹配到指定发件人、主题或收件人',
-                'otp_mail_code_not_found': '邮件里没有找到 4-8 位验证码',
-                'otp_wait_stopped': '取码等待已停止，请缩短等待窗口后重试',
-                'otp_request_invalid': '取码参数不合法，请核对收件地址和等待窗口',
-            }.get(error_text, error_text)
-            raise HTTPException(status_code=502, detail={'message': error_text}) from exc
-    code = str(raw.get('code') or data.get('code') or '').strip()
-    if not re.fullmatch(r'\d{4,8}', code):
-        raise HTTPException(status_code=502, detail={'message': summary or '没有取到验证码，请确认收件邮箱和等待窗口'})
-    raw_diag = raw.get('otp_diagnostics') if isinstance(raw.get('otp_diagnostics'), dict) else {}
-    diagnostics = {key: raw_diag[key] for key in ('connection_attempts', 'reconnects', 'error_code', 'phase')
-                   if isinstance(raw_diag.get(key), (str, int, float, bool))}
-    return ok({'node_id': node.node_id, 'code': code, 'source': 'gmail',
-               'summary': summary or '已取到验证码', 'diagnostics': diagnostics})
 
 
 @router.get("/nodes")

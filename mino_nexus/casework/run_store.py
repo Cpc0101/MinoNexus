@@ -195,9 +195,6 @@ def _upsert_run(doc: dict[str, Any]) -> None:
             from mino_nexus.core.ids import prefixed
             db.add(RunAdmission(id=prefixed("admission"), owner_user_id=doc["owner_user_id"],
                 request_id=doc["client_request_id"], request_digest=doc["request_digest"], run_id=doc["run_id"]))
-        if previous is None and doc.get("retry_contract"):
-            from mino_nexus.casework.run_retry import validate_admission
-            validate_admission(db, doc)
         guards = merge(previous.payload if previous else None, doc)
         from mino_nexus.casework.write_reconciliation import merge_receipts
         reconciliations = merge_receipts(previous.payload if previous else None, doc)

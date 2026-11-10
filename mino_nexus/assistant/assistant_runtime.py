@@ -9,7 +9,7 @@ from mino_nexus.assistant.assistant_tools import ToolOutcome, get_tool, run_tool
 
 
 def _task_id(outcome: ToolOutcome | None) -> str:
-    if not outcome or not outcome.ok or outcome.tool_id not in ('case.run', 'case.retry_failed'):
+    if not outcome or not outcome.ok or outcome.tool_id != 'case.run':
         return ''
     data = outcome.data
     return str(data if isinstance(data, str) else (data.get('task_id') or data.get('run_id') or '') if isinstance(data, dict) else '')
@@ -61,7 +61,7 @@ def result_for(*, answer: str, origin: dict, outcome: ToolOutcome | None = None,
     from mino_nexus.assistant.assistant_errors import explain
     question = bool(outcome and outcome.ask)
     failed = bool(runtime_stop or model_error or (outcome and not outcome.ok and not outcome.ask))
-    task_id = _task_id(outcome) if outcome and outcome.tool_id in ('case.run', 'case.retry_failed') else ''
+    task_id = _task_id(outcome) if outcome and outcome.tool_id == 'case.run' else ''
     card_type = 'clarification' if question else 'notification' if outcome or failed else 'dialogue'
     uncertain = bool(failed and outcome and outcome.status >= 500 and (request or {}).get('state') == 'uncertain')
     status = 'need_input' if question else 'uncertain' if uncertain else 'blocked' if failed else 'submitted' if task_id else 'done'

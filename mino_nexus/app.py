@@ -44,7 +44,6 @@ from mino_nexus.api import (
     rProject,
     rProjectCases,
     rResourceView,
-    rLogicView,
     rReleases,
     rRuntime,
     rSettings,
@@ -115,22 +114,6 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(30)
 
     delivery_task = asyncio.create_task(_assistant_delivery_loop())
-    async def _case_compile_loop() -> None:
-        import uuid
-        from mino_nexus.casework.case_compilation import interrupt_expired, run_one
-        from mino_nexus.core.ids import prefixed
-        worker_id = prefixed("nexus")
-        while True:
-            try:
-                await asyncio.to_thread(interrupt_expired)
-                worked = await asyncio.to_thread(run_one, worker_id)
-            except Exception as exc:
-                SLog.w(TAG, f"case compile tick: {type(exc).__name__}")
-                worked = False
-            await asyncio.sleep(0.2 if worked else 2)
-
-    compile_task = asyncio.create_task(_case_compile_loop())
-
     from mino_nexus.resources.scout_updates import worker as scout_update_worker
     scout_update_task = asyncio.create_task(scout_update_worker())
     from mino_nexus.platform.identity import execution_user, user_thread
@@ -161,7 +144,7 @@ async def lifespan(app: FastAPI):
     compile_task.cancel()
     doc_sync_task.cancel()
     delivery_task.cancel()
-    await asyncio.gather(compile_task, doc_sync_task, delivery_task, return_exceptions=True)
+    await asyncio.gather(doc_sync_task, delivery_task, return_exceptions=True)
     await unregister_beacon(handle)
 
 
@@ -232,7 +215,6 @@ def create_app() -> FastAPI:
     app.include_router(rProject.router)
     app.include_router(rProjectCases.router)
     app.include_router(rResourceView.router)
-    app.include_router(rLogicView.router)
     from mino_nexus.api import rApplicationUnderstanding
     app.include_router(rApplicationUnderstanding.router)
     app.include_router(rApplicationUnderstanding.resource_router)

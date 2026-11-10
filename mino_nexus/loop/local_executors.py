@@ -690,9 +690,12 @@ def _exec_ok(result: Any) -> bool:
 
 
 
+class GmailOtpError(Exception):
+    """本地取码失败。取码实现只在 Scout，这里只用于已废弃的本地执行器兼容引用。"""
+
+
 def _fetch_gmail_otp(ctx: Any, router: Any) -> str:
     from mino_nexus.core.schemas import PlanEvent
-    from mino_nexus.resources.gmail_otp import GmailOtpError
 
     hint = "请在这台 Scout 节点的「邮箱 / Gmail」里填写收件箱和应用专用密码"
     if router is None:
@@ -745,8 +748,6 @@ def _get_otp(event: PlanEvent, *, ctx: Any, t0: float, router: Any = None) -> Ev
             code = _fetch_gmail_otp(ctx, router)
             source = "gmail"
         except Exception as exc:
-            from mino_nexus.resources.gmail_otp import GmailOtpError
-
             summary = str(exc) if isinstance(exc, GmailOtpError) else f"Gmail 取码失败：{exc}"
             if "已取消" in summary or "超过用例时间" in summary:
                 return _result(

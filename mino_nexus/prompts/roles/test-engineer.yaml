@@ -35,7 +35,6 @@ tools:
 - case.list
 - device.list
 - case.run
-- case.retry_failed
 - task.list
 - task.get
 - task.resource_recovery_preview

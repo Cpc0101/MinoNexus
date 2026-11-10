@@ -73,12 +73,6 @@ class PromoteBaselineRequest(BaseModel):
     notes: str = ""
 
 
-class RetryFailedRequest(BaseModel):
-    sn: str = ""
-    client_request_id: str = Field(default="", max_length=160)
-    execution_unit_ids: list[str] = Field(default_factory=list, max_length=1000)
-
-
 class TaskAccountTemplateStateBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -423,15 +417,6 @@ def cancel_task(task_id: str, _sess: dict = Depends(current_session)):
     return ok(result, msg="任务已取消")
 
 
-@router.get("/tasks/{task_id}/retry-eligibility")
-def retry_eligibility(task_id: str, _sess: dict = Depends(current_session)):
-    from mino_nexus.casework.run_retry import eligibility
-    try:
-        return ok(eligibility(task_id))
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在") from exc
-
-
 @router.get("/tasks/{task_id}/write-safety")
 def task_write_safety(task_id: str, _sess: dict = Depends(current_session)):
     from mino_nexus.casework.run_safety_status import status
@@ -439,22 +424,6 @@ def task_write_safety(task_id: str, _sess: dict = Depends(current_session)):
         return ok(status(task_id))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
-
-
-@router.post("/tasks/{task_id}/retry-failed")
-def retry_failed_cases(task_id: str, body: Optional[RetryFailedRequest] = None, _sess: dict = Depends(current_session)):
-    body = body or RetryFailedRequest()
-    result = cr.retry_failed(task_id, sn=(body.sn or "").strip(),
-        execution_unit_ids=body.execution_unit_ids, client_request_id=body.client_request_id)
-    if result.get("ok"):
-        snapshot = result["data"]
-        return ok({"task_id": snapshot["task_id"], "retried_from": task_id, "task": snapshot,
-                   "case_ids": result["case_ids"]})
-    raise HTTPException(status_code=int(result.get("code") or 409), detail={
-        "message": result.get("reason") or "安全复跑尚未开放",
-        "reason_code": result.get("reason_code") or "task_not_found",
-        "eligibility": result.get("eligibility"),
-    })
 
 
 @router.get("/baseline/{case_id}")

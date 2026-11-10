@@ -1,0 +1,48 @@
+id: im.inbox
+version: 1
+title: 拉取 IM 入站消息
+description: >-
+  拉取本人节点上 LangBot 渠道（飞书/企微/钉钉）的入站消息条目。
+  wait_seconds 用于长轮询等待新消息，最大 25 秒。
+  条目只含渠道、实例、会话、发送者、reply_ctx 与处理状态；正文按需从 Scout 现取，
+  取不到时返回 text_reason（binding_missing / 节点离线），不会回传缓存的原话。
+  处理完必须用 im.ack 标记，否则下次仍会返回同一批。返回里的 handoff 表示该账号是否已接管。
+route: POST /assistant/im/inbox
+risk: read
+async: false
+timeout_sec: 40
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    channel:
+      type: string
+      description: 可选；渠道标识，如 langbot:feishu / langbot:wecom / langbot:dingtalk；省略返回全部
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 50
+      default: 20
+    wait_seconds:
+      type: integer
+      minimum: 0
+      maximum: 25
+      default: 0
+      description: 长轮询等待新消息的秒数，0 表示立即返回
+    include_text:
+      type: boolean
+      default: true
+      description: 是否从 Scout 现取最近几条正文；关掉只返回条目元信息
+    history_limit:
+      type: integer
+      minimum: 1
+      maximum: 20
+      default: 8
+    only_pending:
+      type: boolean
+      default: true
+      description: 只返回尚未处理的条目
+  required: []
+result_pick: [data]
+surfaces: [mcp]
+enabled: true

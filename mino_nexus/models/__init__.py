@@ -74,8 +74,6 @@ __all__ = [
     "CaseScript",
     "CasePlatformScript",
     "ProjectScriptRepo",
-    "CaseRevision",
-    "CaseCompileJob",
     "CaseImportPreview",
     "CaseImportReceipt",
     "CaseImportReceiptLine",
@@ -115,8 +113,6 @@ __all__ = [
     "UserPluginSecret",
 ]
 
-from mino_nexus.models.case_revision import CaseRevision
-from mino_nexus.models.case_compile_job import CaseCompileJob
 
 from mino_nexus.models.scout_update import ScoutUpdate
 

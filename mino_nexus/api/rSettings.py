@@ -774,12 +774,9 @@ class AccountPoolExtensionFieldsBody(BaseModel):
 
 @router.get("/case-resource-key")
 def get_case_resource_key_catalog(_sess: dict = Depends(current_session)):
-    from mino_nexus.casework.case_key_registry import catalog_entries_by_layer
     from mino_nexus.resources.case_resource_key_catalog import catalog_payload
 
-    payload = catalog_payload()
-    payload["console"] = catalog_entries_by_layer()
-    return ok(payload)
+    return ok(catalog_payload())
 
 
 class CaseImportSettingsBody(BaseModel):
@@ -826,9 +823,20 @@ def put_case_import_settings_route(body: CaseImportSettingsBody, _sess: dict = D
 
 @router.get("/case-resource-key/registry")
 def get_case_resource_key_registry(app_id: str = "", _sess: dict = Depends(current_session)):
-    from mino_nexus.casework.case_key_registry import registry_payload
+    """用例密钥登记簿。用例正文不再编译，键层只来自资源目录与导航键。"""
+    from mino_nexus.navigation.atlas.nav_key_refs import default_block_key_ref, default_screen_key_ref
+    from mino_nexus.resources.case_resource_key_catalog import catalog_payload
 
-    return ok(registry_payload(app_id=str(app_id or "").strip()))
+    payload = catalog_payload()
+    entries = payload.get("entries") or []
+    return ok({
+        "app_id": str(app_id or "").strip(),
+        "catalog_version": payload.get("version") or payload.get("catalog_version") or 0,
+        "entries": entries,
+        "counts": {"catalog": len(entries),
+                   "sample_screen_key_ref": default_screen_key_ref("screen"),
+                   "sample_block_key_ref": default_block_key_ref("block")},
+    })
 
 
 class ResourceTransitionRulePatchBody(BaseModel):

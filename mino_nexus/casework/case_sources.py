@@ -9,7 +9,6 @@ from mino_nexus.core.database import session_scope
 from mino_nexus.core.ids import prefixed
 from mino_nexus.models.case import ProjectCase
 from mino_nexus.models.case_source import CaseSource, CaseSourceRead, CaseSourceRow
-from mino_nexus.casework.case_compilation import record_change
 from mino_nexus.core.stable_digest import digest, now
 from mino_nexus.platform.project_guard import owned
 
@@ -263,10 +262,6 @@ def finish(snapshot, result=None, *, error_code=""):
                 case.extra = {**(case.extra or {}), "app_id": fields["app_id"], "source_binding": {
                     "source_id": source.source_id, "generation": source.generation,
                     "external_case_no": number, "read_id": read.read_id, "position": item["position"]}}
-                job = record_change(db, case, previous, origin={"kind": "source_sync", "source_id": source.source_id,
-                    "generation": source.generation, "read_id": read.read_id}, initial_status="waiting_review")
-                if job:
-                    jobs.append({"case_id": case.case_id, "job_id": job.job_id, "status": job.status})
                 mapping.content_digest = content
                 changes.append(case.case_id)
             retired = []
@@ -299,13 +294,6 @@ def detach(project_id, source_id, case_id, expected_generation):
         mapping.detached = 1
         extra = deepcopy(case.extra or {})
         extra.pop("source_binding", None)
-        job_id = extra.get("latest_compile_job_id")
-        from mino_nexus.models.case_compile_job import CaseCompileJob
-        job = db.get(CaseCompileJob, job_id) if job_id else None
-        if job and job.status not in {"succeeded", "failed", "cancelled", "interrupted"}:
-            job.status, job.cancel_requested, job.finished_at = "cancelled", True, now()
-            from mino_nexus.casework.case_compilation import job_view
-            extra.update(compile_state=job.status, compile_job=job_view(job))
         case.extra = extra
         case.source = "platform"
         return {"generation": source.generation, "case_id": case_id, "detached": True}

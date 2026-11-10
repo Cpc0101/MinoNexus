@@ -1,0 +1,28 @@
+id: im.handoff
+version: 1
+title: 接管或交还 IM 渠道
+description: >-
+  接管后 Nexus 内建助手不再自动回复对应 LangBot 渠道，消息留在 pending 等 im.ack 收口；
+  交还后恢复内建助手自动答复，条目记成 handled_by=mino。
+  接管整条生效（连接管期间的限流提示和帮助回复都不再发送），只影响之后收到的消息，不重放历史。
+  接管状态按账号保存，GET /assistant/status 也会返回。
+route: POST /assistant/im/handoff
+risk: write
+async: false
+timeout_sec: 30
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    enabled:
+      type: boolean
+      description: true 接管，false 交还
+    channels:
+      type: array
+      maxItems: 20
+      items: {type: string}
+      description: 可选；只对哪些 LangBot 渠道生效，如 langbot:feishu；省略表示全部已绑定渠道
+  required: [enabled]
+result_pick: [data]
+surfaces: [mcp]
+enabled: true

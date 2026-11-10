@@ -143,12 +143,13 @@ def resource_account_otp(
             "需要人工输入验证码" if data.get("requires_human") else "未取到验证码"
         )
         return ok(data, msg=summary)
-    from mino_nexus.api.rRuntime import GmailOtpBody, fetch_gmail_otp
+    from mino_nexus.platform.identity import execution_user
+    from mino_nexus.resources.gmail_otp import NodeUnavailable, OtpError, fetch_otp
 
     gmail = data.get("gmail") if isinstance(data.get("gmail"), dict) else {}
     try:
-        res = fetch_gmail_otp(
-            GmailOtpBody(
+        with execution_user(str(sess.get("user_id") or "")):
+            res = fetch_otp(
                 node_id=body.node_id,
                 to_address=str(data.get("recipient") or ""),
                 since_ts=body.since_ts,
@@ -157,15 +158,12 @@ def resource_account_otp(
                 poll_interval_ms=body.poll_interval_ms,
                 subject_contains=body.subject_contains or str(gmail.get("subject_contains") or ""),
                 from_allowlist=body.from_allowlist or list(gmail.get("from_allowlist") or []),
-            ),
-            sess,
-        )
-    except HTTPException as exc:
-        raise HTTPException(
-            status_code=409 if exc.status_code in (409, 422) else 502,
-            detail={"reason_code": "otp_gmail_failed", "message": str(exc.detail), "source": "gmail"},
-        ) from exc
-    code = str((res.get("data") or {}).get("code") or "").strip()
+            )
+    except NodeUnavailable as exc:
+        raise HTTPException(status_code=409, detail={"reason_code": "otp_node_unavailable", "message": str(exc), "source": "gmail"}) from exc
+    except OtpError as exc:
+        raise HTTPException(status_code=502, detail={"reason_code": exc.code, "message": exc.message, "source": "gmail"}) from exc
+    code = str(res.get("code") or "").strip()
     if not code:
         raise HTTPException(status_code=502, detail={"reason_code": "otp_gmail_empty", "message": "Gmail 未返回验证码", "source": "gmail"})
     data.update(code=code, source="gmail", requires_human=False, hint="已从 Gmail 取到验证码")

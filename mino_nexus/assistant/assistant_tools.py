@@ -519,33 +519,10 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
         if key in props and target and target.get(key) and args.get(key) != target[key]:
             msg = "工具选择的项目、应用或渠道与本次用户明确指定的目标不一致，请按本次目标重新选择。"
             return ToolOutcome(ok=False, ask=msg, summary=msg, tool_id=str(spec.get("id") or ""))
-    if spec.get("id") == "case.retry_failed" and args.get("task_id"):
-        from mino_nexus.casework.run_retry import eligibility
-        from mino_nexus.casework import run_store
-        receipt = run_store.request_receipt(str(args.get("client_request_id") or "")) if args.get("client_request_id") else None
-        previous_retry = run_store.get(receipt["run_id"]) if receipt else None
-        if previous_retry:
-            if previous_retry.get("derived_from") != args["task_id"]:
-                return ToolOutcome(ok=False, summary="请求标识已用于另一项执行，请查询原任务。", tool_id=spec["id"])
-            original_units = [c["retry_of_execution_unit_id"] for c in previous_retry.get("cases") or []]
-            assessment = {"eligible_unit_ids": original_units, "reason_code": ""}
-        else:
-            assessment = eligibility(str(args["task_id"]))
-        if args.get("sn"):
-            return ToolOutcome(ok=False, summary="复跑必须保持原设备，不能重新选择执行目标。", tool_id=spec["id"])
-        selected = args.get("execution_unit_ids", assessment["eligible_unit_ids"])
-        if not selected or not set(selected) <= set(assessment["eligible_unit_ids"]):
-            return ToolOutcome(ok=False, summary="没有可安全复跑的执行单元：" + (assessment["reason_code"] or "retry_selection_not_eligible"), tool_id=spec["id"], data={"eligibility": assessment})
-        args["execution_unit_ids"] = selected
     if "sn" in props and spec.get("risk") == "write":
         from mino_nexus.assistant.assistant_targets import compatible_devices, device_brief
 
         device_args = dict(args)
-        if spec.get("id") == "case.retry_failed" and args.get("task_id"):
-            from mino_nexus.casework.run_store import get
-
-            previous = get(str(args["task_id"])) or {}
-            device_args = {**{k: previous.get(k) for k in ("app_id", "env_surface", "env_profile")}, **args}
         devices = compatible_devices(device_args, _visible_devices(user_id))
         if args.get("sn"):
             device = next((row for row in devices if str(row.get("sn") or "") == str(args["sn"])), None)
@@ -745,18 +722,6 @@ _FORWARD_PATH_CALL = "/forward/call"
 _FORWARD_PATH_RESOLVE = "/forward/resolve"
 _FORWARD_PATHS = frozenset({_FORWARD_PATH_CALL, _FORWARD_PATH_RESOLVE})
 
-# 离线兜底只用这套码，不再散落「节点离线 / 设备离线 / 节点未应答」多种措辞。
-OFFLINE_DEVICE = "device_offline"
-OFFLINE_NODE = "node_offline"
-OFFLINE_UNKNOWN = "target_unresolved"
-
-
-def _auth_headers(user_id: str) -> dict[str, str]:
-    """进程内调用也要带 token：/forward/* 与 /mcp 走同一套鉴权。"""
-    from mino_nexus.assistant.store import ensure_assistant_token
-
-    return {"Authorization": f"Bearer {ensure_assistant_token(user_id)}", "X-Mino-Client": "assistant"}
-
 
 def forward_call(
     *,
@@ -774,7 +739,7 @@ def forward_call(
 
     不校验 `capability_id`：Scout 不认识就自己回 FAIL，这里原样透出它的 error。
     """
-    from mino_nexus.platform.identity import execution_user
+    from mino_nexus.resources import node_forward
 
     cap = str(capability_id or "").strip()
     if not cap:
@@ -790,54 +755,47 @@ def forward_call(
         "executor_order": list(executor_order or []),
         "selected_impl": dict(selected_impl or {}),
     }
-    with execution_user(user_id):
-        response = _asgi_request("POST", _FORWARD_PATH_CALL, body, _auth_headers(user_id),
-                                 timeout=float(timeout_sec) + 35.0)
-    elapsed = int((time.time() - started) * 1000)
     try:
-        payload = response.json()
-    except Exception:
-        payload = {"detail": response.text[:500]}
-    detail = payload.get("detail") if isinstance(payload, dict) else None
-    if response.status_code >= 400:
-        if isinstance(detail, dict):
-            return ToolOutcome(ok=False, status=response.status_code,
-                               summary=str(detail.get("message") or detail.get("code") or "调用失败"),
-                               data=detail, elapsed_ms=elapsed, tool_id=cap, args=body)
-        return ToolOutcome(ok=False, status=response.status_code,
-                           summary=str(detail or "调用失败")[:300],
-                           elapsed_ms=elapsed, tool_id=cap, args=body)
-    data = payload.get("data") if isinstance(payload, dict) else None
-    merged = dict(data) if isinstance(data, dict) else {"data": data}
+        # 直接走转发核心，不再进程内互调 `/forward/call`：
+        # Nest 一个 ASGI 请求会在新的事件循环里等 Scout 回执，而回执只唤醒主循环，
+        # 于是每次都要空等到 timeout 才拿到（实测 5ms 的结果等 50s~150s）。
+        data = node_forward.forward_sync(
+            capability_id=cap,
+            params=dict(params or {}),
+            sn=str(sn or ""),
+            node_id=str(node_id or ""),
+            platform=str(platform or ""),
+            timeout_sec=float(timeout_sec),
+            executor_order=list(executor_order or []),
+            selected_impl=dict(selected_impl or {}),
+            user_id=user_id,
+        )
+    except node_forward.ForwardError as exc:
+        detail = {"code": exc.code, "message": exc.message, **exc.detail}
+        return ToolOutcome(ok=False, status=exc.status, summary=exc.message,
+                           data=detail, elapsed_ms=int((time.time() - started) * 1000),
+                           tool_id=cap, args=body)
+    elapsed = int((time.time() - started) * 1000)
+    merged = dict(data if isinstance(data, dict) else {"data": data})
     merged.setdefault("capability_id", cap)
-    return ToolOutcome(ok=True, status=response.status_code, data=merged,
-                       summary=str((payload or {}).get("msg") or ""), elapsed_ms=elapsed,
+    return ToolOutcome(ok=True, status=200, data=merged,
+                       summary=str(merged.get("summary") or ""), elapsed_ms=elapsed,
                        tool_id=cap, args=body)
 
 
 def forward_resolve(*, sn: str = "", node_id: str = "", user_id: str = "") -> ToolOutcome:
     """只查目标落在哪个节点、是否在线，不执行。"""
-    from mino_nexus.platform.identity import execution_user
+    from mino_nexus.resources import node_forward
 
     started = time.time()
-    with execution_user(user_id):
-        response = _asgi_request("POST", _FORWARD_PATH_RESOLVE,
-                                 {"sn": str(sn or ""), "node_id": str(node_id or "")},
-                                 _auth_headers(user_id), timeout=30)
-    elapsed = int((time.time() - started) * 1000)
     try:
-        payload = response.json()
-    except Exception:
-        payload = {"detail": response.text[:500]}
-    detail = payload.get("detail") if isinstance(payload, dict) else None
-    if response.status_code >= 400:
-        summary = str(detail.get("message") if isinstance(detail, dict) else detail or "找不到目标")
-        return ToolOutcome(ok=False, status=response.status_code, summary=summary[:300],
-                           data=detail if isinstance(detail, dict) else None, elapsed_ms=elapsed,
-                           tool_id="forward.resolve")
-    return ToolOutcome(ok=True, status=response.status_code, data=payload.get("data"),
-                       summary=str(payload.get("msg") or ""), elapsed_ms=elapsed,
-                       tool_id="forward.resolve")
+        data = node_forward.resolve_sync(sn=str(sn or ""), node_id=str(node_id or ""), user_id=user_id)
+    except node_forward.ForwardError as exc:
+        return ToolOutcome(ok=False, status=exc.status, summary=exc.message,
+                           data={"code": exc.code, "message": exc.message},
+                           elapsed_ms=int((time.time() - started) * 1000), tool_id="forward.resolve")
+    return ToolOutcome(ok=True, status=200, data=data, summary="",
+                       elapsed_ms=int((time.time() - started) * 1000), tool_id="forward.resolve")
 
 
 def forward_tool_specs() -> list[dict[str, Any]]:

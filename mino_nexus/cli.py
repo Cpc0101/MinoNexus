@@ -114,13 +114,13 @@ def _otp_cli(argv: list[str]) -> int:
         print("账号不存在", file=sys.stderr)
         return 2
     if data.get("source") == "gmail":
-        from fastapi import HTTPException
-        from mino_nexus.api.rRuntime import GmailOtpBody, fetch_gmail_otp
+        from mino_nexus.platform.identity import execution_user
+        from mino_nexus.resources.gmail_otp import NodeUnavailable, OtpError, fetch_otp
 
         gmail = data.get("gmail") if isinstance(data.get("gmail"), dict) else {}
         try:
-            res = fetch_gmail_otp(
-                GmailOtpBody(
+            with execution_user(str(args.user_id or "")):
+                res = fetch_otp(
                     node_id=args.node_id,
                     to_address=str(data.get("recipient") or ""),
                     since_ts=args.since_ts,
@@ -129,13 +129,11 @@ def _otp_cli(argv: list[str]) -> int:
                     poll_interval_ms=args.poll_interval_ms,
                     subject_contains=args.subject_contains or str(gmail.get("subject_contains") or ""),
                     from_allowlist=args.from_allowlist or list(gmail.get("from_allowlist") or []),
-                ),
-                {"user_id": args.user_id},
-            )
-        except HTTPException as exc:
-            print(json.dumps({"ok": False, "error": exc.detail}, ensure_ascii=False, indent=2), file=sys.stderr)
+                )
+        except (NodeUnavailable, OtpError) as exc:
+            print(json.dumps({"ok": False, "error": exc.code, "message": exc.message}, ensure_ascii=False, indent=2), file=sys.stderr)
             return 2
-        data["code"] = str((res.get("data") or {}).get("code") or "")
+        data["code"] = str(res.get("code") or "")
         data["source"] = "gmail"
         data["requires_human"] = False
         data["hint"] = "已从 Gmail 取到验证码"
