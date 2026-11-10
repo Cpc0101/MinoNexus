@@ -32,11 +32,18 @@ type ManifestItem = { os?: string; arch?: string; url?: string };
 async function loadTargets(): Promise<{
   manifest_url: string;
   targets: Record<string, string[]>;
+  version: string;
+  build_id: string;
+  release_tag: string;
 }> {
   try {
     const res = await fetch(MANIFEST_URL, { redirect: "follow" });
     if (!res.ok) throw new Error(`manifest ${res.status}`);
-    const body = (await res.json()) as { items?: ManifestItem[] } & ManifestItem;
+    const body = (await res.json()) as {
+      items?: ManifestItem[];
+      version?: string;
+      build_id?: string;
+    } & ManifestItem;
     const rows = Array.isArray(body.items) ? body.items : [body];
     const targets: Record<string, string[]> = {};
     for (const row of rows) {
@@ -54,8 +61,15 @@ async function loadTargets(): Promise<{
       targets[system] ||= [];
       if (!targets[system].includes(arch)) targets[system].push(arch);
     }
+    const version = String(body.version || "").trim();
     if (Object.keys(targets).length) {
-      return { manifest_url: MANIFEST_URL, targets };
+      return {
+        manifest_url: MANIFEST_URL,
+        targets,
+        version,
+        build_id: String(body.build_id || version || ""),
+        release_tag: version ? `v${version}` : "",
+      };
     }
   } catch {
     /* fall through */
@@ -63,6 +77,9 @@ async function loadTargets(): Promise<{
   return {
     manifest_url: MANIFEST_URL,
     targets: { darwin: ["arm64", "x64"], win32: ["x64"], linux: ["x64", "arm64"] },
+    version: "",
+    build_id: "",
+    release_tag: "",
   };
 }
 
@@ -206,12 +223,17 @@ export async function scoutReleaseMeta(os: string, arch: string): Promise<Record
   const release = await loadTargets();
   const system = os === "macos" ? "darwin" : os === "windows" ? "win32" : os;
   const arches = release.targets[system] || [];
+  const available = arches.includes(arch);
   return {
     os: system,
     arch,
-    available: arches.includes(arch),
+    available,
     arches,
     manifest_url: release.manifest_url,
-    version: "",
+    version: release.version,
+    build_id: release.build_id,
+    release_tag: release.release_tag,
+    packaging: false,
+    manifest_ready: available && Boolean(release.version),
   };
 }

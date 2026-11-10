@@ -444,6 +444,46 @@ export async function handleCompat(
     return fail(501, "Cloudflare hub 暂不支持跑批 / case_run");
   }
 
+  {
+    const toolsMatch = pathname.match(/^\/runtime\/nodes\/([^/]+)\/tools$/);
+    if (toolsMatch && method === "GET") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const nodeId = decodeURIComponent(toolsMatch[1]);
+      const scouts = (await listScouts(env.DB)) as Array<{ scout_id?: string; online?: boolean }>;
+      const online = scouts.some((s) => s.scout_id === nodeId && s.online);
+      // Shape must match Workbench NodeTools; missing `tasks` crashes downloads pane.
+      return envelope({
+        node_id: nodeId,
+        online,
+        supported: false,
+        contract_version: 0,
+        stale: true,
+        reported_at: Math.floor(Date.now() / 1000),
+        items: [],
+        tasks: [],
+      });
+    }
+  }
+
+  {
+    const m = pathname.match(/^\/runtime\/nodes\/([^/]+)\/update-status$/);
+    if (m && method === "GET") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      return envelope({});
+    }
+  }
+
+  {
+    const m = pathname.match(/^\/runtime\/nodes\/([^/]+)\/logs$/);
+    if (m && method === "GET") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      return envelope({ lines: [], text: "" });
+    }
+  }
+
   // Node plugin / command paths need live Scout RPC — not on this hub yet.
   if (
     pathname.match(/^\/runtime\/nodes\/[^/]+\/(command|update|plugins|tools|tool-tasks|logs|update-status|claim)/) &&
