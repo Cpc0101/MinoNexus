@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2026-11-08"
 workers_dev = true
 
+# Public hub endpoint
+[[routes]]
+pattern = "nexus.minocc.top"
+custom_domain = true
+
 [observability]
 enabled = true
 

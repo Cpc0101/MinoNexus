@@ -52,3 +52,13 @@ npm run deploy
 ```
 
 Set `SCOUT_PAIR_TOKEN` / `MCP_BEARER_TOKEN` as Worker secrets for non-dev.
+
+## Custom domain
+
+Production hub: **`https://nexus.minocc.top`**
+
+- Scout WS: `wss://nexus.minocc.top/node`
+- MCP: `POST https://nexus.minocc.top/mcp`
+- Health: `GET https://nexus.minocc.top/health`
+
+Zone `minocc.top` must stay on Cloudflare NS (`david.ns.cloudflare.com` / `julissa.ns.cloudflare.com`).
