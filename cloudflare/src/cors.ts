@@ -16,7 +16,7 @@ export function corsHeaders(request: Request): Headers {
   headers.set(
     "Access-Control-Allow-Headers",
     request.headers.get("Access-Control-Request-Headers") ||
-      "Authorization, Content-Type",
+      "Authorization, Content-Type, X-Mino-Client, Accept",
   );
   headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   return headers;

@@ -1,5 +1,6 @@
 export interface Env {
   NEXUS_HUB: DurableObjectNamespace;
+  DB: D1Database;
   SCOUT_PAIR_TOKEN: string;
   MCP_BEARER_TOKEN: string;
 }

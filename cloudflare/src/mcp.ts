@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { hubStub } from "./env";
+import { listDevices, listScouts } from "./db";
 
 type JsonRpcId = string | number | null;
 
@@ -14,7 +14,7 @@ const TOOLS = [
   {
     name: "agent_guide",
     description:
-      "Cloudflare free hub: Scout online, device sync, MCP tools, and Workbench-compatible /runtime/nodes + /device/list. No case_run yet.",
+      "Cloudflare free hub: Scout online, device sync, MCP tools. No Workbench / case_run.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -121,10 +121,13 @@ async function callTool(
     return JSON.stringify(
       {
         scope: ["scout_online", "mcp", "device_sync"],
+        storage: "d1",
         endpoints: {
           health: "GET /health",
           scout_ws: "GET /node (WebSocket)",
           mcp: "POST /mcp",
+          scouts: "GET /v1/scouts",
+          devices: "GET /v1/devices",
         },
         out_of_scope: [
           "case_run",
@@ -139,17 +142,12 @@ async function callTool(
     );
   }
 
-  const stub = hubStub(env);
   if (name === "scout_list") {
-    const res = await stub.fetch("https://hub/internal/scouts");
-    return await res.text();
+    return JSON.stringify(await listScouts(env.DB), null, 2);
   }
   if (name === "device_list") {
     const onlineOnly = Boolean(args.online_only);
-    const res = await stub.fetch(
-      `https://hub/internal/devices?online_only=${onlineOnly ? "1" : "0"}`,
-    );
-    return await res.text();
+    return JSON.stringify(await listDevices(env.DB, onlineOnly), null, 2);
   }
   throw new Error(`Unknown tool: ${name}`);
 }

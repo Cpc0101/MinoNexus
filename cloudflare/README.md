@@ -2,18 +2,22 @@
 
 New implementation on the `cloudflare` branch. **Not** a port of the Python FastAPI Nexus.
 
-## Scope (only these three)
+## Scope
 
 1. **Scout online channel** — WebSocket `GET /node` with `REGISTER` / `HEARTBEAT`
 2. **Agent MCP** — `POST /mcp` tools: `agent_guide`, `scout_list`, `device_list`
 3. **Device status sync** — devices reported by Scouts, queryable via MCP / HTTP
+4. **Workbench HTTP** — D1 auth/sessions; install-token; nodes/devices; projects/apps; AI provider settings; soft stubs for remaining GETs
 
-Out of scope for this free hub: Workbench, `case_run`, script dispatch, account leases, navigation atlas, legacy SQLite app DB.
+Pages frontend: `https://workbench.minocc.top` → API `https://nexus.minocc.top`.
+
+Still limited: `case_run` / Scout RPC（插件安装、远程命令）返回 501。
 
 ## Runtime shape (free-tier friendly)
 
 - Cloudflare **Worker** as HTTP/MCP edge
-- One **SQLite-backed Durable Object** (`NexusHub`) as the sticky hub
+- **D1** (`mino-nexus`) for shared scout / device rows (reads from Worker + MCP)
+- One **Durable Object** (`NexusHub`) only for hibernated Scout WebSockets
 - **Hibernation WebSocket API** so idle Scout connections do not burn DO duration
 
 ## Local
@@ -78,7 +82,6 @@ DNS for Pages (same Cloudflare zone):
 
 - Type `CNAME`, name `workbench`, target `mino-workbench.pages.dev`, proxied
 
-**Do not point full Workbench at this hub.** It only supports Scout WS + MCP + device sync.
-`https://workbench.minocc.top` is a landing page explaining that; auth-login-with-MCP-token was removed.
-
-Protected reads (`/mcp`, `/v1/scouts`, `/v1/devices`) require `Authorization: Bearer <MCP_BEARER_TOKEN>` — keep that secret server-side / in agent config, never as a Workbench password.
+Workbench login uses real email/password accounts in D1 (not the MCP bearer).
+MCP (`/mcp`, `/v1/*`) still requires `Authorization: Bearer <MCP_BEARER_TOKEN>`.
+`case_run` remains unavailable on this hub.

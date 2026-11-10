@@ -11,7 +11,13 @@ custom_domain = true
 [observability]
 enabled = true
 
-# Free-tier path: one SQLite-backed Durable Object holds Scout sockets + device state.
+# Shared scout/device state (free tier). DO only keeps hibernated WebSockets.
+[[d1_databases]]
+binding = "DB"
+database_name = "mino-nexus"
+database_id = "df824c12-b7f7-440b-87e0-59bd6d89c87b"
+migrations_dir = "migrations"
+
 [[durable_objects.bindings]]
 name = "NEXUS_HUB"
 class_name = "NexusHub"
