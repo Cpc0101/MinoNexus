@@ -891,10 +891,8 @@ def _inbound_from(ctx: NodeEventContext) -> dict[str, Any] | None:
 
 
 def _ev_im_message(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
-    inbound = _inbound_from(ctx)
-    if inbound is None:
-        return NodeEventOutcome(handled=False, reason=f"{ctx.event} 缺少 im 载荷")
-    return NodeEventOutcome(inbound=inbound)
+    # 微信 / LangBot / IM 收发已下线：忽略入站，避免旧 Scout 继续推消息。
+    return NodeEventOutcome(handled=True, reason="im_removed")
 
 
 _NODE_EVENT_HANDLERS: dict[str, Callable[[NodeRegistry, NodeSession, NodeEventContext], NodeEventOutcome]] = {

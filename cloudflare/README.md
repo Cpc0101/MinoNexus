@@ -5,13 +5,13 @@ New implementation on the `cloudflare` branch. **Not** a port of the Python Fast
 ## Scope
 
 1. **Scout online channel** — WebSocket `GET /node` with `REGISTER` / `HEARTBEAT`
-2. **Agent MCP** — `POST /mcp` tools: `agent_guide`, `scout_list`, `device_list`
+2. **Agent MCP** — `POST /mcp` with OAuth 2.1 (`mino_oat_`) or Workbench manual token (`mino_mcp_`); tools from mcp0.0.1 YAML: `agent_guide`, `project_list`, `scout_list`, `device_list`, `app_create`, `plugin_status`, `node_channel_program`, `plugin_install`, `case_list` (empty until case store), `case_run` (501 until case_runner migrated)
 3. **Device status sync** — devices reported by Scouts, queryable via MCP / HTTP
-4. **Workbench HTTP** — D1 auth/sessions; install-token; nodes/devices; projects/apps; AI provider settings; soft stubs for remaining GETs
+4. **Workbench HTTP** — D1 auth/sessions; install-token; nodes/devices; projects/apps; AI provider settings; plugin/channel-program install via Scout EXECUTE
 
 Pages frontend: `https://workbench.minocc.top` → API `https://nexus.minocc.top`.
 
-Still limited: `case_run` / Scout RPC（插件安装、远程命令）返回 501。
+Still limited: `case_run` / session·task 账本尚未从 mcp0.0.1 迁完。
 
 ## Runtime shape (free-tier friendly)
 
@@ -82,6 +82,7 @@ DNS for Pages (same Cloudflare zone):
 
 - Type `CNAME`, name `workbench`, target `mino-workbench.pages.dev`, proxied
 
-Workbench login uses real email/password accounts in D1 (not the MCP bearer).
-MCP (`/mcp`, `/v1/*`) still requires `Authorization: Bearer <MCP_BEARER_TOKEN>`.
-`case_run` remains unavailable on this hub.
+Workbench login uses real email/password accounts in D1.
+MCP (`/mcp`) accepts OAuth access tokens (`mino_oat_`) or Workbench-issued manual tokens (`mino_mcp_`). Shared `MCP_BEARER_TOKEN` is probe-only (`initialize` / `ping` / `tools/list`).
+Consent page: `https://workbench.minocc.top/oauth/consent`.
+`case_run` remains unavailable until the mcp0.0.1 case-runner path is migrated.

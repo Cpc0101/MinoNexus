@@ -271,21 +271,7 @@ def delete_subscription(sub_id: int, sess: dict = Depends(current_session)):
 
 @router.post("/im-hold")
 def set_im_hold(body: ImHoldBody, sess: dict = Depends(current_session)):
-    """当前账号只能调整自己节点的机器人持有权。"""
-    from mino_nexus.assistant.connectors import im_hold
-    from mino_nexus.resources.access_scope import require_owned_node
-    require_owned_node(body.node_id.strip())
-    channel = body.channel.strip()
-    if channel != "wechat" and not channel.startswith("langbot:"):
-        raise HTTPException(status_code=400, detail="渠道只能是 wechat 或 langbot:<平台>")
-    node = get_registry().get_node(body.node_id.strip())
-    if node is None or not node.alive:
-        raise HTTPException(status_code=409, detail="目标节点不在线")
-    im_hold.pin(channel, node.node_id)
-    # 目标节点此前可能被让出，先让它重新持有，再让其它节点让出
-    im_hold.push_hold(node.node_id, channel, True)
-    yielded = im_hold.arbitrate()
-    return ok({"channel": channel, "node_id": node.node_id, "yielded": [n for _, n in yielded]})
+    raise HTTPException(status_code=410, detail="微信与 IM 对话能力已移除")
 
 
 class ImInboxBody(BaseModel):
@@ -354,57 +340,22 @@ def _im_conversation_text(uid: str, item: dict[str, Any], *, limit: int) -> tupl
 
 @router.post("/im/inbox")
 def im_inbox_list(body: ImInboxBody, sess: dict = Depends(current_session)):
-    """MCP `im.inbox`：拉取 LangBot 入站消息；wait_seconds 用于长轮询等待新消息。"""
-    from mino_nexus.assistant import im_inbox
-
-    uid = _uid(sess)
-    limit = max(1, min(int(body.limit or 20), 50))
-    channel = body.channel.strip()
-    deadline = time.time() + max(0, min(int(body.wait_seconds or 0), 25))
-    rows = im_inbox.pending(uid, channel=channel, limit=limit, only_pending=bool(body.only_pending))
-    while not rows and time.time() < deadline:
-        time.sleep(1)
-        rows = im_inbox.pending(uid, channel=channel, limit=limit, only_pending=bool(body.only_pending))
-    items = [im_inbox.public(row) for row in rows]
-    if body.include_text and items:
-        history_limit = max(1, min(int(body.history_limit or 8), 20))
-        for index, item in enumerate(items[:3]):
-            messages, reason = _im_conversation_text(uid, rows[index], limit=history_limit)
-            item["messages"] = messages
-            if reason:
-                item["text_reason"] = reason
-    return ok({"items": items, "handoff": im_inbox.handoff(uid), "server_time": int(time.time())})
+    raise HTTPException(status_code=410, detail="IM 收发已移除")
 
 
 @router.post("/im/ack")
 def im_inbox_ack(body: ImAckBody, sess: dict = Depends(current_session)):
-    """MCP `im.ack`：把已回复或确认无需回复的条目标为已处理。"""
-    from mino_nexus.assistant import im_inbox
-
-    ids = [str(value) for value in (body.ids or []) if str(value).strip()][:50]
-    if not ids:
-        raise HTTPException(status_code=422, detail="需要至少一个条目 id")
-    done, missing = im_inbox.ack(_uid(sess), ids)
-    return ok({"acked": done, "missing": missing})
+    raise HTTPException(status_code=410, detail="IM 收发已移除")
 
 
 @router.get("/im/handoff")
 def im_handoff_get(sess: dict = Depends(current_session)):
-    from mino_nexus.assistant import im_inbox
-
-    return ok(im_inbox.handoff(_uid(sess)))
+    raise HTTPException(status_code=410, detail="IM 收发已移除")
 
 
 @router.post("/im/handoff")
 def im_handoff_set(body: ImHandoffBody, sess: dict = Depends(current_session)):
-    """MCP `im.handoff`：接管后 Nexus 内建助手不再自动回复对应 LangBot 渠道。"""
-    from mino_nexus.assistant import im_inbox
-
-    try:
-        state = im_inbox.set_handoff(_uid(sess), bool(body.enabled), body.channels)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return ok(state)
+    raise HTTPException(status_code=410, detail="IM 收发已移除")
 
 
 class RequestReplyBody(BaseModel):

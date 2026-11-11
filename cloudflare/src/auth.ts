@@ -159,19 +159,75 @@ export function bearer(request: Request): string {
   return raw.toLowerCase().startsWith("bearer ") ? raw.slice(7).trim() : "";
 }
 
+/** Match mino_nexus.core.ids.serial: prefix + zero-padded increment, no separator. */
+export function serial(existing: string[], prefix: string): string {
+  let highest = 0;
+  for (const raw of existing) {
+    const text = String(raw || "");
+    if (!text.startsWith(prefix)) continue;
+    const tail = text.slice(prefix.length);
+    if (/^\d+$/.test(tail)) highest = Math.max(highest, Number.parseInt(tail, 10));
+  }
+  const number = highest + 1;
+  const body = number < 1000 ? String(number).padStart(3, "0") : String(number);
+  return prefix + body;
+}
+
 export async function listProjects(db: D1Database, owner_user_id: string): Promise<unknown[]> {
-  const { results } = await db
+  /** Match mino_nexus.resources.project_store.list_projects shape (id + apps). */
+  const { results: projects } = await db
     .prepare(
       `SELECT project_id, name, created_at_ms FROM projects WHERE owner_user_id = ? ORDER BY created_at_ms DESC`,
     )
     .bind(owner_user_id)
     .all<{ project_id: string; name: string; created_at_ms: number }>();
-  return (results || []).map((p) => ({
-    project_id: p.project_id,
-    id: p.project_id,
-    name: p.name,
-    created_at: p.created_at_ms,
-  }));
+  const { results: apps } = await db
+    .prepare(
+      `SELECT app_id, project_id, name, platform, created_at_ms FROM apps WHERE owner_user_id = ?`,
+    )
+    .bind(owner_user_id)
+    .all<{
+      app_id: string;
+      project_id: string;
+      name: string;
+      platform: string | null;
+      created_at_ms: number;
+    }>();
+  const { results: repos } = await db
+    .prepare(`SELECT project_id, url, branch FROM project_script_repos`)
+    .all<{ project_id: string; url: string; branch: string }>();
+  const repoByProject = new Map(
+    (repos || []).map((r) => [r.project_id, r] as const),
+  );
+  const appsByProject = new Map<string, Record<string, unknown>[]>();
+  for (const a of apps || []) {
+    const list = appsByProject.get(a.project_id) || [];
+    list.push({
+      id: a.app_id,
+      app_id: a.app_id,
+      name: a.name,
+      platforms: a.platform || "",
+      project_id: a.project_id,
+      created_at: a.created_at_ms,
+    });
+    appsByProject.set(a.project_id, list);
+  }
+  return (projects || []).map((p) => {
+    const projectApps = appsByProject.get(p.project_id) || [];
+    const repo = repoByProject.get(p.project_id);
+    return {
+      project_id: p.project_id,
+      id: p.project_id,
+      name: p.name,
+      created_at: p.created_at_ms,
+      repo_url: repo?.url || "",
+      repo_branch: repo?.branch || "",
+      apps: projectApps,
+      app_count: projectApps.length,
+      case_count: 0,
+      knowledge_count: 0,
+    };
+  });
 }
 
 export async function createProject(
@@ -180,7 +236,13 @@ export async function createProject(
   nameRaw: string,
 ): Promise<Record<string, unknown>> {
   const name = String(nameRaw || "").trim() || "未命名项目";
-  const project_id = `p_${randomHex(8)}`;
+  const { results } = await db
+    .prepare(`SELECT project_id FROM projects`)
+    .all<{ project_id: string }>();
+  const project_id = serial(
+    (results || []).map((r) => r.project_id),
+    "PRJ",
+  );
   const now = Date.now();
   await db
     .prepare(
@@ -189,4 +251,47 @@ export async function createProject(
     .bind(project_id, owner_user_id, name, now)
     .run();
   return { project_id, id: project_id, name, created_at: now };
+}
+
+export async function createApp(
+  db: D1Database,
+  owner_user_id: string,
+  project_id: string,
+  nameRaw: string,
+  platforms = "",
+): Promise<Record<string, unknown>> {
+  /** Match project_store.create_app: platforms is a comma-separated string. */
+  const project = await db
+    .prepare(`SELECT project_id FROM projects WHERE project_id = ? AND owner_user_id = ?`)
+    .bind(project_id, owner_user_id)
+    .first();
+  if (!project) throw new Error("没有这个项目");
+  const name = String(nameRaw || "").trim() || "未命名应用";
+  const allowed = new Set(["android", "ios", "web", "mac", "win"]);
+  const normalized = String(platforms || "")
+    .split(",")
+    .map((p) => p.trim().toLowerCase())
+    .filter((p) => allowed.has(p));
+  const platformsStr = [...new Set(normalized)].join(",");
+  const { results } = await db.prepare(`SELECT app_id FROM apps`).all<{ app_id: string }>();
+  const app_id = serial(
+    (results || []).map((r) => r.app_id),
+    "APP",
+  );
+  const now = Date.now();
+  await db
+    .prepare(
+      `INSERT INTO apps (app_id, project_id, owner_user_id, name, platform, meta_json, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+    )
+    .bind(app_id, project_id, owner_user_id, name, platformsStr || null, now)
+    .run();
+  return {
+    app_id,
+    id: app_id,
+    project_id,
+    name,
+    platforms: platformsStr,
+    platform: platformsStr,
+  };
 }

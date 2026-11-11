@@ -1,5 +1,20 @@
+/**
+ * MCP endpoint — auth and tool table match mino_nexus.api.rMcp + prompts/assistant/tools.
+ * Tools dispatch to the same HTTP routes as mcp0.0.1 assistant tool YAML `route` fields.
+ */
+
 import type { Env } from "./env";
+import { listProjects, createApp } from "./auth";
 import { listDevices, listScouts } from "./db";
+import {
+  ACCESS_PREFIX,
+  OAuthPage,
+  canonicalResource,
+  publicOrigin,
+  resolveAccessToken,
+} from "./mcp_oauth";
+import { resolveMcpToken } from "./mcp_tokens";
+import { handlePluginRoutes } from "./plugin_routes";
 
 type JsonRpcId = string | number | null;
 
@@ -10,26 +25,211 @@ type JsonRpcRequest = {
   params?: Record<string, unknown>;
 };
 
+const PROTOCOL = "2025-03-26";
+
+/** Tool specs copied from mino_nexus/prompts/assistant/tools/*.yaml (mcp surface). */
 const TOOLS = [
   {
     name: "agent_guide",
+    title: "给其他 agent 的使用说明",
     description:
-      "Cloudflare free hub: Scout online, device sync, MCP tools. No Workbench / case_run.",
+      "外部 agent 使用 Mino 时先调用。返回工具怎么分组调用，以及脚本、Git、设备分别由谁做。",
     inputSchema: { type: "object", properties: {} },
+    annotations: {
+      title: "给其他 agent 的使用说明",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "project_list",
+    title: "项目与应用列表",
+    description: "列出所有项目和其下的应用。",
+    inputSchema: { type: "object", properties: {} },
+    annotations: {
+      title: "项目与应用列表",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "scout_list",
-    description: "List Scout nodes known to this hub, with online/last_seen.",
-    inputSchema: { type: "object", properties: {} },
+    title: "查询 Scout 节点",
+    description: "列出当前账号可见的 Scout 节点，含 node_id、在线状态、上报版本。",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    annotations: {
+      title: "查询 Scout 节点",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "device_list",
-    description: "List devices last reported by Scouts (heartbeat / register).",
+    title: "兼容设备列表",
+    description: "实时查询设备。status 为 online/offline。",
     inputSchema: {
       type: "object",
       properties: {
-        online_only: { type: "boolean", description: "If true, only online devices" },
+        only_online: { type: "boolean" },
+        project_id: { type: "string" },
+        app_id: { type: "string" },
+        env_surface: { type: "string" },
       },
+    },
+    annotations: {
+      title: "兼容设备列表",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "app_create",
+    title: "创建应用",
+    description: "在项目下创建一个应用，返回它的 id。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        name: { type: "string" },
+        description: { type: "string" },
+        platforms: {
+          type: "string",
+          description: "逗号分隔，取值 android / ios / web / mac / win",
+        },
+      },
+      required: ["project_id", "name", "platforms"],
+    },
+    annotations: {
+      title: "创建应用",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "plugin_status",
+    title: "查看插件安装状态",
+    description:
+      "查看本人 Scout 节点上的插件是否已安装、是否已配置，以及下载中心里的安装/更新能力。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { node_id: { type: "string" } },
+      required: [],
+    },
+    annotations: {
+      title: "查看插件安装状态",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "node_channel_program",
+    title: "安装或更新渠道程序",
+    description:
+      "把安装或更新渠道程序转成该用户当前在线节点的下载中心请求。允许 chromium、adb.keyboard、appium。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        node_id: { type: "string", minLength: 1, maxLength: 128 },
+        tool_id: { type: "string", enum: ["chromium", "adb.keyboard", "appium"] },
+        action: { type: "string", enum: ["install", "update"], default: "install" },
+        operation_id: { type: "string", maxLength: 100 },
+      },
+      required: ["node_id", "tool_id"],
+    },
+    annotations: {
+      title: "安装或更新渠道程序",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "plugin_install",
+    title: "安装或更新插件",
+    description:
+      "在本人 Scout 节点上提交插件安装或更新任务。仅支持 cli.feishu、cli.meego。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        node_id: { type: "string", minLength: 1, maxLength: 128 },
+        plugin: { type: "string", enum: ["cli.feishu", "cli.meego"] },
+        action: { type: "string", enum: ["install", "update"], default: "install" },
+        operation_id: { type: "string", maxLength: 100 },
+        wait_ms: { type: "integer", minimum: 0, maximum: 60000, default: 0 },
+      },
+      required: ["node_id", "plugin"],
+    },
+    annotations: {
+      title: "安装或更新插件",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "case_list",
+    title: "项目用例列表",
+    description: "列出某个应用所在项目下的用例。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        search: { type: "string" },
+        module: { type: "string" },
+        limit: { type: "integer", default: 50 },
+        offset: { type: "integer" },
+      },
+      required: ["project_id"],
+    },
+    annotations: {
+      title: "项目用例列表",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "case_run",
+    title: "跑用例",
+    description: "在指定设备上执行用例，返回任务 id。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_request_id: { type: "string", maxLength: 160 },
+        project_id: { type: "string" },
+        app_id: { type: "string" },
+        env_surface: { type: "string" },
+        env_profile: { type: "string" },
+        sn: { type: "string" },
+        case_ids: { type: "array", items: { type: "string" } },
+        revision: { type: "string" },
+      },
+      required: ["app_id"],
+    },
+    annotations: {
+      title: "跑用例",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     },
   },
 ] as const;
@@ -38,11 +238,7 @@ function rpcResult(id: JsonRpcId | undefined, result: unknown): Response {
   return Response.json({ jsonrpc: "2.0", id: id ?? null, result });
 }
 
-function rpcError(
-  id: JsonRpcId | undefined,
-  code: number,
-  message: string,
-): Response {
+function rpcError(id: JsonRpcId | undefined, code: number, message: string): Response {
   return Response.json({
     jsonrpc: "2.0",
     id: id ?? null,
@@ -50,104 +246,402 @@ function rpcError(
   });
 }
 
-function unauthorized(): Response {
-  return new Response("Unauthorized", { status: 401 });
+function unauthorized(request: Request, invalid: boolean): Response {
+  const origin = publicOrigin(new URL(request.url).origin);
+  const metadata = origin + "/.well-known/oauth-protected-resource/mcp";
+  let challenge = `Bearer resource_metadata="${metadata}", scope="mcp"`;
+  let detail = "需要授权";
+  if (invalid) {
+    challenge += ', error="invalid_token", error_description="The access token is invalid or expired"';
+    detail = "令牌无效或已过期";
+  }
+  return Response.json(
+    { detail },
+    {
+      status: 401,
+      headers: { "WWW-Authenticate": challenge, "Cache-Control": "no-store" },
+    },
+  );
 }
 
-export async function handleMcp(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
+async function authenticate(
+  request: Request,
+  env: Env,
+): Promise<{ userId: string } | Response> {
+  const raw = request.headers.get("authorization") || "";
+  const token = raw.toLowerCase().startsWith("bearer ") ? raw.slice(7).trim() : "";
+  if (!token) return unauthorized(request, false);
+
+  // Keep shared bearer for smoke tests only (tools/list/initialize).
+  if (env.MCP_BEARER_TOKEN && token === env.MCP_BEARER_TOKEN) {
+    return { userId: "system:probe" };
   }
 
-  const auth = request.headers.get("authorization") || "";
-  const expected = `Bearer ${env.MCP_BEARER_TOKEN}`;
-  if (!env.MCP_BEARER_TOKEN || auth !== expected) {
-    return unauthorized();
-  }
-
-  let body: JsonRpcRequest;
-  try {
-    body = (await request.json()) as JsonRpcRequest;
-  } catch {
-    return rpcError(null, -32700, "Parse error");
-  }
-
-  const method = String(body.method || "");
-  const id = body.id;
-
-  if (method === "initialize") {
-    return rpcResult(id, {
-      protocolVersion: "2024-11-05",
-      capabilities: { tools: {} },
-      serverInfo: { name: "mino-nexus-cloudflare", version: "0.0.1" },
-    });
-  }
-
-  if (method === "notifications/initialized" || method === "ping") {
-    return rpcResult(id, {});
-  }
-
-  if (method === "tools/list") {
-    return rpcResult(id, { tools: TOOLS });
-  }
-
-  if (method === "tools/call") {
-    const name = String(body.params?.name || "");
-    const args = (body.params?.arguments || {}) as Record<string, unknown>;
+  if (token.startsWith(ACCESS_PREFIX)) {
     try {
-      const text = await callTool(env, name, args);
-      return rpcResult(id, {
-        content: [{ type: "text", text }],
-        isError: false,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return rpcResult(id, {
-        content: [{ type: "text", text: message }],
-        isError: true,
-      });
+      const uid = await resolveAccessToken(
+        env.DB,
+        token,
+        canonicalResource(new URL(request.url).origin),
+      );
+      return uid ? { userId: uid } : unauthorized(request, true);
+    } catch (exc) {
+      if (exc instanceof OAuthPage) return unauthorized(request, true);
+      throw exc;
     }
   }
 
-  return rpcError(id, -32601, `Method not found: ${method}`);
+  if (token.startsWith("mino_mcp_")) {
+    const uid = await resolveMcpToken(env.DB, token);
+    return uid ? { userId: uid } : unauthorized(request, true);
+  }
+
+  return unauthorized(request, true);
+}
+
+function agentGuidePayload(): Record<string, unknown> {
+  // Match mino_nexus.assistant.agent_guide.agent_guide()
+  return {
+    channel: "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
+    first_call: "agent_guide",
+    boundaries: [
+      "脚本文本只写在本机的脚本仓库工作区，不要把脚本 POST/PUT 给 Nexus。各仓库分工与 Scout 安装见 agent 技能 overview。",
+      "Git 提交和推送仍在本机。Nexus 不保存 Git 令牌，也不拉取脚本仓库；设备所在电脑上的 Scout 用本机 git 凭据自己拉取。改了脚本仓库 config.yaml 的 apps 后，必须 push 并调用 repo_apps_sync 告知 Nexus；选应用前可先调 repo_apps_get。",
+      "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。验证码和模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
+    ],
+    workbench: {
+      url: "https://workbench.minocc.top",
+      login_failure: "无法连接服务器",
+    },
+    flows: [
+      { name: "确认能操作哪些项目", tools: ["project_list"] },
+      {
+        name: "编写或修改用例脚本",
+        tools: [
+          "project_list",
+          "case_list",
+          "device_list",
+          "case_run",
+          "task_get",
+          "session_events",
+          "session_screenshot",
+        ],
+        then: "使用 write-test-cases。先选一台 executable 设备。",
+      },
+      {
+        name: "让 Scout 跑整份脚本",
+        tools: ["case_list", "device_list", "case_run", "task_get"],
+        then: "case_run 的 revision 传已 push 的 commit。执行与汇报使用 agent 技能 run-test-cases。",
+      },
+      {
+        name: "让节点安装渠道程序",
+        tools: ["node_channel_program"],
+        then: "只转发给该节点下载中心已有的安装请求。Nexus 不下载安装包，也不接受临时地址。",
+      },
+      {
+        name: "查看一次执行",
+        tools: ["task_list", "task_get", "session_list", "session_events", "session_screenshot"],
+      },
+      {
+        name: "看资源够不够",
+        tools: ["resource_overview", "resource_device_list", "resource_account_list"],
+      },
+    ],
+  };
+}
+
+function mapDevices(raw: unknown[]): Record<string, unknown>[] {
+  return raw.map((row) => {
+    const d = (row || {}) as Record<string, unknown>;
+    const online = Boolean(d.online);
+    return {
+      sn: String(d.device_id || ""),
+      device_id: d.device_id,
+      scout_id: d.scout_id,
+      node_id: d.scout_id,
+      platform: d.platform || undefined,
+      status: online ? "online" : "offline",
+      ready: Boolean(d.ready),
+      executable: online && Boolean(d.ready),
+    };
+  });
+}
+
+function mapScouts(raw: unknown[], userId: string): Record<string, unknown>[] {
+  return (raw as Array<Record<string, unknown>>)
+    .filter((s) => !s.owner_user_id || s.owner_user_id === userId || userId === "system:probe")
+    .map((s) => ({
+      node_id: s.scout_id,
+      scout_id: s.scout_id,
+      online: Boolean(s.online),
+      scout_version: s.scout_version || undefined,
+      hostname:
+        (s.host && typeof s.host === "object"
+          ? (s.host as Record<string, unknown>).hostname
+          : undefined) || s.scout_id,
+      owner_user_id: s.owner_user_id || undefined,
+      plugins_ready: s.plugins_ready,
+      tool_tasks_version: Number(s.tool_tasks_version || 0),
+    }));
+}
+
+async function callHttpTool(
+  env: Env,
+  userId: string,
+  method: string,
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; summary: string; data: unknown }> {
+  const url = new URL(path, "https://nexus.minocc.top");
+  const req = new Request(url.toString(), {
+    method,
+    headers: { "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const handled = await handlePluginRoutes(req, env, url.pathname, method, userId);
+  if (!handled) {
+    return { ok: false, status: 404, summary: "没有这个工具路由", data: {} };
+  }
+  const json = (await handled.json()) as {
+    ok?: boolean;
+    code?: number;
+    msg?: string;
+    data?: unknown;
+  };
+  return {
+    ok: Boolean(json.ok) && handled.status < 400,
+    status: Number(json.code || handled.status),
+    summary: String(json.msg || ""),
+    data: json.data,
+  };
 }
 
 async function callTool(
   env: Env,
+  userId: string,
   name: string,
   args: Record<string, unknown>,
-): Promise<string> {
+  mutationScope: string,
+): Promise<{ isError: boolean; content: Array<{ type: string; text: string }> }> {
+  const pack = (ok: boolean, summary: string, data: unknown, status = 0) => {
+    const body: Record<string, unknown> = { ok, summary, data };
+    if (!ok && status) {
+      const code =
+        status === 401
+          ? "auth_required"
+          : status === 403
+            ? "forbidden"
+            : status === 404
+              ? "not_found"
+              : status === 409
+                ? "conflict"
+                : status === 422 || status === 400
+                  ? "invalid_argument"
+                  : status === 501
+                    ? "tool_failed"
+                    : "tool_failed";
+      body.code = code;
+      body.retryable = code === "conflict";
+    }
+    return {
+      isError: !ok,
+      content: [{ type: "text", text: JSON.stringify(body) }],
+    };
+  };
+
+  if (userId === "system:probe") {
+    return pack(false, "probe token 仅允许 initialize/ping/tools/list", {}, 403);
+  }
+
   if (name === "agent_guide") {
-    return JSON.stringify(
-      {
-        scope: ["scout_online", "mcp", "device_sync"],
-        storage: "d1",
-        endpoints: {
-          health: "GET /health",
-          scout_ws: "GET /node (WebSocket)",
-          mcp: "POST /mcp",
-          scouts: "GET /v1/scouts",
-          devices: "GET /v1/devices",
-        },
-        out_of_scope: [
-          "case_run",
-          "workbench",
-          "script_repo",
-          "navigation_atlas",
-          "account_leases",
-        ],
-      },
-      null,
-      2,
-    );
+    return pack(true, "", agentGuidePayload());
+  }
+
+  if (name === "project_list") {
+    return pack(true, "", await listProjects(env.DB, userId));
   }
 
   if (name === "scout_list") {
-    return JSON.stringify(await listScouts(env.DB), null, 2);
+    return pack(true, "", {
+      nodes: mapScouts(await listScouts(env.DB), userId),
+    });
   }
+
   if (name === "device_list") {
-    const onlineOnly = Boolean(args.online_only);
-    return JSON.stringify(await listDevices(env.DB, onlineOnly), null, 2);
+    const onlyOnline = args.only_online !== false;
+    return pack(true, "", mapDevices(await listDevices(env.DB, onlyOnline)));
   }
-  throw new Error(`Unknown tool: ${name}`);
+
+  if (name === "app_create") {
+    try {
+      const app = await createApp(
+        env.DB,
+        userId,
+        String(args.project_id || ""),
+        String(args.name || ""),
+        String(args.platforms || ""),
+      );
+      return pack(true, "已创建", app);
+    } catch (err) {
+      return pack(false, err instanceof Error ? err.message : "创建失败", {}, 400);
+    }
+  }
+
+  if (name === "plugin_status") {
+    const qs = args.node_id
+      ? `?node_id=${encodeURIComponent(String(args.node_id))}`
+      : "";
+    const out = await callHttpTool(env, userId, "GET", `/runtime/plugins/status${qs}`);
+    return pack(out.ok, out.summary, out.data, out.status);
+  }
+
+  if (name === "node_channel_program") {
+    const operation_id =
+      String(args.operation_id || "").trim() ||
+      (mutationScope
+        ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(mutationScope)))]
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("")
+            .slice(0, 32)
+        : "");
+    const out = await callHttpTool(env, userId, "POST", "/runtime/channel-programs/install", {
+      node_id: args.node_id,
+      tool_id: args.tool_id,
+      action: args.action || "install",
+      operation_id,
+    });
+    return pack(out.ok, out.summary, out.data, out.status);
+  }
+
+  if (name === "plugin_install") {
+    const operation_id =
+      String(args.operation_id || "").trim() ||
+      (mutationScope
+        ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(mutationScope)))]
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("")
+            .slice(0, 32)
+        : "");
+    const out = await callHttpTool(env, userId, "POST", "/runtime/plugins/install", {
+      node_id: args.node_id,
+      plugin: args.plugin,
+      action: args.action || "install",
+      operation_id,
+      wait_ms: args.wait_ms || 0,
+    });
+    return pack(out.ok, out.summary, out.data, out.status);
+  }
+
+  if (name === "case_list") {
+    // Cases table not migrated yet — return empty list, same as soft GET shape.
+    return pack(true, "", { items: [], count: 0, total: 0 });
+  }
+
+  if (name === "case_run") {
+    return pack(
+      false,
+      "case_run 尚未从 mcp0.0.1 迁移到 Cloudflare hub（需要用例账本与 script.run 下发）",
+      {},
+      501,
+    );
+  }
+
+  return pack(false, `没有这个工具：${name}`, {});
+}
+
+export async function handleMcp(request: Request, env: Env): Promise<Response> {
+  if (request.method === "GET") {
+    const auth = await authenticate(request, env);
+    if (auth instanceof Response) return auth;
+    return new Response(null, { status: 405, headers: { Allow: "POST" } });
+  }
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const auth = await authenticate(request, env);
+  if (auth instanceof Response) return auth;
+  const { userId } = auth;
+
+  const requested = request.headers.get("mcp-protocol-version");
+  if (requested && requested !== PROTOCOL) {
+    return Response.json({ detail: `仅支持 MCP ${PROTOCOL}` }, { status: 400 });
+  }
+
+  let body: JsonRpcRequest | JsonRpcRequest[];
+  try {
+    body = (await request.json()) as JsonRpcRequest | JsonRpcRequest[];
+  } catch {
+    return Response.json(
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "不是合法 JSON" } },
+      { status: 400 },
+    );
+  }
+
+  const items = Array.isArray(body) ? body : [body];
+  const out: unknown[] = [];
+
+  for (const msg of items) {
+    if (!msg || typeof msg !== "object") {
+      out.push({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "无效请求" } });
+      continue;
+    }
+    const method = String(msg.method || "");
+    const id = msg.id;
+    const probe = userId === "system:probe";
+
+    if (probe && !["initialize", "ping", "tools/list"].includes(method)) {
+      out.push({
+        jsonrpc: "2.0",
+        id: id ?? null,
+        error: { code: -32601, message: "probe token 仅允许 initialize/ping/tools/list" },
+      });
+      continue;
+    }
+
+    if (method === "initialize") {
+      out.push({
+        jsonrpc: "2.0",
+        id: id ?? null,
+        result: {
+          protocolVersion: PROTOCOL,
+          capabilities: { tools: {} },
+          serverInfo: { name: "mino-nexus", version: "0.0.1-cloudflare" },
+        },
+      });
+      continue;
+    }
+    if (method === "notifications/initialized") continue;
+    if (method === "ping") {
+      out.push({ jsonrpc: "2.0", id: id ?? null, result: {} });
+      continue;
+    }
+    if (method === "tools/list") {
+      out.push({ jsonrpc: "2.0", id: id ?? null, result: { tools: TOOLS } });
+      continue;
+    }
+    if (method === "tools/call") {
+      const name = String(msg.params?.name || "");
+      const args = (msg.params?.arguments || {}) as Record<string, unknown>;
+      const token = (request.headers.get("authorization") || "").slice(7);
+      const scopeBuf = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(token + ":" + String(id ?? "")),
+      );
+      const scope = [...new Uint8Array(scopeBuf)]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const result = await callTool(env, userId, name, args, `mcp:${scope}:${id}`);
+      out.push({ jsonrpc: "2.0", id: id ?? null, result });
+      continue;
+    }
+    out.push({
+      jsonrpc: "2.0",
+      id: id ?? null,
+      error: { code: -32601, message: `不支持的方法 ${method}` },
+    });
+  }
+
+  if (!out.length) return new Response(null, { status: 202 });
+  return Response.json(Array.isArray(body) ? out : out[0]);
 }

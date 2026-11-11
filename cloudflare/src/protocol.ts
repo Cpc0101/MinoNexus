@@ -33,6 +33,8 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const SCOUT_INBOUND = new Set(["REGISTER", "HEARTBEAT", "RESULT"]);
+
 export function parseScoutJson(raw: string): EnvelopeIn | null {
   let data: unknown;
   try {
@@ -43,7 +45,7 @@ export function parseScoutJson(raw: string): EnvelopeIn | null {
   if (!data || typeof data !== "object") return null;
   const obj = data as Record<string, unknown>;
   const type = String(obj.type || "");
-  if (type !== "REGISTER" && type !== "HEARTBEAT") return null;
+  if (!SCOUT_INBOUND.has(type)) return null;
   if (!obj.msg_id || typeof obj.msg_id !== "string") return null;
   const payload =
     obj.payload && typeof obj.payload === "object"
@@ -57,6 +59,76 @@ export function parseScoutJson(raw: string): EnvelopeIn | null {
     reply_to: typeof obj.reply_to === "string" ? obj.reply_to : null,
     payload,
   };
+}
+
+/** Match mino_nexus.core.wire_identity.next_auxiliary_step_idx — unique negative, never -1. */
+let auxiliaryStep = -Math.floor(Date.now() * 1000);
+
+function nextAuxiliaryStepIdx(): number {
+  auxiliaryStep -= 1;
+  return auxiliaryStep;
+}
+
+/**
+ * N→S EXECUTE for management caps (node.tools / …).
+ * Match node_tools._rpc + assign_execute_identity: unique auxiliary step_idx,
+ * no binding fields (any non-empty binding field makes BindingGuard reject).
+ */
+export function executeEnvelope(args: {
+  capability_id: string;
+  params?: Record<string, unknown>;
+  timeout_sec?: number;
+}): NexusOutbound {
+  return {
+    v: PROTOCOL_VERSION,
+    type: "EXECUTE",
+    msg_id: msgId(),
+    reply_to: null,
+    ts: nowIso(),
+    payload: {
+      run_id: "",
+      step_idx: nextAuxiliaryStepIdx(),
+      sn: "",
+      capability_id: args.capability_id,
+      params: args.params || {},
+      timeout_sec: args.timeout_sec ?? 6,
+    },
+  };
+}
+
+/** Plugin / download-centre fields from REGISTER or HEARTBEAT. */
+export function contractFromPayload(payload: Record<string, unknown>): {
+  plugins?: unknown[] | null;
+  plugins_ready?: boolean | null;
+  tool_tasks_version?: number;
+  plugin_warning?: string;
+  runtime_environment?: string;
+} {
+  const out: {
+    plugins?: unknown[] | null;
+    plugins_ready?: boolean | null;
+    tool_tasks_version?: number;
+    plugin_warning?: string;
+    runtime_environment?: string;
+  } = {};
+  if ("plugins" in payload) {
+    out.plugins = Array.isArray(payload.plugins) ? payload.plugins : payload.plugins == null ? null : [];
+  }
+  if ("plugins_ready" in payload) {
+    out.plugins_ready =
+      typeof payload.plugins_ready === "boolean" ? payload.plugins_ready : null;
+  }
+  if ("tool_tasks_version" in payload) {
+    const v = Number(payload.tool_tasks_version || 0);
+    out.tool_tasks_version = v === 1 || v === 2 ? v : 0;
+  }
+  if ("plugin_warning" in payload) {
+    out.plugin_warning = String(payload.plugin_warning || "").slice(0, 200);
+  }
+  if ("runtime_environment" in payload) {
+    out.runtime_environment = String(payload.runtime_environment || "");
+  }
+  return out;
 }
 
 export function envelope(

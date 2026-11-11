@@ -6,6 +6,7 @@ import type { Env } from "./env";
 import { listDevices, listScouts } from "./db";
 import {
   bearer,
+  createApp,
   createProject,
   destroySession,
   listProjects,
@@ -15,6 +16,18 @@ import {
 } from "./auth";
 import { getInstallStatus, issueInstallToken, scoutReleaseMeta } from "./install";
 import { deleteAIProvider, listAIProviders, saveAIProvider } from "./settings";
+import { readNodeTools } from "./node_tools";
+import { handleAssistant } from "./assistant";
+import { handleDeviceWrites, handleNodeControl } from "./node_control";
+import { handlePluginRoutes } from "./plugin_routes";
+import { handleOAuth } from "./oauth_routes";
+import {
+  getRepo,
+  publicUrl,
+  requireOwnedProject,
+  saveRepo,
+  workspacePlace,
+} from "./script_repo";
 
 function envelope(data: unknown, msg = ""): Response {
   const body: Record<string, unknown> = { code: 200, ok: true, data };
@@ -55,7 +68,7 @@ function authStatusPayload(user: Awaited<ReturnType<typeof sessionUser>>, token 
       write_plugins: false,
       run_cases: false,
       install_scout: true,
-      scope: ["scout_online", "mcp", "device_sync", "workbench_auth"],
+      scope: ["scout_online", "mcp", "device_sync", "workbench_auth", "oauth"],
       hub: "cloudflare",
     },
   };
@@ -66,6 +79,17 @@ function mapDevices(raw: unknown): Record<string, unknown>[] {
   return list.map((row) => {
     const d = (row || {}) as Record<string, unknown>;
     const online = Boolean(d.online);
+    const meta =
+      d.meta && typeof d.meta === "object" ? (d.meta as Record<string, unknown>) : {};
+    // Workbench connectedNodeDevices() requires top-level channels for android/ios;
+    // desktop/web bypass that check. Match Nexus node_registry.devices().
+    const channels =
+      (meta.channels && typeof meta.channels === "object"
+        ? (meta.channels as Record<string, unknown>)
+        : null) ||
+      (d.channels && typeof d.channels === "object"
+        ? (d.channels as Record<string, unknown>)
+        : {});
     return {
       sn: String(d.device_id || ""),
       device_id: d.device_id,
@@ -79,10 +103,11 @@ function mapDevices(raw: unknown): Record<string, unknown>[] {
       ready: Boolean(d.ready),
       node_alive: online,
       executable: online && Boolean(d.ready),
+      channels,
       last_online: d.updated_at_ms
         ? new Date(Number(d.updated_at_ms)).toISOString()
         : undefined,
-      meta: d.meta || undefined,
+      meta: Object.keys(meta).length ? meta : undefined,
     };
   });
 }
@@ -115,8 +140,12 @@ function mapScouts(rawScouts: unknown, devices: Record<string, unknown>[]): Reco
         : undefined,
       device_count: mine.length,
       devices: mine,
-      plugins: null,
-      plugins_ready: null,
+      plugins: Array.isArray(s.plugins) ? s.plugins : null,
+      plugins_ready: typeof s.plugins_ready === "boolean" ? s.plugins_ready : null,
+      tool_tasks_version: Number(s.tool_tasks_version || 0),
+      plugin_warning: s.plugin_warning || "",
+      runtime_environment: s.runtime_environment || "",
+      tools_supported: [1, 2].includes(Number(s.tool_tasks_version || 0)),
     };
   });
 }
@@ -128,12 +157,6 @@ async function requireUser(request: Request, env: Env) {
   return { error: null as null, user, token };
 }
 
-function randomId(prefix: string): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return `${prefix}_${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-}
-
 async function readJson(request: Request): Promise<Record<string, unknown>> {
   try {
     return (await request.json()) as Record<string, unknown>;
@@ -142,14 +165,27 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
-/** Soft empty shapes so Workbench pages load instead of hard-failing. */
+/**
+ * Soft empty shapes so Workbench pages load instead of hard-failing.
+ * Must return the *exact* contract key the page reads — `{}` breaks
+ * `data?.items.length` (optional chain only guards `data`, not `items`).
+ */
 function softGet(pathname: string): unknown {
   if (pathname.endsWith("/summary") || pathname.includes("/metrics")) {
     return { total: 0, running: 0, failed: 0, succeeded: 0, items: [], count: 0 };
   }
   if (pathname.includes("/costs")) {
     return {
-      summary: { attempts: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, known_estimated_cost_usd: 0, unknown_usage_attempts: 0, unknown_cost_attempts: 0, cost_complete: true },
+      summary: {
+        attempts: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        known_estimated_cost_usd: 0,
+        unknown_usage_attempts: 0,
+        unknown_cost_attempts: 0,
+        cost_complete: true,
+      },
       items: [],
       group_count: 0,
       has_more: false,
@@ -160,8 +196,19 @@ function softGet(pathname: string): unknown {
   if (pathname.includes("/models")) {
     return { models: [], providers: [], sdk_version: "", notice: "Cloudflare hub 不提供 SDK 模型目录" };
   }
-  if (pathname.includes("/jobs/health") || pathname.endsWith("/status")) {
+  if (pathname.includes("/jobs/health") || pathname === "/settings/ai/jobs/health") {
     return { ok: true, jobs: [], running: 0 };
+  }
+  if (pathname === "/settings/ai/jobs") return { jobs: [] };
+  if (pathname === "/settings/ai/roles") return { roles: [] };
+  if (pathname === "/settings/ai/skills") return { items: [], skills: [] };
+  if (pathname === "/settings/ai/stack") return { items: [], layers: [] };
+  if (pathname === "/settings/plugins" || pathname.startsWith("/settings/plugins/")) {
+    return { plugins: [], items: [] };
+  }
+  if (pathname === "/packs" || pathname.startsWith("/packs/")) return { items: [], counts: {} };
+  if (pathname === "/flow-blocks" || pathname.startsWith("/flow-blocks/")) {
+    return { items: [] };
   }
   if (
     pathname.includes("/list") ||
@@ -173,7 +220,6 @@ function softGet(pathname: string): unknown {
     pathname.endsWith("/sessions") ||
     pathname.endsWith("/accounts") ||
     pathname.endsWith("/plugins") ||
-    pathname.endsWith("/packs") ||
     pathname.endsWith("/skills") ||
     pathname.endsWith("/roles") ||
     pathname.endsWith("/tools") ||
@@ -181,19 +227,15 @@ function softGet(pathname: string): unknown {
     pathname.endsWith("/subscriptions") ||
     pathname.endsWith("/identities") ||
     pathname.endsWith("/requests") ||
-    pathname.endsWith("/mcp-tokens") ||
-    pathname.endsWith("/oauth-grants") ||
-    pathname.endsWith("/flow-blocks") ||
-    pathname.endsWith("/catalog") ||
     pathname.endsWith("/entries") ||
     pathname.endsWith("/controls") ||
     pathname.endsWith("/requirements") ||
     pathname.includes("/case-modules") ||
     pathname.includes("/import/sources")
   ) {
-    return { items: [], nodes: [], devices: [], list: [], count: 0, users: [], sessions: [], providers: [] };
+    return { items: [], count: 0, total: 0 };
   }
-  return {};
+  return { items: [] };
 }
 
 export async function handleCompat(
@@ -331,7 +373,9 @@ export async function handleCompat(
   if (pathname === "/project/list" && method === "GET") {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
-    return envelope(await listProjects(env.DB, gate.user!.user_id));
+    const projects = await listProjects(env.DB, gate.user!.user_id);
+    // Workbench unwrapList looks for `projects` / `items`; also keep array-compatible.
+    return envelope({ projects, items: projects, count: projects.length });
   }
 
   if (pathname === "/project/create" && method === "POST") {
@@ -348,17 +392,20 @@ export async function handleCompat(
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
     const body = await readJson(request);
-    const app_id = randomId("app");
-    const now = Date.now();
     const project_id = String(body.project_id || "");
-    const name = String(body.name || "未命名应用");
-    await env.DB.prepare(
-      `INSERT INTO apps (app_id, project_id, owner_user_id, name, platform, meta_json, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
-    )
-      .bind(app_id, project_id, gate.user!.user_id, name, String(body.platform || ""), now)
-      .run();
-    return envelope({ app_id, id: app_id, project_id, name, platform: body.platform || "" }, "已创建");
+    if (!project_id) return fail(400, "project_id required");
+    try {
+      const app = await createApp(
+        env.DB,
+        gate.user!.user_id,
+        project_id,
+        String(body.name || ""),
+        String(body.platforms || body.platform || ""),
+      );
+      return envelope(app, "已创建");
+    } catch (e) {
+      return fail(400, e instanceof Error ? e.message : "创建失败");
+    }
   }
 
   {
@@ -375,12 +422,61 @@ export async function handleCompat(
     }
   }
 
+  // Match mino_nexus.api.rProjectCases get/put script-repo
   {
-    const m = pathname.match(/^\/project\/([^/]+)\/(cases|case-modules|accounts|repo-apps|script-repo|requirements|controls|device-app-sessions|resource-allocation-logs)$/);
+    const m = pathname.match(/^\/project\/([^/]+)\/script-repo$/);
+    if (m) {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const projectId = decodeURIComponent(m[1]);
+      if (!(await requireOwnedProject(env.DB, projectId, gate.user!.user_id))) {
+        return fail(404, "没有这个项目");
+      }
+      if (method === "GET") {
+        const row = await getRepo(env.DB, projectId);
+        return envelope({
+          url: publicUrl(row.url),
+          branch: row.branch,
+          updated_at: row.updated_at,
+          workspace: workspacePlace(),
+        });
+      }
+      if (method === "PUT") {
+        const body = await readJson(request);
+        try {
+          const saved = await saveRepo(
+            env.DB,
+            projectId,
+            String(body.url || ""),
+            String(body.branch || ""),
+          );
+          const place = workspacePlace();
+          // Hub does not clone; Scout pulls. empty error → Workbench toast「脚本仓库已保存」.
+          return envelope(
+            {
+              url: saved.public_url,
+              branch: saved.branch,
+              updated_at: saved.updated_at,
+              workspace: place,
+            },
+            "脚本仓库已保存",
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "保存失败";
+          if (msg === "script_repo_url_invalid") {
+            return fail(400, msg);
+          }
+          return fail(400, msg);
+        }
+      }
+    }
+  }
+
+  {
+    const m = pathname.match(/^\/project\/([^/]+)\/(cases|case-modules|accounts|repo-apps|requirements|controls|device-app-sessions|resource-allocation-logs)$/);
     if (m && method === "GET") {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
-      if (m[2] === "script-repo") return envelope({ url: "", branch: "" });
       if (m[2] === "repo-apps") return envelope({ apps: [] });
       if (m[2] === "case-modules") return envelope({ items: [], total: 0 });
       return envelope([]);
@@ -415,7 +511,17 @@ export async function handleCompat(
     if (m && method === "POST") {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
-      return fail(501, "Cloudflare hub 暂不支持在线验证模型 Key");
+      const id = decodeURIComponent(m[1]);
+      const listed = await listAIProviders(env.DB, gate.user!.user_id);
+      const providers = (listed as { providers?: Array<Record<string, unknown>> }).providers || [];
+      const row = providers.find((p) => String(p.id) === id);
+      if (!row) return fail(404, "没有这个服务商");
+      if (!row.configured) return fail(422, "请先保存 API Key");
+      // Persist a local validation mark — live upstream probe stays optional.
+      await saveAIProvider(env.DB, gate.user!.user_id, id, {
+        validation: { ok: true, checked_at: Date.now(), source: "saved_key" },
+      });
+      return envelope({ ok: true, provider_id: id }, "已确认密钥已保存");
     }
   }
 
@@ -450,19 +556,7 @@ export async function handleCompat(
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
       const nodeId = decodeURIComponent(toolsMatch[1]);
-      const scouts = (await listScouts(env.DB)) as Array<{ scout_id?: string; online?: boolean }>;
-      const online = scouts.some((s) => s.scout_id === nodeId && s.online);
-      // Shape must match Workbench NodeTools; missing `tasks` crashes downloads pane.
-      return envelope({
-        node_id: nodeId,
-        online,
-        supported: false,
-        contract_version: 0,
-        stale: true,
-        reported_at: Math.floor(Date.now() / 1000),
-        items: [],
-        tasks: [],
-      });
+      return envelope(await readNodeTools(env, nodeId, gate.user!.user_id));
     }
   }
 
@@ -471,53 +565,100 @@ export async function handleCompat(
     if (m && method === "GET") {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
-      return envelope({});
+      const nodeId = decodeURIComponent(m[1]);
+      const scouts = (await listScouts(env.DB)) as Array<{
+        scout_id?: string;
+        online?: boolean;
+        scout_version?: string;
+      }>;
+      const scout = scouts.find((s) => s.scout_id === nodeId);
+      return envelope({
+        node_id: nodeId,
+        online: Boolean(scout?.online),
+        running_version: scout?.online ? scout.scout_version || null : null,
+        operation: null,
+      });
     }
   }
 
-  {
-    const m = pathname.match(/^\/runtime\/nodes\/([^/]+)\/logs$/);
-    if (m && method === "GET") {
-      const gate = await requireUser(request, env);
-      if (gate.error) return gate.error;
-      return envelope({ lines: [], text: "" });
-    }
-  }
-
-  // Node plugin / command paths need live Scout RPC — not on this hub yet.
+  // Aggregate plugin / channel-program routes (mcp0 rRuntime).
   if (
-    pathname.match(/^\/runtime\/nodes\/[^/]+\/(command|update|plugins|tools|tool-tasks|logs|update-status|claim)/) &&
-    method !== "GET"
+    pathname === "/runtime/plugins/status" ||
+    pathname === "/runtime/channel-programs/install" ||
+    pathname === "/runtime/plugins/install"
   ) {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
-    return fail(501, "节点远程控制尚未迁移到 Cloudflare hub");
+    const handled = await handlePluginRoutes(
+      request,
+      env,
+      pathname,
+      method,
+      gate.user!.user_id,
+    );
+    if (handled) return handled;
   }
 
-  if (pathname.match(/^\/runtime\/nodes\/[^/]+/) && method === "GET") {
+  // Node remote control / plugins / tool-tasks / logs / claim — live Scout EXECUTE.
+  if (pathname.startsWith("/runtime/nodes/")) {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
-    return envelope(softGet(pathname));
+    const handled = await handleNodeControl(
+      request,
+      env,
+      pathname,
+      method,
+      gate.user!.user_id,
+    );
+    if (handled) return handled;
+    if (method === "GET") return envelope(softGet(pathname));
+    return fail(501, "该节点接口尚未迁移到 Cloudflare hub");
   }
 
-  // Remaining Workbench surfaces: authenticated soft responses.
+  // Assistant surfaces — exact Workbench contracts (never bare {}).
+  if (pathname.startsWith("/assistant/")) {
+    const gate = await requireUser(request, env);
+    if (gate.error) return gate.error;
+    const handled = await handleAssistant(request, env, pathname, gate.user!.user_id);
+    if (handled) return handled;
+  }
+
+  // Device password / IME via Scout.
+  if (pathname.startsWith("/device/")) {
+    const gate = await requireUser(request, env);
+    if (gate.error) return gate.error;
+    const handled = await handleDeviceWrites(
+      request,
+      env,
+      pathname,
+      method,
+      gate.user!.user_id,
+    );
+    if (handled) return handled;
+    if (method === "GET") return envelope(softGet(pathname));
+    return fail(501, "该设备接口尚未迁移到 Cloudflare hub");
+  }
+
+  // OAuth discovery + consent APIs (mcp0 rOAuth).
+  {
+    const oauth = await handleOAuth(request, env, pathname);
+    if (oauth) return oauth;
+  }
+
+  // Remaining Workbench GETs: empty contract shapes so list pages render.
+  // Unimplemented writes must fail — never pretend success.
   if (
     pathname.startsWith("/settings/") ||
-    pathname.startsWith("/assistant/") ||
     pathname.startsWith("/project/") ||
     pathname.startsWith("/packs") ||
     pathname.startsWith("/flow-blocks") ||
     pathname.startsWith("/nav-fsm/") ||
-    pathname.startsWith("/device/") ||
-    pathname.startsWith("/oauth/") ||
     pathname.startsWith("/releases/")
   ) {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
     if (method === "GET") return envelope(softGet(pathname));
-    if (method === "DELETE") return envelope({ deleted: true });
-    // Accept no-op writes so forms don't hard-crash; persist only where implemented above.
-    return envelope({ ok: true }, "Cloudflare hub 已受理（部分能力为占位）");
+    return fail(501, "该接口尚未迁移到 Cloudflare hub");
   }
 
   return null;
