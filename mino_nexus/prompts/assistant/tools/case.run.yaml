@@ -52,6 +52,18 @@ params_schema:
       items:
         type: string
       description: 明确选择的用例 id，空列表不会执行全部
+    script_targets:
+      type: array
+      description: 按需求直接下发脚本。有此字段时不再从用例正文展开。每一项是 requirement_id 加 case_ids；case_ids 为空则执行 tests/<需求ID>/ 下的全部脚本。脚本路径为 tests/<需求ID>/<用例ID>.py。
+      items:
+        type: object
+        properties:
+          requirement_id:
+            type: string
+          case_ids:
+            type: array
+            items:
+              type: string
     revision:
       type: string
       description: 脚本所在的 git 提交 SHA，必须已 push 到项目仓库。Nexus 不校验，原样交给 Scout；Scout 自己拉取仓库，在该提交上读脚本，远端找不到由 Scout 返回 revision_missing，不回退到分支最新。不传则 Scout 取分支最新。

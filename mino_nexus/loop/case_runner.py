@@ -112,6 +112,7 @@ def run_cases(
     derived_from: str = "",
     expected_build: str = "",
     revision: str = "",
+    script_targets: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     phases: list[tuple[str, int]] = []
@@ -123,6 +124,9 @@ def run_cases(
     action_scheme = normalize_action_scheme(action_scheme)
     require_user_id(plugin_user_id or None)
     from mino_nexus.core.stable_digest import digest
+    from mino_nexus.loop.script_targets import normalize_script_targets
+
+    targets = normalize_script_targets(script_targets)
     if client_request_id and (len(client_request_id) > 160 or not all(character.isalnum() or character in "_.:-" for character in client_request_id)):
         raise ValueError("run_request_id_invalid")
     request_digest = digest({"app_id": app.get("id"), "sn": sn, "sns": sns, "coverage": coverage,
@@ -130,7 +134,7 @@ def run_cases(
         "requirement_id": requirement_id, "release_id": release_id, "slot_id": slot_id,
         "provider_id": provider_id, "playwright_headless": playwright_headless, "env_profile": env_profile,
         "env_surface": env_surface, "action_scheme": action_scheme, "execution_mode": execution_mode, "expected_build": expected_build,
-        "revision": revision})
+        "revision": revision, "script_targets": targets})
     if client_request_id:
         from mino_nexus.core.database import session_scope
         from mino_nexus.models.run_admission import RunAdmission
@@ -154,29 +158,33 @@ def run_cases(
         cov = "once"
     cov = cov or "once"
 
-    all_cases = aas.list_app_cases(app)
-    if case_ids is not None:
-        by_id = {str(c.get("case_id")): c for c in all_cases if c.get("case_id")}
-        cases = [by_id[str(cid)] for cid in case_ids if str(cid) in by_id]
-        missing = [cid for cid in case_ids if str(cid) not in by_id]
-        if missing:
-            raise ValueError("所选用例已删除或不属于当前项目，请重新选择；本次未创建任务。")
-    else:
-        cases = list(all_cases)
-    if start_index > 0:
-        cases = cases[start_index:]
-    if not cases:
-        raise ValueError("没有可执行的用例草稿。请先在流程里生成用例，或指定 case_ids。")
-    requested_total = len(cases)
     skipped_cases: list[dict[str, Any]] = []
-    from mino_nexus.casework.case_preflight import prepare_cases_for_execution
+    if targets:
+        cases = []
+        requested_total = 0
+    else:
+        all_cases = aas.list_app_cases(app)
+        if case_ids is not None:
+            by_id = {str(c.get("case_id")): c for c in all_cases if c.get("case_id")}
+            cases = [by_id[str(cid)] for cid in case_ids if str(cid) in by_id]
+            missing = [cid for cid in case_ids if str(cid) not in by_id]
+            if missing:
+                raise ValueError("所选用例已删除或不属于当前项目，请重新选择；本次未创建任务。")
+        else:
+            cases = list(all_cases)
+        if start_index > 0:
+            cases = cases[start_index:]
+        if not cases:
+            raise ValueError("没有可执行的用例草稿。请先在流程里生成用例，或指定 case_ids。")
+        requested_total = len(cases)
+        from mino_nexus.casework.case_preflight import prepare_cases_for_execution
 
-    cases, preflight = prepare_cases_for_execution(str(app.get("project_id") or ""),
-        [str(case["case_id"]) for case in cases])
-    skipped_cases = preflight["blocked"]
-    if not cases:
-        raise UiNotCoverable(skipped_cases, compilation_jobs=preflight.get("compilation_jobs"),
-                             report=preflight)
+        cases, preflight = prepare_cases_for_execution(str(app.get("project_id") or ""),
+            [str(case["case_id"]) for case in cases])
+        skipped_cases = preflight["blocked"]
+        if not cases:
+            raise UiNotCoverable(skipped_cases, compilation_jobs=preflight.get("compilation_jobs"),
+                                 report=preflight)
     mark("cases")
 
     from mino_nexus.resources.device_targets import select
@@ -226,6 +234,20 @@ def run_cases(
     )
     playbook = aas.get_playbook(app)
     run_id = run_store.new_run_id()
+    if targets:
+        from mino_nexus.loop.script_targets import expand_script_targets
+
+        if not str(requirement_id or "").strip() and len(targets) == 1:
+            requirement_id = str(targets[0]["requirement_id"])
+        list_platform = platforms_by_sn.get(device_sns[0], task_platform) if device_sns else task_platform
+        cases = expand_script_targets(
+            project_id, targets, run_id=run_id, sn=device_sns[0] if device_sns else "",
+            platform=str(list_platform or platform), repo_url=repo_public_url, branch=repo_branch,
+            revision=str(revision or "").strip(),
+        )
+        requested_total = len(cases)
+        if not cases:
+            raise ValueError("没有可执行的脚本。")
     seeded = [
         run_store.seed_case(
             run_id,

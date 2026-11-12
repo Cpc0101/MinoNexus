@@ -73,6 +73,14 @@ Nexus 在每次发现项目、发现会话和读取用例时注入该地址；�
 应用属于该项目。仅向该应用现有的 SQLite `env.automation.qa_process.requirements` 追加
 一个有 ID 和名称的分组，保留其他配置；不启动分析或模型调用。名称去首尾空白，长度
 1–200，空名称拒绝；同一应用同名请求返回已有 ID，避免重试重复创建。
+可选 `requirement_id`（字母开头，最长 64，作为 `tests/<需求ID>/` 目录名）和 `source_url`
+（http/https 渠道链接，例如飞书文档）。同一项目内需求 ID 不重复；再次提交同一 ID 时更新链接。
+`PUT /project/{project_id}/requirements/{requirement_id}` 接收 `{app_id, source_url, title}`，
+用来改链接或名称。`GET` 在原字段外返回 `source_url` 和 `app_id`。
+
+`POST /case-runner/run` 增加可选 `script_targets: [{requirement_id, case_ids}]`。
+带上这个字段时按脚本直接下发，不再读取用例正文。`case_ids` 为空时，由持有设备的 Scout
+列出 `tests/<需求ID>/*.py` 后逐条执行。指定了用例 ID 时路径为 `tests/<需求ID>/<用例ID>.py`。
 
 导入弹窗在没有需求分组时显示名称输入和「添加分组」，默认名称为「导入用例」。成功后
 立即更新列表并选中新分组，继续选择文件或核对已选文件。失败时保留输入和文件状态。

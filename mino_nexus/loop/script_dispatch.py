@@ -223,6 +223,62 @@ def _map_status(value: str) -> str:
     return "fail"
 
 
+def list_requirement_scripts(
+    *,
+    sn: str,
+    platform: str,
+    repo_url: str,
+    branch: str,
+    revision: str,
+    requirement_id: str,
+    run_id: str,
+) -> list[dict[str, str]]:
+    """让持有设备的 Scout 列出 tests/<需求ID> 下的脚本。Nexus 不克隆仓库。"""
+    from mino_nexus.resources.node_registry import get_registry
+
+    node, reason = get_registry().resolve(sn)
+    if node is None or getattr(node, "send", None) is None:
+        raise ValueError((reason or "节点不在线，无法列出需求下的脚本")[:240])
+    timeout = 200.0
+    request = P.Execute(
+        run_id=run_id,
+        step_idx=-1,
+        sn=sn,
+        capability_id="script.list",
+        platform=str(platform or ""),
+        params={
+            "repo_url": repo_url,
+            "branch": branch,
+            "revision": revision,
+            "requirement_id": requirement_id,
+        },
+        timeout_sec=timeout,
+        executor_order=[],
+    )
+    result = run_sync(node.send(P.MsgType.EXECUTE, request, timeout=timeout))
+    if result is None:
+        raise ValueError("节点没有返回需求目录")
+    raw_status = getattr(getattr(result, "status", None), "value", None) or getattr(result, "status", "")
+    if str(raw_status).lower() != "pass":
+        summary = str(getattr(result, "summary", "") or getattr(result, "error", "") or "列出脚本失败")
+        raise ValueError(summary[:240])
+    data = dict(getattr(result, "data", None) or {})
+    extra = getattr(result, "extra", None)
+    if isinstance(extra, dict):
+        data = {**extra, **data}
+    block = data.get("script_list") if isinstance(data.get("script_list"), dict) else {}
+    rows = block.get("cases") if isinstance(block.get("cases"), list) else []
+    found: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("case_id") or "").strip()
+        path = str(row.get("script_path") or "").strip()
+        if cid and path:
+            found.append({"case_id": cid, "script_path": path})
+    return found
+
+
 def _outcome(
     status: str,
     summary: str,

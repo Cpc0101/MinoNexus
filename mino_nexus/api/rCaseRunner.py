@@ -65,6 +65,13 @@ class RunRequest(BaseModel):
     env_profile: str = ""
     env_surface: str = ""
     revision: str = ""
+    script_targets: Optional[List["ScriptTarget"]] = None
+
+
+class ScriptTarget(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    requirement_id: str = ""
+    case_ids: List[str] = Field(default_factory=list)
 
 
 class PromoteBaselineRequest(BaseModel):
@@ -175,6 +182,7 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             execution_mode="agent",
             client_request_id=body.client_request_id,
             revision=revision,
+            script_targets=[item.model_dump() for item in body.script_targets] if body.script_targets else None,
         )
         return ok(snapshot, msg="AI-led 回归任务已启动")
     except (cr.DeviceBusy, ResourceBusy) as exc:

@@ -1,0 +1,23 @@
+id: requirement.list
+title: 项目需求列表
+description: 列出项目下已登记的需求。每条含需求 ID、名称和渠道链接。编写脚本前用链接读取用例，脚本路径使用该需求 ID。
+route: GET /project/{project_id}/requirements
+risk: read
+async: false
+params_schema:
+  type: object
+  properties:
+    project_id:
+      type: string
+      description: 项目 id 或项目名
+  required:
+  - project_id
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- im
+- mcp
+enabled: true

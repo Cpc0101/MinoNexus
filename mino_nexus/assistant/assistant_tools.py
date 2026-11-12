@@ -465,7 +465,7 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
         if not pid or pid not in group.get("project_ids", []):
             return ToolOutcome(ok=False, summary="当前群没有这个项目的访问授权，请转到私聊处理。", tool_id=str(spec.get("id") or ""))
     preflight_data: dict[str, Any] = {}
-    if spec.get("id") == "case.run" and args.get("app_id") and args.get("_clarification_field") not in ("project_id", "app_id"):
+    if spec.get("id") == "case.run" and args.get("app_id") and not args.get("script_targets") and args.get("_clarification_field") not in ("project_id", "app_id"):
         from mino_nexus.assistant.assistant_scope import resolve
         args, scope_problem, scope_candidates = resolve(args)
         if scope_problem:

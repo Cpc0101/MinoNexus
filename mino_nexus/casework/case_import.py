@@ -61,11 +61,60 @@ def list_project_requirements(project_id: str) -> list[dict[str, Any]]:
                 "id": rid,
                 "title": str(req.get("title") or req.get("external_id") or rid),
                 "external_id": str(req.get("external_id") or ""),
+                "source_url": str(req.get("source_url") or ""),
+                "app_id": str(app_row.get("id") or ""),
             })
     return out
 
 
-def create_project_requirement(project_id: str, app_id: str, title: str) -> dict[str, str]:
+def _requirement_id_ok(value: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value))
+
+
+def _source_url_ok(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or len(text) > 2000 or not text.startswith(("http://", "https://")):
+        return False
+    return not any(ch.isspace() or ord(ch) < 32 for ch in text)
+
+
+def _public_requirement(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": str(row.get("id") or ""),
+        "title": str(row.get("title") or ""),
+        "source_url": str(row.get("source_url") or ""),
+        "app_id": str(row.get("app_id") or ""),
+    }
+
+
+def _iter_requirements(env: dict[str, Any] | None) -> list:
+    automation = env.get("automation") if isinstance(env, dict) else None
+    process = automation.get("qa_process") if isinstance(automation, dict) else None
+    requirements = process.get("requirements") if isinstance(process, dict) else None
+    return requirements if isinstance(requirements, list) else []
+
+
+def _load_requirements(env: dict[str, Any]) -> list:
+    automation = env.get("automation")
+    if not isinstance(automation, dict):
+        raise ValueError("应用需求配置异常，请先修复配置")
+    process = automation.get("qa_process")
+    if not isinstance(process, dict):
+        raise ValueError("应用需求配置异常，请先修复配置")
+    requirements = process.get("requirements")
+    if not isinstance(requirements, list):
+        raise ValueError("应用需求配置异常，请先修复配置")
+    return requirements
+
+
+def create_project_requirement(
+    project_id: str,
+    app_id: str,
+    title: str,
+    requirement_id: str = "",
+    source_url: str = "",
+) -> dict[str, str]:
     import time
     from sqlalchemy import text
     from mino_nexus.core.database import session_scope
@@ -75,12 +124,23 @@ def create_project_requirement(project_id: str, app_id: str, title: str) -> dict
     title = str(title or "").strip()
     if not title or len(title) > 200 or any(ord(character) < 32 for character in title):
         raise ValueError("请输入 1 到 200 字的需求分组名称")
+    wanted = str(requirement_id or "").strip()
+    if wanted and not _requirement_id_ok(wanted):
+        raise ValueError("需求 ID 须以字母开头，只含字母、数字、下划线或连字符，最长 64 位")
+    link = str(source_url or "").strip()
+    if link and not _source_url_ok(link):
+        raise ValueError("用例链接须是 http 或 https 地址")
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
         owned(db, project_id)
         app = db.get(App, app_id)
         if app is None or app.project_id != project_id:
             raise ValueError("应用不属于当前项目")
+        for other in db.query(App).filter(App.project_id == project_id).all():
+            if wanted and other.id != app_id:
+                for row in _iter_requirements(other.env or {}):
+                    if isinstance(row, dict) and str(row.get("id") or "") == wanted:
+                        raise ValueError("需求 ID 已在本项目使用")
         env = copy.deepcopy(app.env or {})
         automation = env.setdefault("automation", {})
         if not isinstance(automation, dict):
@@ -92,16 +152,73 @@ def create_project_requirement(project_id: str, app_id: str, title: str) -> dict
         if not isinstance(requirements, list):
             raise ValueError("应用需求配置异常，请先修复配置")
         for requirement in requirements:
-            if (isinstance(requirement, dict) and requirement.get("id")
-                    and requirement.get("id") != "__imported_cases__" and requirement.get("title") == title):
-                return {"id": str(requirement["id"]), "title": title}
+            if not isinstance(requirement, dict) or not requirement.get("id") or requirement.get("id") == "__imported_cases__":
+                continue
+            same = str(requirement.get("id")) == wanted if wanted else requirement.get("title") == title
+            if same:
+                if link:
+                    requirement["source_url"] = link
+                    requirement["updated_at"] = _now()
+                    process["updated_at"] = requirement["updated_at"]
+                    app.env, app.updated_at = env, int(time.time())
+                return _public_requirement({**requirement, "app_id": app_id})
         stamp = _now()
         from mino_nexus.core.ids import prefixed
-        requirement = {"id": prefixed("req", 16), "title": title, "created_at": stamp, "updated_at": stamp}
+        requirement = {
+            "id": wanted or prefixed("req", 16),
+            "title": title,
+            "source_url": link,
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
         requirements.append(requirement)
         process["updated_at"] = stamp
         app.env, app.updated_at = env, int(time.time())
-        return {"id": requirement["id"], "title": title}
+        return _public_requirement({**requirement, "app_id": app_id})
+
+
+def update_project_requirement(
+    project_id: str,
+    app_id: str,
+    requirement_id: str,
+    *,
+    source_url: str = "",
+    title: str = "",
+) -> dict[str, str]:
+    import time
+    from sqlalchemy import text
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.models.project import App
+    from mino_nexus.platform.project_guard import owned
+
+    rid = str(requirement_id or "").strip()
+    if not rid:
+        raise ValueError("缺少需求 ID")
+    link = str(source_url or "").strip()
+    if link and not _source_url_ok(link):
+        raise ValueError("用例链接须是 http 或 https 地址")
+    next_title = str(title or "").strip()
+    if next_title and (len(next_title) > 200 or any(ord(character) < 32 for character in next_title)):
+        raise ValueError("请输入 1 到 200 字的需求分组名称")
+    with session_scope() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        owned(db, project_id)
+        app = db.get(App, app_id)
+        if app is None or app.project_id != project_id:
+            raise ValueError("应用不属于当前项目")
+        env = copy.deepcopy(app.env or {})
+        requirements = _load_requirements(env)
+        for requirement in requirements:
+            if isinstance(requirement, dict) and str(requirement.get("id") or "") == rid:
+                requirement["source_url"] = link
+                if next_title:
+                    requirement["title"] = next_title
+                requirement["updated_at"] = _now()
+                process = env["automation"]["qa_process"]
+                process["updated_at"] = requirement["updated_at"]
+                app.env, app.updated_at = env, int(time.time())
+                return _public_requirement({**requirement, "app_id": app_id})
+        raise ValueError("需求不存在")
 
 
 def _requirement_title(project_id: str, requirement_id: str) -> str:

@@ -25,6 +25,15 @@ class ImportRequirementCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     app_id: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=1, max_length=200)
+    requirement_id: str = ""
+    source_url: str = ""
+
+
+class RequirementUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    app_id: str = Field(min_length=1, max_length=200)
+    title: str = ""
+    source_url: str = ""
 
 
 class CaseImportPreviewBody(BaseModel):
@@ -353,9 +362,25 @@ def list_import_requirements(project_id: str, _sess: dict = Depends(current_sess
 @router.post("/{project_id}/requirements")
 def create_import_requirement(project_id: str, body: ImportRequirementCreateBody, _sess: dict = Depends(project_maintainer)):
     try:
-        return ok({"requirement": cim.create_project_requirement(project_id, body.app_id, body.title)})
+        return ok({"requirement": cim.create_project_requirement(
+            project_id, body.app_id, body.title, body.requirement_id, body.source_url)})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/{project_id}/requirements/{requirement_id}")
+def update_import_requirement(
+    project_id: str,
+    requirement_id: str,
+    body: RequirementUpdateBody,
+    _sess: dict = Depends(project_maintainer),
+):
+    try:
+        return ok({"requirement": cim.update_project_requirement(
+            project_id, body.app_id, requirement_id, source_url=body.source_url, title=body.title)})
+    except ValueError as exc:
+        status = 404 if str(exc) == "需求不存在" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 @router.get("/{project_id}/cases/import/sources")
