@@ -28,10 +28,15 @@ def _app() -> Any:
     return create_app()
 
 
-def assert_no_delete(route: str) -> None:
-    method, _, path = str(route).partition(" ")
-    if method.upper() == "DELETE" or "/delete" in path.lower():
-        raise ValueError(f"删除类接口不能进助手工具表：{route}")
+def assert_no_delete(spec: dict[str, Any]) -> None:
+    route = str(spec.get("route") or "")
+    method, _, path = route.partition(" ")
+    if method.upper() != "DELETE" and "/delete" not in path.lower():
+        return
+    # 对话助手不暴露删除。仅 MCP 的删除工具留给外部 agent，并要求调用前向用户确认。
+    if list(spec.get("surfaces") or []) == ["mcp"]:
+        return
+    raise ValueError(f"删除类接口不能进助手工具表：{route}")
 
 
 def all_tools() -> list[dict[str, Any]]:
@@ -39,8 +44,7 @@ def all_tools() -> list[dict[str, Any]]:
     for spec in list_assistant_tools():
         if spec.get("workspace_only") or spec.get("enabled") is False or str(spec.get("id") or "").startswith(("scout.update", "nexus.update", "workbench.update")):
             continue
-        route = str(spec.get("route") or "")
-        assert_no_delete(route)
+        assert_no_delete(spec)
         if spec.get("risk") not in ("read", "write"):
             raise ValueError(f"工具档位只有 read / write：{spec.get('id')}")
         rows.append(spec)
@@ -410,9 +414,11 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
             return ToolOutcome(ok=False, summary="当前群没有执行权限，请在 Workbench 的群策略中设置或转到私聊。", tool_id=str(spec.get("id") or ""))
 
     route = str(spec.get("route") or "")
-    assert_no_delete(route)
     method, _, path = route.partition(" ")
     method = method.upper()
+    if (method == "DELETE" or "/delete" in path.lower()) and surface != "mcp":
+        return ToolOutcome(ok=False, summary="删除只允许经 MCP 调用。", tool_id=str(spec.get("id") or ""), status=403)
+    assert_no_delete(spec)
     props = (spec.get("params_schema") or {}).get("properties") or {}
     args = dict(args or {})
     if spec.get("id") == "plugin.install" and surface != "mcp":

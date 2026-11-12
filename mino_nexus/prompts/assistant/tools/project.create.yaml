@@ -1,0 +1,24 @@
+id: project.create
+title: 创建项目
+description: 创建一个项目，返回项目 id。name 必填，description 可选。调用前必须把名称和说明展示给用户，等用户确认或改完再调用，不要擅自创建。
+route: POST /project/create
+risk: write
+async: false
+params_schema:
+  type: object
+  properties:
+    name:
+      type: string
+      description: 项目名称，1 到 200 字
+    description:
+      type: string
+      description: 项目说明，可空，最长 2000 字
+  required:
+  - name
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

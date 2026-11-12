@@ -1,0 +1,21 @@
+id: app.delete
+title: 删除应用
+description: 删除一个误建的应用，只删应用记录。app_id 来自 project_list。调用前必须向用户展示应用 id 和名称，得到明确的删除确认后再调用。
+route: DELETE /project/app/{app_id}
+risk: write
+async: false
+params_schema:
+  type: object
+  properties:
+    app_id:
+      type: string
+      description: 要删除的应用 id
+  required:
+  - app_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

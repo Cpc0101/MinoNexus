@@ -37,6 +37,11 @@ def agent_guide() -> dict[str, Any]:
                 "tools": ["project_list"],
             },
             {
+                "name": "新建项目或删除误建应用",
+                "tools": ["project_list", "project_create", "app_delete"],
+                "then": "先把名称、说明或要删的应用列给用户。用户可以改名称和说明；删除必须得到明确确认后再调用。",
+            },
+            {
                 "name": "编写或修改用例脚本",
                 "tools": ["project_list", "case_list", "device_list", "case_run", "task_get", "session_events", "session_screenshot"],
                 "then": "使用 write-test-cases。先选一台 executable 设备。页面定位、点击、截图和界面结构都写进用例脚本，用 app.hierarchy()、app.screenshot()、app.tap() 等 Scout 运行时方法，经 case_run 触发 Scout 的 script.run。从这次运行的 tool/result（capability_id=hierarchy 的 nodes 或 hierarchy_text）和截图写 pages。一步不是单个控件能完成时写成 flows/（连续动作）或 scripts/（不碰设备的逻辑），随同一轮 case_run 调试。写成覆盖原文的可执行脚本后，push，再用同一台设备 case_run 一次。不要用浏览器、adb 或其他工具另采页面参数。",

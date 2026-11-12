@@ -4,7 +4,7 @@
  */
 
 import type { Env } from "./env";
-import { listProjects, createApp } from "./auth";
+import { listProjects, createApp, createProject, deleteApp } from "./auth";
 import { listDevices, listScouts } from "./db";
 import {
   ACCESS_PREFIX,
@@ -116,6 +116,49 @@ const TOOLS = [
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "project_create",
+    title: "创建项目",
+    description:
+      "创建一个项目，返回项目 id。name 必填，description 可选。调用前必须把名称和说明展示给用户，等用户确认或改完再调用，不要擅自创建。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string", description: "项目名称，1 到 200 字" },
+        description: { type: "string", description: "项目说明，可空，最长 2000 字" },
+      },
+      required: ["name"],
+    },
+    annotations: {
+      title: "创建项目",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "app_delete",
+    title: "删除应用",
+    description:
+      "删除一个误建的应用，只删应用记录。app_id 来自 project_list。调用前必须向用户展示应用 id 和名称，得到明确的删除确认后再调用。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        app_id: { type: "string", description: "要删除的应用 id" },
+      },
+      required: ["app_id"],
+    },
+    annotations: {
+      title: "删除应用",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
       openWorldHint: false,
     },
   },
@@ -462,6 +505,11 @@ function agentGuidePayload(): Record<string, unknown> {
     flows: [
       { name: "确认能操作哪些项目", tools: ["project_list"] },
       {
+        name: "新建项目或删除误建应用",
+        tools: ["project_list", "project_create", "app_delete"],
+        then: "先把名称、说明或要删的应用列给用户。用户可以改名称和说明；删除必须得到明确确认后再调用。",
+      },
+      {
         name: "编写或修改用例脚本",
         tools: [
           "project_list",
@@ -632,6 +680,27 @@ async function callTool(
     } catch (err) {
       return pack(false, err instanceof Error ? err.message : "创建失败", {}, 400);
     }
+  }
+
+  if (name === "project_create") {
+    const projectName = String(args.name || "").trim();
+    const description = String(args.description || "").trim();
+    if (!projectName || projectName.length > 200) return pack(false, "请填写 1 到 200 字的项目名称", {}, 422);
+    if (description.length > 2000) return pack(false, "说明最长 2000 字", {}, 422);
+    try {
+      const project = await createProject(env.DB, userId, projectName, description);
+      return pack(true, "已创建", project);
+    } catch (err) {
+      return pack(false, err instanceof Error ? err.message : "创建失败", {}, 400);
+    }
+  }
+
+  if (name === "app_delete") {
+    const appId = String(args.app_id || "").trim();
+    if (!appId) return pack(false, "缺少 app_id", {}, 422);
+    const deleted = await deleteApp(env.DB, userId, appId);
+    if (!deleted) return pack(false, "没有这个应用", {}, 404);
+    return pack(true, "已删除", deleted);
   }
 
   if (name === "plugin_status") {

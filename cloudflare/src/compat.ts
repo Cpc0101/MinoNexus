@@ -8,6 +8,7 @@ import {
   bearer,
   createApp,
   createProject,
+  deleteApp,
   destroySession,
   listProjects,
   loginUser,
@@ -389,9 +390,25 @@ export async function handleCompat(
     if (gate.error) return gate.error;
     const body = await readJson(request);
     return envelope(
-      await createProject(env.DB, gate.user!.user_id, String(body.name || "")),
+      await createProject(
+        env.DB,
+        gate.user!.user_id,
+        String(body.name || ""),
+        String(body.description || ""),
+      ),
       "已创建",
     );
+  }
+
+  {
+    const m = pathname.match(/^\/project\/app\/([^/]+)$/);
+    if (m && method === "DELETE") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const deleted = await deleteApp(env.DB, gate.user!.user_id, decodeURIComponent(m[1]));
+      if (!deleted) return fail(404, "没有这个应用");
+      return envelope(deleted, "已删除");
+    }
   }
 
   if (pathname === "/project/app/create" && method === "POST") {

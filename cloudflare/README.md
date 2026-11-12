@@ -5,7 +5,7 @@ New implementation on the `cloudflare` branch. **Not** a port of the Python Fast
 ## Scope
 
 1. **Scout online channel** — WebSocket `GET /node` with `REGISTER` / `HEARTBEAT`
-2. **Agent MCP** — `POST /mcp` with OAuth 2.1 (`mino_oat_`) or Workbench manual token (`mino_mcp_`); tools from mcp0.0.1 YAML: `agent_guide`, `project_list`, `scout_list`, `device_list`, `app_create`, `plugin_status`, `node_channel_program`, `plugin_install`, `project_script_repo_set`, `repo_apps_sync`, `repo_apps_get`, `case_list` / `requirement_list`（需求 id、名称、链接）, `requirement_save`, `case_run`（`script_targets` 或 `case_ids` → `script.run`）, `task_get`
+2. **Agent MCP** — `POST /mcp` with OAuth 2.1 (`mino_oat_`) or Workbench manual token (`mino_mcp_`); tools from mcp0.0.1 YAML: `agent_guide`, `project_list`, `project_create`, `scout_list`, `device_list`, `app_create`, `app_delete`, `plugin_status`, `node_channel_program`, `plugin_install`, `project_script_repo_set`, `repo_apps_sync`, `repo_apps_get`, `case_list` / `requirement_list`（需求 id、名称、链接）, `requirement_save`, `case_run`（`script_targets` 或 `case_ids` → `script.run`）, `task_get`
 3. **Device status sync** — devices reported by Scouts, queryable via MCP / HTTP
 4. **Workbench HTTP** — D1 auth/sessions; install-token; nodes/devices; projects/apps; AI provider settings; plugin/channel-program install via Scout EXECUTE
 

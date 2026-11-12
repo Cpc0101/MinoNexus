@@ -177,10 +177,10 @@ export async function listProjects(db: D1Database, owner_user_id: string): Promi
   /** Match mino_nexus.resources.project_store.list_projects shape (id + apps). */
   const { results: projects } = await db
     .prepare(
-      `SELECT project_id, name, created_at_ms FROM projects WHERE owner_user_id = ? ORDER BY created_at_ms DESC`,
+      `SELECT project_id, name, description, created_at_ms FROM projects WHERE owner_user_id = ? ORDER BY created_at_ms DESC`,
     )
     .bind(owner_user_id)
-    .all<{ project_id: string; name: string; created_at_ms: number }>();
+    .all<{ project_id: string; name: string; description: string | null; created_at_ms: number }>();
   const { results: apps } = await db
     .prepare(
       `SELECT app_id, project_id, name, platform, created_at_ms FROM apps WHERE owner_user_id = ?`,
@@ -219,6 +219,7 @@ export async function listProjects(db: D1Database, owner_user_id: string): Promi
       project_id: p.project_id,
       id: p.project_id,
       name: p.name,
+      description: p.description || "",
       created_at: p.created_at_ms,
       repo_url: repo?.url || "",
       repo_branch: repo?.branch || "",
@@ -234,8 +235,10 @@ export async function createProject(
   db: D1Database,
   owner_user_id: string,
   nameRaw: string,
+  descriptionRaw = "",
 ): Promise<Record<string, unknown>> {
   const name = String(nameRaw || "").trim() || "未命名项目";
+  const description = String(descriptionRaw || "").trim().slice(0, 2000);
   const { results } = await db
     .prepare(`SELECT project_id FROM projects`)
     .all<{ project_id: string }>();
@@ -246,11 +249,32 @@ export async function createProject(
   const now = Date.now();
   await db
     .prepare(
-      `INSERT INTO projects (project_id, owner_user_id, name, created_at_ms) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO projects (project_id, owner_user_id, name, description, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
     )
-    .bind(project_id, owner_user_id, name, now)
+    .bind(project_id, owner_user_id, name, description, now)
     .run();
-  return { project_id, id: project_id, name, created_at: now };
+  return { project_id, id: project_id, name, description, created_at: now };
+}
+
+export async function deleteApp(
+  db: D1Database,
+  owner_user_id: string,
+  appIdRaw: string,
+): Promise<Record<string, unknown> | null> {
+  const app_id = String(appIdRaw || "").trim();
+  if (!app_id) return null;
+  const row = await db
+    .prepare(
+      `SELECT app_id, project_id, name FROM apps WHERE app_id = ? AND owner_user_id = ?`,
+    )
+    .bind(app_id, owner_user_id)
+    .first<{ app_id: string; project_id: string; name: string }>();
+  if (!row) return null;
+  await db
+    .prepare(`DELETE FROM apps WHERE app_id = ? AND owner_user_id = ?`)
+    .bind(app_id, owner_user_id)
+    .run();
+  return { id: row.app_id, app_id: row.app_id, name: row.name, project_id: row.project_id };
 }
 
 export async function createApp(
