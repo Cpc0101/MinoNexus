@@ -305,9 +305,9 @@ function agentGuidePayload(): Record<string, unknown> {
     channel: "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
     first_call: "agent_guide",
     boundaries: [
-      "脚本文本只写在本机的脚本仓库工作区，不要把脚本 POST/PUT 给 Nexus。各仓库分工与 Scout 安装见 agent 技能 overview。",
-      "Git 提交和推送仍在本机。Nexus 不保存 Git 令牌，也不拉取脚本仓库；设备所在电脑上的 Scout 用本机 git 凭据自己拉取。改了脚本仓库 config.yaml 的 apps 后，必须 push 并调用 repo_apps_sync 告知 Nexus；选应用前可先调 repo_apps_get。",
-      "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。验证码和模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
+      "脚本文本只由 agent 写在本机脚本仓并通过 Git 推送；MCP 只做查询、同步元数据与触发执行，不写代码。各仓库分工与 Scout 安装见 agent 技能 overview。",
+      "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
+      "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。验证码优先读脚本仓 otp.code，否则要人工提供；模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
     ],
     workbench: {
       url: "https://workbench.minocc.top",

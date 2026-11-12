@@ -47,31 +47,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
-_hold_last = 0.0
-
-
-def _kick_im_hold() -> None:
-    """心跳后检查一次对话渠道的持有权，最多每 15 秒一次，放到线程里不阻塞收发。"""
-    import threading
-    import time
-
-    global _hold_last
-    now = time.time()
-    if now - _hold_last < 15:
-        return
-    _hold_last = now
-
-    def _run() -> None:
-        try:
-            from mino_nexus.assistant.connectors.im_hold import arbitrate
-
-            arbitrate()
-        except Exception as exc:
-            SLog.w(TAG, f"im_hold 仲裁失败 {type(exc).__name__}")
-
-    threading.Thread(target=_run, name="im-hold", daemon=True).start()
-
-
 class NodeConnection:
     """一条 Scout 连接。负责编解码、请求-应答配对、超时。"""
 
@@ -221,7 +196,6 @@ class NodeConnection:
                 await self.ws.close(code=1008, reason=f"心跳合同无效: {reason_code}")
                 self.close()
                 return
-            _kick_im_hold()
         elif env.type is P.MsgType.EXECUTE:
             await self._on_inbound_execute(env)
         else:

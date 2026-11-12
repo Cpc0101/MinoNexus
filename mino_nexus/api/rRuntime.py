@@ -88,7 +88,7 @@ class PluginInstallBody(BaseModel):
     """插件安装/更新任务；不接收下载地址或密钥。"""
     model_config = ConfigDict(extra='forbid')
     node_id: str = Field(min_length=1, max_length=128)
-    plugin: Literal['cli.feishu', 'cli.meego', 'langbot']
+    plugin: Literal['cli.feishu', 'cli.meego']
     action: Literal['install', 'update'] = 'install'
     operation_id: str = Field(default='', max_length=100)
     wait_ms: int = Field(default=0, ge=0, le=60000)
@@ -233,66 +233,8 @@ def _im_route(channel: str) -> tuple[str, str, str, str]:
 
 @router.post('/im/send')
 def send_im_message(body: ImSendBody, sess: dict = Depends(current_session)):
-    """按节点已上报的机器人实例发送文本。微信主动发送仍要求入站 context_token。"""
-    import hashlib
-    import json
-
-    from mino_nexus.platform.identity import execution_user
-    from mino_nexus.platform.im_channels import normalize_im_channels
-    from mino_nexus.resources.node_plugin_call import PluginCallError, call_plugin, node_for_plugin
-
-    kind, plugin_id, row_channel, scout_channel = _im_route(body.channel)
-    uid = str(sess.get('user_id') or '')
-    with execution_user(uid):
-        try:
-            node = node_for_plugin(kind, plugin_id, body.node_id)
-        except PluginCallError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        row = next((item for item in normalize_im_channels(node.plugins)
-                    if item.get('channel') == row_channel), None)
-        if row is None:
-            raise HTTPException(status_code=409, detail='节点尚未上报该 IM 渠道，请先在 Workbench 配置并等待重新上报')
-        if row.get('connection_state') in ('disabled', 'not_installed', 'yielded', 'error'):
-            raise HTTPException(status_code=409, detail=str(row.get('error') or '该 IM 渠道当前不可发送'))
-        instance = str(row.get('instance_id') or '')
-        ctx = {str(key): value for key, value in (body.reply_ctx or {}).items()}
-        ctx['instance_id'] = instance
-        if scout_channel == 'wechat':
-            if not str(ctx.get('context_token') or '').strip():
-                raise HTTPException(status_code=422, detail='微信主动发送需要入站会话的 context_token；仅配置插件不足以新开对话')
-        elif scout_channel == 'feishu_cli':
-            if not instance:
-                raise HTTPException(status_code=409, detail='飞书 CLI 尚未上报可用实例，请先完成配置')
-        else:
-            # 机器人实例只认节点上报值，不接受调用方伪造另一个 bot。
-            bot_uuid = instance.strip()
-            if not bot_uuid:
-                raise HTTPException(status_code=409, detail='LangBot 机器人实例尚未就绪，请先完成配置')
-            ctx['bot_uuid'] = bot_uuid
-            ctx['target_type'] = 'group' if body.chat_type == 'group' else 'person'
-            ctx['target_id'] = body.chat_id
-            ctx.setdefault('tenant', '')
-        delivery_id = body.client_request_id.strip() or hashlib.sha256(json.dumps(
-            [uid, scout_channel, instance, body.chat_id, body.sender_id, body.chat_type, body.text],
-            ensure_ascii=False).encode('utf-8')).hexdigest()[:48]
-        try:
-            data = call_plugin(
-                kind=kind, plugin_id=plugin_id, node_id=node.node_id,
-                capability_id='plugin.im.send',
-                params={'channel': scout_channel, 'chat_id': body.chat_id, 'sender_id': body.sender_id,
-                        'text': body.text, 'reply_ctx': ctx, 'delivery_id': delivery_id},
-                timeout=45,
-            )
-        except PluginCallError as exc:
-            raise HTTPException(status_code=503, detail={'message': str(exc), 'delivery_id': delivery_id}) from exc
-    if data.get('ok') is not True:
-        raise HTTPException(status_code=502, detail={'message': str(data.get('summary') or 'IM 发送未确认完成'),
-                                                    'delivery_id': delivery_id})
-    provider_message_id = str(data.get('provider_message_id') or '')
-    return ok({'id': provider_message_id or delivery_id, 'node_id': node.node_id,
-               'channel': body.channel, 'chat_id': body.chat_id,
-               'provider_message_id': provider_message_id,
-               'delivery_id': delivery_id}, msg=str(data.get('summary') or '已发送'))
+    del body, sess
+    raise HTTPException(status_code=410, detail='对话发送已移除')
 
 
 @router.get("/nodes")
@@ -666,7 +608,7 @@ def _compact_task(raw: Any) -> dict[str, Any]:
 
 
 def _plugin_status_row(row: dict[str, Any], tools: dict[str, Any] | None, tools_error: str) -> dict[str, Any]:
-    plugin_tool_ids = {'cli.feishu', 'cli.meego', 'langbot'}
+    plugin_tool_ids = {'cli.feishu', 'cli.meego'}
     components = [
         _compact_component(item) for item in (tools or {}).get('items', [])
         if isinstance(item, dict) and item.get('tool_id') in plugin_tool_ids
@@ -831,8 +773,8 @@ async def install_node_plugin(
     _node_row_for_session(node_id, studio_id=studio_id, sess=sess)
     kind = str(body.kind or "").strip()
     plugin_id = str(body.plugin_id or "").strip()
-    if kind not in ("cli", "mcp", "im"):
-        raise HTTPException(status_code=400, detail="只有 CLI、MCP 和对话渠道（LangBot）需要安装")
+    if kind not in ("cli", "mcp"):
+        raise HTTPException(status_code=400, detail="只有 CLI、MCP 需要安装")
     live = _require_live_node(node_id, sess, studio_id)
     out = await _relay_plugin(
         node_id,
@@ -881,9 +823,8 @@ async def call_node_plugin(
     plugin_id = cap.rsplit(".", 1)[-1]
     if cap == "plugin.bot.send":
         plugin_id = str((body.params or {}).get("kind") or "")
-    if cap == "plugin.bot.wechat":
-        plugin_id = "wechat"
-        kind = "im"
+    if cap == "plugin.bot.wechat" or cap.startswith("plugin.im."):
+        raise HTTPException(status_code=410, detail="对话渠道能力已移除")
     live = _require_live_node(node_id, sess, studio_id)
     params = dict(body.params or {})
     timeout = 90.0 if cap == "plugin.cli.feishu" else 50.0
@@ -997,7 +938,7 @@ def cancel_scout_update(node_id: str, operation_id: str, sess: dict = Depends(cu
 class NodeToolTaskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,100}$")
-    tool_id: str = Field(pattern=r"^(cli\.(feishu|meego)|langbot|chromium|adb\.keyboard|appium)$")
+    tool_id: str = Field(pattern=r"^(cli\.(feishu|meego)|chromium|adb\.keyboard|appium)$")
     action: str = Field(pattern=r"^(install|update)$")
 
 

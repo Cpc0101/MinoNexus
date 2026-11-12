@@ -208,34 +208,8 @@ def _shortcut(inbound: dict[str, Any], user_id: str, text: str) -> str:
 
 
 def handle_inbound(inbound: dict[str, Any]) -> None:
-    owner, reason = _source_validation(inbound)
-    if reason == "plugin_snapshot_pending":
-        from mino_nexus.resources.node_registry import get_registry
-
-        registry = get_registry()
-        node_id = str(inbound.get("node_id") or "")
-        node = registry.get_node(node_id)
-        if node is not None:
-            SLog.i(TAG, f"等待已认证节点的首次插件快照 node={node_id}")
-            node.plugins_reported.wait(_SOURCE_SNAPSHOT_WAIT_SEC)
-            if registry.get_node(node_id) is node:
-                owner, reason = _source_validation(inbound)
-                if reason == "plugin_snapshot_pending":
-                    reason = "plugin_snapshot_timeout"
-            else:
-                owner, reason = "", "node_session_changed"
-    if not owner:
-        SLog.w(TAG, f"拒绝来源或归属未经确认的 IM 回调 reason={reason} node={str(inbound.get('node_id') or '')}")
-        return
-    from mino_nexus.assistant.assistant_envelope import normalize
-    try:
-        inbound = normalize(inbound)
-    except (ValueError, TypeError):
-        SLog.w(TAG, "拒绝格式不完整的 IM 事件")
-        return
-    inbound["reply_ctx"] = {**(inbound.get("reply_ctx") or {}), "instance_id": inbound["instance_id"], "tenant": str(inbound.get("tenant") or ""), "sender_id": str(inbound.get("sender_id") or ""), "source_message_id": inbound.get("msg_id", ""), "thread_id": inbound.get("thread_id", ""), "chat_type": inbound.get("chat_type", "private")}
-    with execution_user(owner):
-        _handle_owned_inbound(inbound, owner)
+    """对话入站已移除；旧 Scout 事件在 node_registry 忽略，不再进入助手。"""
+    del inbound
 
 
 def confirmed_history(inbound: dict[str, Any], binding: dict[str, Any], *,
@@ -473,6 +447,3 @@ def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> s
         raise RuntimeError("模型不可用，入站消息可在安全范围恢复")
 
 
-from mino_nexus.contract.inbound import register_inbound_handler  # noqa: E402
-
-register_inbound_handler(handle_inbound)

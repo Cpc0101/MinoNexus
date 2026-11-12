@@ -636,9 +636,7 @@ def _plugin_configured(plugin_id: str, cfg: dict[str, Any], user_id: str = "") -
     if plugin_id in ("wecom", "dingtalk", "slack"):
         return any(b.get("platform") == plugin_id and b.get("configured") for b in list_robot_integrations(user_id))
     if plugin_id == "wechat":
-        from mino_nexus.assistant.connectors.wechat_ilink import is_logged_in
-
-        return is_logged_in()
+        return False
     if plugin_id == "gmail_otp":
         return bool(get_gmail_app_password(user_id) and get_gmail_inbox_address(user_id))
     if plugin_id == "zentao":
@@ -685,15 +683,12 @@ def _plugin_public_config(plugin_id: str, cfg: dict[str, Any]) -> dict[str, Any]
                 "last": {},
             }
         if plugin_id == "wechat":
-            from mino_nexus.assistant.connectors.wechat_ilink import listener_status, public_account
-
-            public["wechat_account"] = public_account()
-            listener = listener_status()
+            public["wechat_account"] = {}
             public["chat_listener"] = {
-                "running": bool(listener.get("running")),
-                "wanted": bool(listener.get("wanted")),
-                "connected": bool(listener.get("connected")),
-                "error": str(listener.get("error") or ""),
+                "running": False,
+                "wanted": False,
+                "connected": False,
+                "error": "微信能力已移除",
                 "last": {},
             }
     return public

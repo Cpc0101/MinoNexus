@@ -438,7 +438,7 @@ def sync_feishu_listener(_sess: dict = Depends(current_session)):
     raise HTTPException(status_code=400, detail=ps.FEISHU_LIVE_NOT_PORTED)
 
 
-_WECHAT_ON_NODE = "微信扫码已改到 Scout 节点的 Bot / 微信，服务器不再登录"
+_WECHAT_ON_NODE = "微信能力已移除"
 
 
 @router.post("/plugins/wechat/login")

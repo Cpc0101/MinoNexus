@@ -76,20 +76,15 @@ def _im_nodes(sess: dict[str, Any]) -> list[dict[str, Any]]:
 
 @router.get("/status")
 def status(request: Request, sess: dict = Depends(current_session)):
-    from mino_nexus.assistant import im_inbox
-
     uid = _uid(sess)
-    nodes = _im_nodes(sess)
     enabled = store.get_profile(uid)["enabled"]
-    online = enabled and any(n["alive"] and any(c["connected"] is True and c["holding"] is not False and c["bound"]
-                                               and c["connection_state"] == "connected" for c in n["channels"]) for n in nodes)
     return ok({
         "enabled": enabled,
-        "online": online,
+        "online": False,
         "mcp_available": enabled,
         "mcp_url": _mcp_url(request),
-        "im_nodes": nodes,
-        "im_handoff": im_inbox.handoff(uid),
+        "im_nodes": [],
+        "im_handoff": {"enabled": False, "channels": []},
     })
 
 

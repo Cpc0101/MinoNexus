@@ -140,7 +140,11 @@ def dispatch_script_case(
                         params=body,
                         timeout_sec=budget,
                         executor_order=[],
-                        device_hint=_device_hint(node, sn, str(platform or ""), str(getattr(ctx, "env_profile", "") or ""), app_id),
+                        device_hint=_device_hint(
+                            node, sn, str(platform or ""),
+                            str(getattr(ctx, "env_profile", "") or ""),
+                            app_id, project_id=project_id,
+                        ),
                     )
                     result = run_sync(node.send(P.MsgType.EXECUTE, request, timeout=budget))
                     steps = list(admission.steps)
@@ -181,9 +185,18 @@ def dispatch_script_case(
     )
 
 
-def _device_hint(node: Any, sn: str, platform: str, env: str, app_id: str) -> dict[str, Any]:
-    """Scout 读仓库里的 config.yaml，Nexus 只给环境、应用 id 和设备标识（设备记录里有什么给什么）。"""
+def _device_hint(node: Any, sn: str, platform: str, env: str, app_id: str,
+                project_id: str = "") -> dict[str, Any]:
+    """Scout 读仓库里的 config.yaml；Nexus 只给环境、应用 id/key 和设备标识。"""
     hint: dict[str, Any] = {"env": env, "app_id": str(app_id or "")}
+    try:
+        from mino_nexus.resources import repo_apps
+
+        app_key = repo_apps.key_for_app(project_id, app_id)
+        if app_key:
+            hint["app_key"] = app_key
+    except Exception:
+        pass
     dev = getattr(node, "devices", {}).get(sn)
     if platform == "android":
         serial = ((getattr(dev, "channels", None) or {}).get("serial") or "") if dev is not None else ""

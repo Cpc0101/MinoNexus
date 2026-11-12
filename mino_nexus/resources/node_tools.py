@@ -191,7 +191,7 @@ def note_progress(node_id, user_id, progress):
         row = db.get(NodeToolTask, task_id)
         if not row or row.owner_user_id != user_id or row.node_id != node_id or row.state not in ACTIVE:
             return
-        progress_tool = progress.get('id') if progress.get('class') == 'tool' else 'langbot' if (progress.get('class'), progress.get('id')) == ('im', 'langbot') else f"{progress.get('class')}.{progress.get('id')}"
+        progress_tool = progress.get('id') if progress.get('class') == 'tool' else f"{progress.get('class')}.{progress.get('id')}"
         if row.tool_id != progress_tool:
             return
         # Progress is not an authoritative final receipt, even at 100%.

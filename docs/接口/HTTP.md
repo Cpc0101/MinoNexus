@@ -358,7 +358,7 @@ CLI 等价：`mino-nexus nav start|step|finish|draft-save|draft-promote|metrics 
 - `GET /project/{project_id}/case-modules`：独立模块计数。用例详情仍由 `GET /project/{project_id}/cases/{case_id}` 读取。
 - `GET /case-runner/tasks?app_id=...&limit=50&offset=0&summary=true`：仅任务摘要；不取完整轨迹。默认 summary=false 保留旧客户端响应。
 - `POST /case-runner/case-results`：`{app_id,case_ids}`，最多 200 个当前项目用例，返回 `items` 按用例 id 映射的最新状态、原因与时间，覆盖全部保留历史，不限最近 20 个任务。
-- `GET /runtime/nodes` 的 `im_channels` 与 `GET /assistant/status` 使用同一规范化渠道状态。助手状态只包含当前账号可见节点，逐渠道增加 `bound`，IM 和 `mcp_available` 分开聚合。
+- 助手状态只包含当前账号可见节点；`mcp_available` 单独聚合。
 - `GET/PUT /assistant/profile` 只读写 `persona/enabled`。旧默认字段通过 `extra=ignore` 明确忽略；数据库旧列保留。
 
 ## 账号隔离
@@ -580,14 +580,11 @@ Workbench 节点配置里的 CLI、用例服务 API、IM 和 Gmail 不再只服�
 | `cli_query` | `POST /runtime/cli/query` | read | `cli.query` 的 `surfaces` 增加 `mcp`；节点未指定时自动选本人唯一已配置在线节点 |
 | `cli_execute` | `POST /runtime/cli/execute` | write | `cli.execute` 的 `surfaces` 增加 `mcp`；MCP 入口没有 IM 会话附件，传 `attachments` / `attachment_ref` 直接 422 |
 | `case_api` | `POST /runtime/case-api/read` | read | 读 Workbench「API」集成；`operation=projects/sessions/cases`，`configuration.node_id` 必填；最多返回 `limit` 行并标 `truncated` |
-| `im_channels` | `GET /assistant/capabilities` | read | 列本人节点的飞书 CLI、微信、LangBot 渠道、连接状态、绑定和消息能力；不含密钥和聊天正文 |
-| `im_send` | `POST /runtime/im/send` | write | 向已上报渠道发文本；`chat_id` 必须显式给；飞书 CLI / LangBot 的实例由节点状态补全，微信仍要求入站 `context_token` |
 | `gmail_otp` | `POST /runtime/gmail/otp` | read | 调当前账号节点上的 `plugin.gmail.fetch_otp`；只返回 4-8 位验证码和有限诊断，不回传邮件正文或密码 |
 
 约束：
 
 - `case_api` 走现有 `case_import_sources.read` 和 `case_source_transport`，只读、受项目权限约束；`configuration` 的密钥仍在 Scout，Nexus 只接收 `node_id`、远端项目/会话和范围。
-- `im_send` 的 `channel` 只接受 `feishu_cli`、`wechat`、`feishu`、`wecom`、`dingtalk`；LangBot 不接受调用方伪造 `bot_uuid`，服务端按节点上报的 `instance_id` 覆盖。`delivery_id` 取 `client_request_id`，未给时按内容与目标哈希，避免同一请求重发。
 - `gmail_otp` 的 `max_wait_ms` 上限 45 秒，`since_ts` 只能取最近 7 天；`to_address` 省略时用该节点 Gmail 配置的收件地址。超时或未配置返回明确失败，不猜验证码。
 - 以上工具均为 `surfaces: [mcp]`；`cli.query` / `cli.execute` 同时保留 `im`。MCP 工具仍受 `assert_no_delete` 和写回执约束，不新增 DELETE、任意 Shell、节点本地文件读取或凭据写接口。
 
@@ -634,24 +631,9 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 - **离线统一兜底。** 设备或节点不在线一律 409，`code` 只有三种：`device_offline`（设备没连到任何在线节点）、`node_offline`（所属节点断开或心跳超时）、`target_unresolved`（既没给 `sn` 也没给 `node_id`）。不再散落「节点离线 / 设备离线 / 节点未应答」多种措辞。
 - **设备动作仍要恰好一个 executor。** 转发可以带 `executor_order` 与 `selected_impl`；不给就由 Scout 按平台自己定。协议层的 `executor_order_must_select_one` 与 `execution_binding.v1` 校验不变。
 - **仍留证据。** 每次转发在 Nexus 落一条 session（`sop_id=forward-call`，写 `tool/call` + `tool/result`），可用 `GET /case-runner/sessions/{session_id}/events` 追溯。取证失败不阻断转发。
-- **入站方向不变。** IM 消息仍是 Scout 主动推送（`node.plugin_im_message`），不经 `/forward/call`；拉取用 `plugin.im.history`，回复用 `plugin.im.send`。
 - **事件分发改为表驱动。** `resources/node_registry.py:_NODE_EVENT_HANDLERS` 一张表登记所有 S→N 事件，`protocol.py` 的 `NODE_EVENT_CAPS` / `NODE_COMMAND_CAPS` / `FRAMEWORK_CAPS` 三个常量已删除。处理不了的事件回 FAIL（`unknown_event:<name>`），不再「回了 PASS 然后丢掉」。
 
-## LangBot IM 的 MCP 收发
+## 对话渠道
 
-MCP agent 可以收发 LangBot 渠道的消息（飞书 / 企业微信 / 钉钉）。微信 iLink 不在本轮范围。工具表里有 `im.inbox` / `im.ack` / `im.handoff`，对应的 HTTP 路由如下：
+对话入站与收件箱工具已移除；相关 HTTP / MCP 入口不再提供。Webhook 群通知（`plugin.bot.send`）与飞书/Meego CLI 工作项能力保留。
 
-| 路由 | 作用 |
-|---|---|
-| `POST /assistant/im/inbox` | 拉取本人 LangBot 入站消息；`wait_seconds`≤25 长轮询 |
-| `POST /assistant/im/ack` | 标记已处理的条目，`im.inbox` 不再返回 |
-| `POST /assistant/im/handoff` | 接管/交还：接管后内建助手不再自动回复 |
-
-> 收发正文走 Scout：读历史用 `plugin.im.history`，回复用 `plugin.im.send`（都经 `/forward/call` 或 `im.send` 工具）。
-
-- **正文不落 Nexus。** `im_inbox_items` 只存渠道、实例、会话、发送者、`reply_ctx` 与处理状态；正文按需经 `plugin.im.history` 从 Scout 现取，取不到返回 `text_reason`（`binding_missing` / 节点离线）。这一条是既有约定，`assistant_turns` 的证据规则不变。
-- **默认行为不变。** 未接管时内建助手照常答复，条目被记成 `handled_by=mino`；接管后消息留在 `pending`，等 `im.ack` 收口。接管按账号保存在 `assistant_profiles.extra.im_handoff`，`GET /assistant/status` 一并返回。
-- **接管整条生效。** 接管开启时连 `/帮助`、限流提示也不发，避免两条回复。只影响之后收到的消息，不重放历史。
-- **只收本人已绑定会话。** 入站仍要过节点归属、插件快照、实例与 `im_route_identities` 绑定校验，未绑定发送者的消息不入箱，也不对外返回。
-- **幂等。** 条目 id 与入站去重 key 同源，重复投递不会产生第二条；`im.ack` 对不是本人的 id 返回在 `missing` 里，不报错。
-- 渠道映射收在 `platform/im_channels.py:im_route`，发送、入站确认、历史读取、收件箱共用一份，避免各自拼 `kind`/`plugin_id`（LangBot 的 `plugin.im.history` 此前按 `kind=bot` 调用，本轮修正）。

@@ -679,19 +679,7 @@ class NodeRegistry:
                 handled=False, reason=f"nexus 不认识事件 {event or cap}",
             )
             node.persist_snapshot()
-        interrupted, inbound = outcome.interrupted, outcome.inbound
         SLog.i(TAG, f"EXECUTE {cap} node={nid} sn={ctx.sn} {ctx.detail}")
-        if inbound and inbound.get("text"):
-            import threading
-
-            from mino_nexus.contract.inbound import publish_inbound
-
-            threading.Thread(
-                target=publish_inbound,
-                args=(inbound,),
-                name="im-inbound",
-                daemon=True,
-            ).start()
         return outcome
 
     def disconnect(self, node_id: str, *, send: Callable[..., Any] | None = None) -> list[str]:
@@ -870,28 +858,7 @@ def _ev_plugin_progress(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEvent
     return NodeEventOutcome()
 
 
-def _inbound_from(ctx: NodeEventContext) -> dict[str, Any] | None:
-    im = ctx.params.get("im")
-    if ctx.event == "plugin_wechat_message" and not isinstance(im, dict):
-        im = {
-            "channel": "wechat",
-            "chat_id": str(ctx.params.get("from_user_id") or ""),
-            "sender_id": str(ctx.params.get("from_user_id") or ""),
-            "text": str(ctx.params.get("text") or "")[:2000],
-            "mentioned": True,
-            "chat_type": "private",
-            "msg_id": "",
-            "reply_ctx": {"context_token": str(ctx.params.get("context_token") or "")},
-        }
-    if not isinstance(im, dict) or not im:
-        return None
-    inbound = dict(im)
-    inbound["node_id"] = ctx.node_id
-    return inbound
-
-
 def _ev_im_message(reg: "NodeRegistry", node: "NodeSession", ctx: NodeEventContext) -> NodeEventOutcome:
-    # 微信 / LangBot / IM 收发已下线：忽略入站，避免旧 Scout 继续推消息。
     return NodeEventOutcome(handled=True, reason="im_removed")
 
 

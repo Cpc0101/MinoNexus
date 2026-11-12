@@ -256,8 +256,8 @@ export async function handleNodeControl(
       const kind = String(body.kind || "").trim();
       const plugin_id = String(body.plugin_id || "").trim();
       if (!kind || !plugin_id) return fail(400, "缺少插件分类或 id");
-      if (action === "install" && !["cli", "mcp", "im"].includes(kind)) {
-        return fail(400, "只有 CLI、MCP 和对话渠道（LangBot）需要安装");
+      if (action === "install" && !["cli", "mcp"].includes(kind)) {
+        return fail(400, "只有 CLI、MCP 需要安装");
       }
       if (action === "config") {
         const values: Record<string, string> = {};

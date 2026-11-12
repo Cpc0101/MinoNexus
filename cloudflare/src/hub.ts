@@ -13,7 +13,6 @@ import {
 } from "./protocol";
 import {
   getScoutAuth,
-  markScoutOffline,
   replaceDevices,
   sanitizePlugins,
   updateScoutContract,
@@ -114,9 +113,14 @@ export class NexusHub extends DurableObject<Env> {
   }
 
   /**
-   * Match Python node_registry.disconnect(send=...): only the active connection
-   * may mark the scout offline. Generation is stored in DO storage because
-   * getWebSockets() is not reliable across hibernation / deploy races.
+   * Only the active connection may release ownership. Generation is stored in
+   * DO storage because getWebSockets() is not reliable across hibernation /
+   * deploy races.
+   *
+   * Do NOT flip scouts.online=0 here. Cloudflare WS handshakes flap; immediate
+   * offline makes Workbench flicker. listScouts already treats a node offline
+   * when last_seen ages past OFFLINE_AFTER_MS — that covers true disconnects
+   * without punishing brief reconnects.
    */
   private async releaseSocket(ws: WebSocket, reason: string): Promise<void> {
     const att = ws.deserializeAttachment() as ScoutAttachment | null;
@@ -132,7 +136,6 @@ export class NexusHub extends DurableObject<Env> {
     if (active === att.connection_generation) {
       await this.ctx.storage.delete(key);
     }
-    await markScoutOffline(this.env.DB, att.scout_id, Date.now());
     this.rejectPendingForScout(att.scout_id, reason);
   }
 

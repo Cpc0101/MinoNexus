@@ -380,8 +380,11 @@ def put_repo_apps(project_id: str, item: RepoAppsSync, sess: dict = Depends(curr
     except KeyError as exc:
         _missing(exc)
     try:
-        doc = repo_apps.save(project["id"], item.revision, item.branch, item.apps,
-                             str(sess.get("user_id") or sess.get("username") or ""), item.remove)
+        doc = repo_apps.save(
+            project["id"], item.revision, item.branch, item.apps,
+            str(sess.get("user_id") or sess.get("username") or ""), item.remove,
+            owner=sess,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"reason_code": "repo_apps_invalid", "message": str(exc)}) from exc
     return ok(doc, msg="已同步仓库应用清单")

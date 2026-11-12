@@ -10,7 +10,6 @@ from mino_nexus.models.assistant import (
     ImBindCode,
     ImIdentity,
 )
-from mino_nexus.models.im_inbox import ImInboxItem
 from mino_nexus.models.atlas import AtlasAlias
 from mino_nexus.models.auth import AuthSession, AuthState, User
 from mino_nexus.models.mcp_oauth import OauthClient, OauthCode, OauthRequest, OauthToken
@@ -66,7 +65,6 @@ __all__ = [
     "AssistantTurn",
     "ImBindCode",
     "ImIdentity",
-    "ImInboxItem",
     "AppIntelLink",
     "AppIntelProposal",
     "App",
