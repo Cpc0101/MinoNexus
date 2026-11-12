@@ -9,6 +9,8 @@ import {
   registeredOk,
   registeredReject,
   contractFromPayload,
+  envelope,
+  type EnvelopeIn,
   type NexusOutbound,
 } from "./protocol";
 import {
@@ -22,6 +24,7 @@ import {
   upsertScoutOnline,
 } from "./db";
 import { consumeInstallToken } from "./install";
+import { handleInboundExecute } from "./script_callback";
 
 type ScoutAttachment = {
   scout_id: string;
@@ -98,6 +101,11 @@ export class NexusHub extends DurableObject<Env> {
 
     if (msg.type === "RESULT") {
       this.onResult(msg.reply_to, msg.payload);
+      return;
+    }
+
+    if (msg.type === "EXECUTE") {
+      await this.onInboundExecute(ws, msg);
     }
   }
 
@@ -189,6 +197,42 @@ export class NexusHub extends DurableObject<Env> {
     clearTimeout(pending.timer);
     this.pending.delete(replyTo);
     pending.resolve(payload);
+  }
+
+  /** Scout→Nexus EXECUTE (script.callback …) must always get a RESULT on the same socket. */
+  private async onInboundExecute(ws: WebSocket, msg: EnvelopeIn): Promise<void> {
+    const att = ws.deserializeAttachment() as ScoutAttachment | null;
+    const run_id = String(msg.payload.run_id || "");
+    const step_idx = Number(msg.payload.step_idx ?? -1);
+    let payload: Record<string, unknown>;
+    if (!att?.scout_id) {
+      payload = {
+        run_id,
+        step_idx,
+        status: "fail",
+        summary: "节点尚未注册",
+        error: "not_registered",
+        executor_used: "nexus",
+      };
+    } else {
+      try {
+        payload = await handleInboundExecute(this.env, att.scout_id, msg.payload);
+      } catch (err) {
+        payload = {
+          run_id,
+          step_idx,
+          status: "fail",
+          summary: (err instanceof Error ? err.message : "callback_error").slice(0, 300),
+          error: "callback_error",
+          executor_used: "nexus",
+        };
+      }
+    }
+    try {
+      send(ws, envelope("RESULT", payload, msg.msg_id));
+    } catch {
+      /* socket closed */
+    }
   }
 
   private async onRpc(request: Request): Promise<Response> {

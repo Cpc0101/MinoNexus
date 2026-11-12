@@ -28,6 +28,10 @@ import {
   saveRepo,
   workspacePlace,
 } from "./script_repo";
+import { getRepoApps, saveRepoApps } from "./repo_apps";
+import { listRequirements, saveRequirement } from "./requirements";
+import { startRun } from "./case_runner";
+import { getRun, toTaskJson } from "./run_store";
 
 function envelope(data: unknown, msg = ""): Response {
   const body: Record<string, unknown> = { code: 200, ok: true, data };
@@ -35,8 +39,8 @@ function envelope(data: unknown, msg = ""): Response {
   return Response.json(body);
 }
 
-function fail(status: number, msg: string): Response {
-  return Response.json({ code: status, ok: false, msg }, { status });
+function fail(status: number, msg: string, extra: Record<string, unknown> = {}): Response {
+  return Response.json({ code: status, ok: false, msg, ...extra }, { status });
 }
 
 function authStatusPayload(user: Awaited<ReturnType<typeof sessionUser>>, token = "") {
@@ -231,7 +235,6 @@ function softGet(pathname: string): unknown {
     pathname.endsWith("/requests") ||
     pathname.endsWith("/entries") ||
     pathname.endsWith("/controls") ||
-    pathname.endsWith("/requirements") ||
     pathname.includes("/case-modules") ||
     pathname.includes("/import/sources")
   ) {
@@ -244,6 +247,7 @@ export async function handleCompat(
   request: Request,
   env: Env,
   pathname: string,
+  ctx?: ExecutionContext,
 ): Promise<Response | null> {
   const method = request.method;
 
@@ -503,7 +507,65 @@ export async function handleCompat(
   }
 
   {
-    const m = pathname.match(/^\/project\/([^/]+)\/(cases|case-modules|accounts|repo-apps|requirements|controls|device-app-sessions|resource-allocation-logs)$/);
+    const m = pathname.match(/^\/project\/([^/]+)\/requirements$/);
+    if (m && (method === "GET" || method === "POST")) {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const projectId = decodeURIComponent(m[1]);
+      if (!(await requireOwnedProject(env.DB, projectId, gate.user!.user_id))) {
+        return fail(404, "没有这个项目");
+      }
+      if (method === "GET") {
+        const requirements = await listRequirements(env.DB, projectId);
+        return envelope({ requirements });
+      }
+      const body = await readJson(request);
+      try {
+        const requirement = await saveRequirement(env.DB, {
+          project_id: projectId,
+          app_id: String(body.app_id || ""),
+          requirement_id: String(body.requirement_id || ""),
+          title: String(body.title || ""),
+          source_url: String(body.source_url || ""),
+        });
+        return envelope({ requirement }, "需求已保存");
+      } catch (e) {
+        return fail(400, e instanceof Error ? e.message : "保存失败");
+      }
+    }
+  }
+
+  // Match mino_nexus.api.rProjectCases repo-apps get/put
+  {
+    const m = pathname.match(/^\/project\/([^/]+)\/repo-apps$/);
+    if (m && (method === "GET" || method === "PUT")) {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const projectId = decodeURIComponent(m[1]);
+      if (!(await requireOwnedProject(env.DB, projectId, gate.user!.user_id))) {
+        return fail(404, "没有这个项目");
+      }
+      if (method === "GET") return envelope(await getRepoApps(env.DB, projectId));
+      const body = await readJson(request);
+      try {
+        const doc = await saveRepoApps(env.DB, {
+          project_id: projectId,
+          revision: body.revision,
+          branch: body.branch,
+          apps: body.apps,
+          remove: body.remove,
+          synced_by: gate.user!.email || gate.user!.user_id,
+          owner_user_id: gate.user!.user_id,
+        });
+        return envelope(doc, "已同步");
+      } catch (e) {
+        return fail(422, e instanceof Error ? e.message : "同步失败");
+      }
+    }
+  }
+
+  {
+    const m = pathname.match(/^\/project\/([^/]+)\/(cases|case-modules|accounts|repo-apps|controls|device-app-sessions|resource-allocation-logs)$/);
     if (m && method === "GET") {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
@@ -564,7 +626,48 @@ export async function handleCompat(
     );
   }
 
-  // Case-runner reads: empty. Writes that need Scout dispatch: 501.
+  if (pathname === "/case-runner/run" && method === "POST") {
+    const gate = await requireUser(request, env);
+    if (gate.error) return gate.error;
+    const body = await readJson(request);
+    const out = await startRun(env, {
+      userId: gate.user!.user_id,
+      app_id: String(body.app_id || ""),
+      sn: String(body.sn || ""),
+      case_ids: body.case_ids,
+      revision: String(body.revision || ""),
+      env_profile: String(body.env_profile || ""),
+      env_surface: String(body.env_surface || ""),
+      project_id: String(body.project_id || ""),
+      client_request_id: String(body.client_request_id || ""),
+      waitUntil: (p) => (ctx ? ctx.waitUntil(p) : void p.catch(() => null)),
+    });
+    if (!out.ok) return fail(out.status, out.msg, { reason_code: out.reason_code });
+    return envelope(
+      {
+        task_id: out.task_id,
+        run_id: out.run_id,
+        id: out.run_id,
+        status: out.status,
+        total: out.total,
+        sn: out.sn,
+      },
+      out.reused ? "沿用已有任务" : "已开始执行",
+    );
+  }
+
+  {
+    const m = pathname.match(/^\/case-runner\/tasks\/([^/]+)$/);
+    if (m && method === "GET" && m[1] !== "summary") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const doc = await getRun(env.DB, decodeURIComponent(m[1]));
+      if (!doc || doc.owner_user_id !== gate.user!.user_id) return fail(404, "没有这个任务");
+      return envelope(toTaskJson(doc));
+    }
+  }
+
+  // Case-runner reads: empty. Other writes (cancel/…) stay 501.
   if (pathname.startsWith("/case-runner/")) {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
@@ -577,7 +680,7 @@ export async function handleCompat(
       }
       return envelope(softGet(pathname));
     }
-    return fail(501, "Cloudflare hub 暂不支持跑批 / case_run");
+    return fail(501, "Cloudflare hub 暂不支持该跑批接口");
   }
 
   {

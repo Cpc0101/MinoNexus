@@ -30,7 +30,7 @@ function acceptWorkbenchWs(request: Request): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") {
       return preflight(request);
     }
@@ -41,7 +41,7 @@ export default {
     if (url.pathname === "/health") {
       response = await enhancedHealth(env);
     } else if (url.pathname === "/mcp") {
-      response = await handleMcp(request, env);
+      response = await handleMcp(request, env, ctx);
     } else if (url.pathname === "/node") {
       return hubStub(env).fetch(request);
     } else if (url.pathname === "/ws") {
@@ -72,7 +72,7 @@ export default {
         },
       });
     } else {
-      const compat = await handleCompat(request, env, url.pathname);
+      const compat = await handleCompat(request, env, url.pathname, ctx);
       response = compat || new Response("Not found", { status: 404 });
     }
 

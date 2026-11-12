@@ -33,7 +33,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-const SCOUT_INBOUND = new Set(["REGISTER", "HEARTBEAT", "RESULT"]);
+const SCOUT_INBOUND = new Set(["REGISTER", "HEARTBEAT", "RESULT", "EXECUTE"]);
 
 export function parseScoutJson(raw: string): EnvelopeIn | null {
   let data: unknown;

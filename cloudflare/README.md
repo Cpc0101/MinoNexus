@@ -5,13 +5,13 @@ New implementation on the `cloudflare` branch. **Not** a port of the Python Fast
 ## Scope
 
 1. **Scout online channel** — WebSocket `GET /node` with `REGISTER` / `HEARTBEAT`
-2. **Agent MCP** — `POST /mcp` with OAuth 2.1 (`mino_oat_`) or Workbench manual token (`mino_mcp_`); tools from mcp0.0.1 YAML: `agent_guide`, `project_list`, `scout_list`, `device_list`, `app_create`, `plugin_status`, `node_channel_program`, `plugin_install`, `case_list` (empty until case store), `case_run` (501 until case_runner migrated)
+2. **Agent MCP** — `POST /mcp` with OAuth 2.1 (`mino_oat_`) or Workbench manual token (`mino_mcp_`); tools from mcp0.0.1 YAML: `agent_guide`, `project_list`, `scout_list`, `device_list`, `app_create`, `plugin_status`, `node_channel_program`, `plugin_install`, `project_script_repo_set`, `repo_apps_sync`, `repo_apps_get`, `case_list` / `requirement_list`（需求 id、名称、链接）, `requirement_save`, `case_run`（`script_targets` 或 `case_ids` → `script.run`）, `task_get`
 3. **Device status sync** — devices reported by Scouts, queryable via MCP / HTTP
 4. **Workbench HTTP** — D1 auth/sessions; install-token; nodes/devices; projects/apps; AI provider settings; plugin/channel-program install via Scout EXECUTE
 
 Pages frontend: `https://workbench.minocc.top` → API `https://nexus.minocc.top`.
 
-Still limited: `case_run` / session·task 账本尚未从 mcp0.0.1 迁完。
+Still limited: `case_run` is MVP (`script_targets` or explicit `case_ids`; no case body library, account pool, leases, write-safety, or session events). Empty `case_ids` under a requirement asks Scout `script.list`. Scout `script.callback` EXECUTE is answered on the hub socket.
 
 ## Runtime shape (free-tier friendly)
 
@@ -85,4 +85,4 @@ DNS for Pages (same Cloudflare zone):
 Workbench login uses real email/password accounts in D1.
 MCP (`/mcp`) accepts OAuth access tokens (`mino_oat_`) or Workbench-issued manual tokens (`mino_mcp_`). Shared `MCP_BEARER_TOKEN` is probe-only (`initialize` / `ping` / `tools/list`).
 Consent page: `https://workbench.minocc.top/oauth/consent`.
-`case_run` remains unavailable until the mcp0.0.1 case-runner path is migrated.
+`case_run` MVP needs migration `0008_case_runner.sql` applied to D1 (`wrangler d1 migrations apply`). Runs are driven by `ctx.waitUntil` in the Worker; Workers cap post-response `waitUntil` time, so long multi-case runs may be cut off until the runner moves to a Durable Object alarm / Queue / Workflow.

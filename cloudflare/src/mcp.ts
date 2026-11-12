@@ -15,6 +15,10 @@ import {
 } from "./mcp_oauth";
 import { resolveMcpToken } from "./mcp_tokens";
 import { handlePluginRoutes } from "./plugin_routes";
+import { startRun } from "./case_runner";
+import { getRepoApps, saveRepoApps } from "./repo_apps";
+import { getRun, toTaskJson } from "./run_store";
+import { requireOwnedProject, saveRepo } from "./script_repo";
 
 type JsonRpcId = string | number | null;
 
@@ -185,16 +189,13 @@ const TOOLS = [
   },
   {
     name: "case_list",
-    title: "项目用例列表",
-    description: "列出某个应用所在项目下的用例。",
+    title: "项目需求列表",
+    description:
+      "列出项目已登记的需求：id、名称、渠道链接。这里没有用例正文。编写脚本前读链接，跑的时候用 case_run 的 script_targets。",
     inputSchema: {
       type: "object",
       properties: {
         project_id: { type: "string" },
-        search: { type: "string" },
-        module: { type: "string" },
-        limit: { type: "integer", default: 50 },
-        offset: { type: "integer" },
       },
       required: ["project_id"],
     },
@@ -209,7 +210,8 @@ const TOOLS = [
   {
     name: "case_run",
     title: "跑用例",
-    description: "在指定设备上执行用例，返回任务 id。",
+    description:
+      "在指定设备上执行脚本，返回任务 id。优先传 script_targets：[{requirement_id, case_ids}]。case_ids 为空则执行 tests/<需求ID>/ 下的全部脚本；指定了用例 ID 时路径是 tests/<需求ID>/<用例ID>.py。revision 填已 push 的 commit，不传则 Scout 取分支最新。",
     inputSchema: {
       type: "object",
       properties: {
@@ -220,6 +222,17 @@ const TOOLS = [
         env_profile: { type: "string" },
         sn: { type: "string" },
         case_ids: { type: "array", items: { type: "string" } },
+        script_targets: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              requirement_id: { type: "string" },
+              case_ids: { type: "array", items: { type: "string" } },
+            },
+            required: ["requirement_id"],
+          },
+        },
         revision: { type: "string" },
       },
       required: ["app_id"],
@@ -229,6 +242,139 @@ const TOOLS = [
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "requirement_list",
+    title: "项目需求列表",
+    description: "列出项目已登记的需求：id、名称、渠道链接。与 case_list 相同。",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string" } },
+      required: ["project_id"],
+    },
+    annotations: {
+      title: "项目需求列表",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "requirement_save",
+    title: "登记需求",
+    description: "保存需求 ID、名称和一条渠道链接。ID 同时是脚本目录 tests/<需求ID>/。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        project_id: { type: "string" },
+        app_id: { type: "string" },
+        requirement_id: { type: "string" },
+        title: { type: "string" },
+        source_url: { type: "string" },
+      },
+      required: ["project_id", "requirement_id", "title"],
+    },
+    annotations: {
+      title: "登记需求",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "project_script_repo_set",
+    title: "设置项目脚本仓库",
+    description:
+      "保存项目的脚本仓库地址和分支。Nexus 只记地址，不拉取仓库，不保存 Git 令牌；Scout 在本机用自己的 git 凭据拉取。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        project_id: { type: "string", minLength: 1 },
+        url: { type: "string", description: "http/https/ssh/git 地址；不要带令牌" },
+        branch: { type: "string" },
+      },
+      required: ["project_id", "url"],
+    },
+    annotations: {
+      title: "设置项目脚本仓库",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "repo_apps_sync",
+    title: "同步脚本仓库的应用清单",
+    description:
+      "脚本仓库根目录 config.yaml 的 apps 改动并 push 后必须调用。revision 填 push 后的 commit，branch 填分支。差异更新：apps 只填这次新增或修改的应用（取自 config.yaml，按 key 整项替换；每个应用要有 platform，身份字段只有 package / bundle_id / url，可带 envs；不要传 app_id、不要传 otp）。未带 app_id 时 Nexus 按 key 对齐或自动创建应用并回填。删除的应用 key 填进 remove；没出现的应用保持不变。不能含账号密码或 otp。Nexus 不读仓库，凭此知道项目能测哪些应用。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        project_id: { type: "string", minLength: 1 },
+        revision: { type: "string", description: "push 后的 commit" },
+        branch: { type: "string" },
+        apps: {
+          type: "object",
+          description:
+            "本次新增或修改的应用（只含 platform 与 package/bundle_id/url/envs；不要 otp；app_id 可省略）",
+        },
+        remove: {
+          type: "array",
+          items: { type: "string" },
+          description: "本次从 config.yaml 删除的应用 key",
+        },
+      },
+      required: ["project_id"],
+    },
+    annotations: {
+      title: "同步脚本仓库的应用清单",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "repo_apps_get",
+    title: "查看脚本仓库的应用清单",
+    description:
+      "读取 Nexus 记录的项目脚本仓库应用清单（含同步的 commit、分支、同步人和时间）。没有同步过则 apps 为空。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { project_id: { type: "string", minLength: 1 } },
+      required: ["project_id"],
+    },
+    annotations: {
+      title: "查看脚本仓库的应用清单",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "task_get",
+    title: "任务详情",
+    description: "查看一次跑批任务的结果和失败原因。",
+    inputSchema: {
+      type: "object",
+      properties: { task_id: { type: "string" } },
+      required: ["task_id"],
+    },
+    annotations: {
+      title: "任务详情",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   },
@@ -329,9 +475,9 @@ function agentGuidePayload(): Record<string, unknown> {
         then: "使用 write-test-cases。先选一台 executable 设备。",
       },
       {
-        name: "让 Scout 跑整份脚本",
+        name: "按需求链接编写并执行脚本",
         tools: ["case_list", "device_list", "case_run", "task_get"],
-        then: "case_run 的 revision 传已 push 的 commit。执行与汇报使用 agent 技能 run-test-cases。",
+        then: "case_list 返回需求 id、名称和链接。从链接读用例，写成 tests/<需求ID>/<用例ID>.py 并 push。开跑前 plugin_status，缺的渠道程序先装完。case_run 传 script_targets。执行与汇报使用 agent 技能 run-test-cases。",
       },
       {
         name: "让节点安装渠道程序",
@@ -422,6 +568,7 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
   mutationScope: string,
+  waitUntil: (promise: Promise<unknown>) => void,
 ): Promise<{ isError: boolean; content: Array<{ type: string; text: string }> }> {
   const pack = (ok: boolean, summary: string, data: unknown, status = 0) => {
     const body: Record<string, unknown> = { ok, summary, data };
@@ -532,24 +679,135 @@ async function callTool(
     return pack(out.ok, out.summary, out.data, out.status);
   }
 
-  if (name === "case_list") {
-    // Cases table not migrated yet — return empty list, same as soft GET shape.
-    return pack(true, "", { items: [], count: 0, total: 0 });
+  if (name === "requirement_save") {
+    const project_id = String(args.project_id || "").trim();
+    if (!project_id) return pack(false, "缺少 project_id", {}, 422);
+    if (!(await requireOwnedProject(env.DB, project_id, userId))) {
+      return pack(false, "没有这个项目", {}, 404);
+    }
+    const { saveRequirement } = await import("./requirements");
+    try {
+      const requirement = await saveRequirement(env.DB, {
+        project_id,
+        app_id: String(args.app_id || ""),
+        requirement_id: String(args.requirement_id || ""),
+        title: String(args.title || ""),
+        source_url: String(args.source_url || ""),
+      });
+      return pack(true, "需求已保存", { requirement });
+    } catch (err) {
+      return pack(false, err instanceof Error ? err.message : "保存失败", {}, 422);
+    }
+  }
+
+  if (name === "case_list" || name === "requirement_list") {
+    const project_id = String(args.project_id || "").trim();
+    if (!project_id) return pack(false, "缺少 project_id", {}, 422);
+    if (!(await requireOwnedProject(env.DB, project_id, userId))) {
+      return pack(false, "没有这个项目", {}, 404);
+    }
+    const { listRequirements } = await import("./requirements");
+    const requirements = await listRequirements(env.DB, project_id);
+    return pack(true, "", { requirements, items: requirements, count: requirements.length, total: requirements.length });
+  }
+
+  if (name === "project_script_repo_set") {
+    const project_id = String(args.project_id || "").trim();
+    if (!project_id) return pack(false, "缺少 project_id", {}, 422);
+    if (!(await requireOwnedProject(env.DB, project_id, userId))) {
+      return pack(false, "没有这个项目", {}, 404);
+    }
+    try {
+      const saved = await saveRepo(
+        env.DB,
+        project_id,
+        String(args.url || ""),
+        String(args.branch || ""),
+      );
+      return pack(true, "脚本仓库已保存", {
+        url: saved.public_url,
+        branch: saved.branch,
+        updated_at: saved.updated_at,
+      });
+    } catch (err) {
+      return pack(false, err instanceof Error ? err.message : "保存失败", {}, 422);
+    }
+  }
+
+  if (name === "repo_apps_get") {
+    const project_id = String(args.project_id || "").trim();
+    if (!project_id) return pack(false, "缺少 project_id", {}, 422);
+    if (!(await requireOwnedProject(env.DB, project_id, userId))) {
+      return pack(false, "没有这个项目", {}, 404);
+    }
+    return pack(true, "", await getRepoApps(env.DB, project_id));
+  }
+
+  if (name === "repo_apps_sync") {
+    const project_id = String(args.project_id || "").trim();
+    if (!project_id) return pack(false, "缺少 project_id", {}, 422);
+    if (!(await requireOwnedProject(env.DB, project_id, userId))) {
+      return pack(false, "没有这个项目", {}, 404);
+    }
+    try {
+      const doc = await saveRepoApps(env.DB, {
+        project_id,
+        revision: args.revision,
+        branch: args.branch,
+        apps: args.apps,
+        remove: args.remove,
+        synced_by: `mcp:${userId}`,
+        owner_user_id: userId,
+      });
+      return pack(true, "已同步", doc);
+    } catch (err) {
+      return pack(false, err instanceof Error ? err.message : "同步失败", {}, 422);
+    }
+  }
+
+  if (name === "task_get") {
+    const task_id = String(args.task_id || "").trim();
+    if (!task_id) return pack(false, "缺少 task_id", {}, 422);
+    const doc = await getRun(env.DB, task_id);
+    if (!doc || doc.owner_user_id !== userId) return pack(false, "没有这个任务", {}, 404);
+    return pack(true, "", toTaskJson(doc));
   }
 
   if (name === "case_run") {
-    return pack(
-      false,
-      "case_run 尚未从 mcp0.0.1 迁移到 Cloudflare hub（需要用例账本与 script.run 下发）",
-      {},
-      501,
-    );
+    const out = await startRun(env, {
+      userId,
+      app_id: String(args.app_id || ""),
+      sn: String(args.sn || ""),
+      case_ids: args.case_ids,
+      script_targets: args.script_targets,
+      revision: String(args.revision || ""),
+      env_profile: String(args.env_profile || ""),
+      env_surface: String(args.env_surface || ""),
+      project_id: String(args.project_id || ""),
+      client_request_id: String(args.client_request_id || ""),
+      waitUntil,
+    });
+    if (!out.ok) {
+      return pack(false, out.msg, { reason_code: out.reason_code }, out.status);
+    }
+    return pack(true, out.reused ? "沿用已有任务" : "已开始执行", {
+      task_id: out.task_id,
+      run_id: out.run_id,
+      id: out.run_id,
+      status: out.status,
+      total: out.total,
+      sn: out.sn,
+    });
   }
 
   return pack(false, `没有这个工具：${name}`, {});
 }
 
-export async function handleMcp(request: Request, env: Env): Promise<Response> {
+export async function handleMcp(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext,
+): Promise<Response> {
   if (request.method === "GET") {
     const auth = await authenticate(request, env);
     if (auth instanceof Response) return auth;
@@ -631,7 +889,9 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
       const scope = [...new Uint8Array(scopeBuf)]
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
-      const result = await callTool(env, userId, name, args, `mcp:${scope}:${id}`);
+      const waitUntil = (promise: Promise<unknown>) =>
+        ctx ? ctx.waitUntil(promise) : void promise.catch(() => null);
+      const result = await callTool(env, userId, name, args, `mcp:${scope}:${id}`, waitUntil);
       out.push({ jsonrpc: "2.0", id: id ?? null, result });
       continue;
     }

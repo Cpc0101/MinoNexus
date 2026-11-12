@@ -338,7 +338,7 @@ export async function handleAssistant(
         {
           name: "让 Scout 跑整份脚本",
           tools: ["case_list", "device_list", "case_run", "task_get"],
-          then: "case_run 的 revision 传已 push 的 commit。执行与汇报使用 agent 技能 run-test-cases。",
+          then: "case_list 返回需求 id、名称和链接。开跑前 plugin_status，缺的渠道程序先装完。case_run 传 script_targets。执行与汇报使用 agent 技能 run-test-cases。",
         },
         {
           name: "让节点安装渠道程序",
