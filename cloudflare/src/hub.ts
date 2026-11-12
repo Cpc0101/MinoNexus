@@ -13,6 +13,8 @@ import {
 } from "./protocol";
 import {
   getScoutAuth,
+  mergeHostJson,
+  readScoutHost,
   replaceDevices,
   sanitizePlugins,
   updateScoutContract,
@@ -345,12 +347,13 @@ export class NexusHub extends DurableObject<Env> {
       (pairOk ? "cf-pair" : "");
     const now = Date.now();
     const host = hostFromPayload(payload);
+    const previousHost = host ? await readScoutHost(this.env.DB, scout_id) : null;
     await upsertScoutOnline(this.env.DB, {
       scout_id,
       node_token,
       now,
       scout_version: payload.scout_version ? String(payload.scout_version) : null,
-      host_json: host ? JSON.stringify(host) : null,
+      host_json: host ? mergeHostJson(previousHost, host) : null,
       owner_user_id: owner_user_id || null,
     });
 
@@ -397,16 +400,19 @@ export class NexusHub extends DurableObject<Env> {
 
     const now = Date.now();
     const host = hostFromPayload(payload);
+    const previousHost = host ? await readScoutHost(this.env.DB, scout_id) : null;
     const contract = contractFromPayload(payload);
     await updateScoutContract(this.env.DB, scout_id, {
       now,
       scout_version: payload.scout_version ? String(payload.scout_version) : undefined,
-      host_json: host ? JSON.stringify(host) : undefined,
+      host_json: host ? mergeHostJson(previousHost, host) : undefined,
       plugins: "plugins" in contract ? sanitizePlugins(contract.plugins) : undefined,
       plugins_ready: contract.plugins_ready,
       tool_tasks_version: contract.tool_tasks_version,
       plugin_warning: contract.plugin_warning,
       runtime_environment: contract.runtime_environment,
+      busy: typeof payload.busy === "boolean" ? payload.busy : undefined,
+      draining: typeof payload.draining === "boolean" ? payload.draining : undefined,
     });
 
     if (payload.scout_process_generation) {

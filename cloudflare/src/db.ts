@@ -135,6 +135,66 @@ export async function touchScout(db: D1Database, scout_id: string, now: number):
     .run();
 }
 
+export async function readScoutHost(
+  db: D1Database,
+  scout_id: string,
+): Promise<Record<string, unknown> | null> {
+  const row = await db
+    .prepare(`SELECT host_json, meta_json FROM scouts WHERE scout_id = ?`)
+    .bind(scout_id)
+    .first<{ host_json: string | null; meta_json: string | null }>();
+  if (!row?.host_json) return null;
+  try {
+    const host = JSON.parse(String(row.host_json));
+    return host && typeof host === "object" ? (host as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function readScoutMeta(
+  db: D1Database,
+  scout_id: string,
+): Promise<Record<string, unknown>> {
+  const row = await db
+    .prepare(`SELECT meta_json FROM scouts WHERE scout_id = ?`)
+    .bind(scout_id)
+    .first<{ meta_json: string | null }>();
+  if (!row?.meta_json) return {};
+  try {
+    const meta = JSON.parse(String(row.meta_json));
+    return meta && typeof meta === "object" && !Array.isArray(meta)
+      ? (meta as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Shallow-merge host so REGISTER desktop-only frames do not wipe CPU/RSS from prior HEARTBEAT. */
+export function mergeHostJson(
+  previous: Record<string, unknown> | null | undefined,
+  incoming: Record<string, unknown>,
+): string {
+  const prev = previous && typeof previous === "object" ? previous : {};
+  const desktopIn =
+    incoming.desktop && typeof incoming.desktop === "object"
+      ? (incoming.desktop as Record<string, unknown>)
+      : undefined;
+  const desktopPrev =
+    prev.desktop && typeof prev.desktop === "object"
+      ? (prev.desktop as Record<string, unknown>)
+      : undefined;
+  const merged: Record<string, unknown> = {
+    ...prev,
+    ...incoming,
+  };
+  if (desktopIn || desktopPrev) {
+    merged.desktop = { ...(desktopPrev || {}), ...(desktopIn || {}) };
+  }
+  return JSON.stringify(merged);
+}
+
 export async function updateScoutContract(
   db: D1Database,
   scout_id: string,
@@ -147,6 +207,8 @@ export async function updateScoutContract(
     tool_tasks_version?: number;
     plugin_warning?: string;
     runtime_environment?: string;
+    busy?: boolean;
+    draining?: boolean;
   },
 ): Promise<void> {
   const pluginsJson =
@@ -170,6 +232,14 @@ export async function updateScoutContract(
         ? undefined
         : 0;
 
+  let metaJson: string | undefined;
+  if (args.busy !== undefined || args.draining !== undefined) {
+    const meta = await readScoutMeta(db, scout_id);
+    if (args.busy !== undefined) meta.busy = args.busy;
+    if (args.draining !== undefined) meta.draining = args.draining;
+    metaJson = JSON.stringify(meta);
+  }
+
   // Build a single UPDATE; only touch columns the heartbeat actually sent.
   const sets = ["online=1", "last_seen_ms=?"];
   const binds: unknown[] = [args.now];
@@ -180,6 +250,10 @@ export async function updateScoutContract(
   if (args.host_json !== undefined) {
     sets.push("host_json=?");
     binds.push(args.host_json);
+  }
+  if (metaJson !== undefined) {
+    sets.push("meta_json=?");
+    binds.push(metaJson);
   }
   if (pluginsJson !== undefined) {
     sets.push("plugins_json=?");
@@ -362,7 +436,7 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
   const now = Date.now();
   const { results } = await db
     .prepare(
-      `SELECT scout_id, online, last_seen_ms, scout_version, host_json, owner_user_id,
+      `SELECT scout_id, online, last_seen_ms, scout_version, host_json, meta_json, owner_user_id,
               plugins_json, plugins_ready, tool_tasks_version, plugin_warning, runtime_environment
        FROM scouts ORDER BY scout_id`,
     )
@@ -372,6 +446,7 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
       last_seen_ms: number;
       scout_version: string | null;
       host_json: string | null;
+      meta_json: string | null;
       owner_user_id: string | null;
       plugins_json: string | null;
       plugins_ready: number | null;
@@ -391,6 +466,17 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
         plugins = [];
       }
     }
+    let meta: Record<string, unknown> = {};
+    if (r.meta_json) {
+      try {
+        const parsed = JSON.parse(String(r.meta_json));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          meta = parsed as Record<string, unknown>;
+        }
+      } catch {
+        meta = {};
+      }
+    }
     return {
       scout_id: r.scout_id,
       online,
@@ -403,6 +489,8 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
       tool_tasks_version: Number(r.tool_tasks_version || 0),
       plugin_warning: r.plugin_warning || "",
       runtime_environment: r.runtime_environment || "",
+      busy: typeof meta.busy === "boolean" ? meta.busy : undefined,
+      draining: typeof meta.draining === "boolean" ? meta.draining : undefined,
     };
   });
 }

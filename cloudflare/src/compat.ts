@@ -131,6 +131,8 @@ function mapScouts(rawScouts: unknown, devices: Record<string, unknown>[]): Reco
       platform: host.os || host.platform || undefined,
       arch: host.arch || undefined,
       host,
+      busy: typeof s.busy === "boolean" ? s.busy : undefined,
+      draining: typeof s.draining === "boolean" ? s.draining : undefined,
       owner_user_id: s.owner_user_id || undefined,
       last_heartbeat: s.last_seen_ms
         ? new Date(Number(s.last_seen_ms)).toISOString()
@@ -413,7 +415,35 @@ export async function handleCompat(
     if (m && method === "GET") {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
-      return envelope({ env: {} });
+      const projectId = decodeURIComponent(m[1]);
+      // Soft skeleton must satisfy Workbench normalizeEnvDoc (channels/environments/pipeline/profiles).
+      // Bare `{ env: {} }` makes `data?.channels.length` / normalize throw inside query effects.
+      return envelope({
+        project_id: projectId,
+        project_name: "",
+        env: {
+          default_profile: "test",
+          environments: [{ key: "test", label: "测试" }],
+          channels: [{
+            id: "android",
+            kind: "app",
+            platform: "android",
+            alias: "",
+            app_identifier: "",
+            third_party: false,
+            label: "安卓",
+            field: "package",
+            placeholder: "com.example.app",
+          }],
+          pipeline: ["test"],
+          profiles: { test: { android: { package: "" } } },
+          channel_secrets: {},
+          channel_gmail_alias: {},
+          channel_phone_seq: {},
+          login_policies: [],
+        },
+        profile_labels: { test: "测试" },
+      });
     }
     if (m && method === "PUT") {
       const gate = await requireUser(request, env);
