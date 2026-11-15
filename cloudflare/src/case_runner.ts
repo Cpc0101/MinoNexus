@@ -1,7 +1,6 @@
 /**
- * MVP case runner — dispatch script.run to Scout per case_id.
- * Match mino_nexus.loop.script_dispatch for params / device_hint / status mapping;
- * no leases, write-safety or case library.
+ * Validate and persist a run before asynchronous Scout submission.
+ * Detailed records stay on Scout; the scheduler reconciles summary indexes.
  */
 
 import type { Env } from "./env";
@@ -10,19 +9,9 @@ import { scoutExecute, merged } from "./rpc";
 import { getRepo, publicUrl } from "./script_repo";
 import { getRepoApps, hasApp, keyForApp } from "./repo_apps";
 import { listRequirements, requirementIdOk } from "./requirements";
-import {
-  clearAdmission,
-  findRunByRequest,
-  finishRun,
-  newCaseRow,
-  patchCase,
-  putRun,
-  registerAdmission,
-  suspendAdmission,
-  type RunDoc,
-} from "./run_store";
+import { findRunByRequest, newCaseRow, type RunDoc } from "./run_store";
+import { enqueueRun, deviceAvailability, TaskError } from "./task_scheduler";
 
-const SCRIPT_TIMEOUT_MS = 600_000;
 const MAX_CASES = 100;
 const CASE_ID = /^[A-Za-z0-9_.\-]{1,120}$/;
 const REVISION = /^[A-Za-z0-9][A-Za-z0-9._\/\-]{0,119}$/;
@@ -147,7 +136,7 @@ async function resolveDevice(
   }>();
   const owned = new Set(
     (results || [])
-      .filter((s) => !s.owner_user_id || s.owner_user_id === userId)
+      .filter((s) => s.owner_user_id === userId)
       .map((s) => s.scout_id),
   );
   const devices = (await listDevices(env.DB, false)) as DeviceView[];
@@ -250,8 +239,11 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
     return refuse(422, "revision_invalid", "revision 必须是 commit SHA 或分支/标签名");
   }
 
+  const requestFingerprint = JSON.stringify({ app: appRef, sn: String(args.sn || ""), case_ids: caseIds, script_targets: targets, revision,
+    project: String(args.project_id || ""), env_profile: String(args.env_profile || "test"), env_surface: String(args.env_surface || "") });
   const reused = await findRunByRequest(db, userId, String(args.client_request_id || ""));
   if (reused) {
+    if (reused.request_fingerprint && reused.request_fingerprint !== requestFingerprint) return refuse(409, "request_conflict", "相同 client_request_id 不能用于不同任务参数");
     return {
       ok: true,
       task_id: reused.run_id,
@@ -295,6 +287,11 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
   const resolved = await resolveDevice(env, userId, String(args.sn || "").trim(), appPlatforms);
   if ("error" in resolved) return resolved.error;
   const { device, platform } = resolved;
+  const scout = await db.prepare("SELECT record_api_version FROM scouts WHERE scout_id=?").bind(device.scout_id).first<{ record_api_version: number }>();
+  if (Number(scout?.record_api_version || 0) < 1) return refuse(409, "record_api_required", "目标 Scout 尚不支持持久任务记录，请先升级 Scout");
+  const views = await deviceAvailability(env, userId, { only_online: false, app_id: app.app_id });
+  const view = views.find(row => row.sn === device.device_id && row.scout_id === device.scout_id);
+  if (!view?.executable) return refuse(409, String(view?.blocking_code || "device_unavailable"), "设备当前不能接受任务");
 
   const runId = newRunId();
   let planned: Array<{ case_id: string; script_path: string }> = caseIds.map((id) => ({
@@ -348,6 +345,7 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
     run_id: runId,
     task_id: runId,
     client_request_id: String(args.client_request_id || "").trim().slice(0, 160),
+    request_fingerprint: requestFingerprint,
     owner_user_id: userId,
     project_id: projectId,
     app_id: app.app_id,
@@ -372,134 +370,11 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
       return row;
     }),
   };
-  await putRun(db, doc);
-  doc.status = "running";
-  await putRun(db, doc);
-
-  args.waitUntil(
-    executeRun(env, doc, deviceHint(device, platform, envProfile, app.app_id, appKey)).catch(
-      async (err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        await finishRun(db, runId, `执行异常：${msg}`.slice(0, 240), "script_dispatch_error").catch(
-          () => null,
-        );
-        await clearAdmission(db, runId).catch(() => null);
-      },
-    ),
-  );
-
-  return {
-    ok: true,
-    task_id: runId,
-    run_id: runId,
-    status: doc.status,
-    total: doc.cases.length,
-    sn: doc.sn,
-    reused: false,
-  };
-}
-
-async function executeRun(
-  env: Env,
-  doc: RunDoc,
-  hint: Record<string, unknown>,
-): Promise<void> {
-  const db = env.DB;
-  const runId = doc.run_id;
   try {
-    for (const row of doc.cases) {
-      const caseId = row.case_id;
-      const t0 = Date.now();
-      await patchCase(db, runId, caseId, (c) => {
-        c.status = "running";
-        c.started_at = new Date().toISOString();
-      });
-      await registerAdmission(db, {
-        run_id: runId,
-        session_id: row.session_id,
-        case_id: caseId,
-        sn: doc.sn,
-        scout_id: doc.scout_id,
-        project_id: doc.project_id,
-        app_id: doc.app_id,
-        owner_user_id: doc.owner_user_id,
-        platform: doc.platform,
-      });
-
-      let status = "fail";
-      let summary = "";
-      let reasonCode = "";
-      let failureStage = "";
-      let started = "yes";
-      try {
-        const out = await scoutExecute(env, {
-          scout_id: doc.scout_id,
-          capability_id: "script.run",
-          timeout_ms: SCRIPT_TIMEOUT_MS,
-          params: {
-            run_id: runId,
-            session_id: row.session_id,
-            case_id: caseId,
-            sn: doc.sn,
-            platform: doc.platform,
-            repo_url: doc.repo_url,
-            branch: doc.repo_branch,
-            revision: doc.revision,
-            script_path: row.script_path || "",
-          },
-          execute: {
-            run_id: runId,
-            sn: doc.sn,
-            platform: doc.platform,
-            device_hint: hint,
-          },
-        });
-        if (out.http !== 200 && !out.status) {
-          status = "fail";
-          const code = out.error || "script_no_result";
-          reasonCode = code === "scout_offline" ? "node_offline" : code === "rpc_timeout" ? "script_timeout" : code;
-          summary =
-            code === "scout_offline"
-              ? "节点不在线"
-              : code === "rpc_timeout"
-                ? "脚本执行超时，节点没有返回结果"
-                : "节点没有返回脚本结果";
-          failureStage = "run";
-          started = code === "scout_offline" ? "no" : "yes";
-        } else {
-          status = mapScoutStatus(out.status);
-          const detail = merged(out);
-          summary = String(out.summary || out.error || "").slice(0, 240);
-          reasonCode =
-            status === "pass" ? "" : String(out.error || detail.reason_code || "").slice(0, 80);
-          failureStage = status === "pass" ? "" : "run";
-          if (status !== "pass" && !summary) summary = "脚本执行失败";
-        }
-      } catch (err) {
-        status = "fail";
-        summary = (err instanceof Error ? err.message : String(err)).slice(0, 240) || "执行异常";
-        reasonCode = "script_dispatch_error";
-        failureStage = "run";
-      } finally {
-        await suspendAdmission(db, runId).catch(() => null);
-      }
-
-      await patchCase(db, runId, caseId, (c) => {
-        c.status = status;
-        c.summary = summary || status;
-        c.error = status === "pass" ? "" : summary;
-        c.reason_code = reasonCode;
-        c.failure_stage = failureStage;
-        c.execution_started = started;
-        c.elapsed_ms = Date.now() - t0;
-        c.finished_at = new Date().toISOString();
-      });
-    }
-    await finishRun(db, runId);
+    const queued = await enqueueRun(env, doc, deviceHint(device, platform, envProfile, app.app_id, appKey));
+    return { ok: true, task_id: queued.run_id, run_id: queued.run_id, status: queued.status, total: queued.cases.length, sn: queued.sn, reused: queued.run_id !== runId };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await finishRun(db, runId, `执行异常：${msg}`.slice(0, 240), "script_dispatch_error");
-  } finally {
-    await clearAdmission(db, runId).catch(() => null);
+    if (err instanceof TaskError) return refuse(err.http, err.code, err.message);
+    throw err;
   }
 }

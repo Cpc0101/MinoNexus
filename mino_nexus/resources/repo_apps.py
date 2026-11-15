@@ -1,7 +1,7 @@
 """脚本仓库的应用清单：agent 把 config.yaml 的 apps 同步过来，供 Workbench 只读展示和 case_run 核对。
 
 脚本仓认 key（platform / package / url）；Nexus 认 app_id。同步时若未带 app_id，
-按 key 对齐或自动创建项目下的应用，并把映射写进清单。otp 等秘密不得进入同步载荷。
+按 key 对齐或自动创建项目下的应用，并把映射写进清单。脚本仓只声明应用身份；登录方式、验证码策略、Gmail 收件箱和自动补号序列属于 Nexus 项目环境配置，不得进入同步载荷。
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def _no_secrets(label: str, row: dict) -> None:
         low = str(field).lower()
         if any(word in low for word in _SECRET_WORDS):
             raise ValueError(
-                f"应用 {label}：不允许出现敏感字段 {field}（otp.code 只留在脚本仓，由 Scout 读取；账号密码由 Nexus 号池管理）"
+                f"应用 {label}：不允许出现敏感字段 {field}（登录方式、验证码策略和自动补号序列由 Nexus 项目环境配置管理；脚本仓只写应用身份）"
             )
 
 

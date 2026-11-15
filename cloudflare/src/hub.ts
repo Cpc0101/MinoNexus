@@ -25,6 +25,8 @@ import {
 } from "./db";
 import { consumeInstallToken } from "./install";
 import { handleInboundExecute } from "./script_callback";
+import { pumpDispatches } from "./task_scheduler";
+import type { ScoutRpcResult } from "./rpc";
 
 type ScoutAttachment = {
   scout_id: string;
@@ -59,8 +61,36 @@ export class NexusHub extends DurableObject<Env> {
   private pending = new Map<string, PendingRpc>();
   private rpcSeq = 0;
 
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // The alarm is a durable wakeup, not an HTTP request lifetime. It also
+    // discovers D1 jobs whose creating request died before /dispatch/wake.
+    ctx.blockConcurrencyWhile(async () => {
+      if (await ctx.storage.getAlarm() === null) await ctx.storage.setAlarm(Date.now() + 1000);
+    });
+  }
+
+  async alarm(): Promise<void> {
+    try {
+      await pumpDispatches(this.env, async args => {
+        const response = await this.onRpc(new Request("https://hub/rpc", { method: "POST", body: JSON.stringify(args) }));
+        const data = await response.json() as Record<string, unknown>;
+        return { http: response.status, ok: response.ok && Boolean(data.ok), status: String(data.status || ""),
+          error: String(data.error || ""), summary: String(data.summary || ""),
+          data: (data.data || {}) as Record<string, unknown>, extra: (data.extra || {}) as Record<string, unknown> } satisfies ScoutRpcResult;
+      });
+    } finally {
+      await this.ctx.storage.setAlarm(Date.now() + 10_000);
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/dispatch/wake" && request.method === "POST") {
+      await this.ctx.storage.setAlarm(Date.now() + 100);
+      return Response.json({ ok: true });
+    }
 
     if (url.pathname === "/node") {
       if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -74,6 +104,27 @@ export class NexusHub extends DurableObject<Env> {
 
     if (url.pathname === "/rpc" && request.method === "POST") {
       return this.onRpc(request);
+    }
+
+    if (url.pathname === "/detach" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { scout_id?: string };
+      const scout_id = String(body.scout_id || "");
+      let closed = 0;
+      if (scout_id) {
+        for (const ws of this.ctx.getWebSockets()) {
+          const att = ws.deserializeAttachment() as ScoutAttachment | null;
+          if (att?.scout_id !== scout_id) continue;
+          try {
+            ws.close(1008, "unbound");
+            closed += 1;
+          } catch {
+            /* already closed */
+          }
+        }
+        await this.ctx.storage.delete(`active_conn:${scout_id}`);
+        this.rejectPendingForScout(scout_id, "unbound");
+      }
+      return Response.json({ closed });
     }
 
     return new Response("Not found", { status: 404 });
@@ -94,13 +145,17 @@ export class NexusHub extends DurableObject<Env> {
       return;
     }
 
+    const attachment = ws.deserializeAttachment() as ScoutAttachment | null;
+    if (!attachment || await this.ctx.storage.get<string>(`active_conn:${attachment.scout_id}`) !== attachment.connection_generation) return;
+
     if (msg.type === "HEARTBEAT") {
       await this.onHeartbeat(ws, msg.payload);
       return;
     }
 
     if (msg.type === "RESULT") {
-      this.onResult(msg.reply_to, msg.payload);
+      const att = ws.deserializeAttachment() as ScoutAttachment | null;
+      if (att) this.onResult(msg.reply_to, msg.payload, att.scout_id);
       return;
     }
 
@@ -190,10 +245,10 @@ export class NexusHub extends DurableObject<Env> {
     }
   }
 
-  private onResult(replyTo: string | null | undefined, payload: Record<string, unknown>): void {
+  private onResult(replyTo: string | null | undefined, payload: Record<string, unknown>, scoutId: string): void {
     if (!replyTo) return;
     const pending = this.pending.get(replyTo);
-    if (!pending) return;
+    if (!pending || pending.scout_id !== scoutId) return;
     clearTimeout(pending.timer);
     this.pending.delete(replyTo);
     pending.resolve(payload);
@@ -412,6 +467,7 @@ export class NexusHub extends DurableObject<Env> {
     });
 
     await replaceDevices(this.env.DB, scout_id, devicesFromRegisterPayload(payload), now, true);
+    await this.env.DB.prepare("UPDATE scouts SET record_api_version=? WHERE scout_id=?").bind(Number(payload.record_api_version || 0) === 1 ? 1 : 0, scout_id).run();
 
     const generation = connectionGeneration();
     // Persist active generation before retiring peers so a lagged close from the
@@ -424,6 +480,7 @@ export class NexusHub extends DurableObject<Env> {
       scout_process_generation: String(payload.scout_process_generation || ""),
     } satisfies ScoutAttachment);
     this.retireOtherSockets(ws, scout_id);
+    await this.ctx.storage.setAlarm(Date.now() + 100);
 
     send(
       ws,
@@ -458,6 +515,7 @@ export class NexusHub extends DurableObject<Env> {
       busy: typeof payload.busy === "boolean" ? payload.busy : undefined,
       draining: typeof payload.draining === "boolean" ? payload.draining : undefined,
     });
+    if (payload.record_api_version !== undefined) await this.env.DB.prepare("UPDATE scouts SET record_api_version=? WHERE scout_id=?").bind(Number(payload.record_api_version || 0) === 1 ? 1 : 0, scout_id).run();
 
     if (payload.scout_process_generation) {
       ws.serializeAttachment({

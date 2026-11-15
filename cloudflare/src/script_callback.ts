@@ -1,18 +1,13 @@
-/**
- * Scout → Nexus EXECUTE during script.run (capability script.callback).
- * Match mino_nexus.loop.script_callback: admission check, then note/step/fail/lease;
- * account stays unavailable until an account pool exists on the hub.
- */
+/** Scout owns detailed records. Nexus handles summary sync and resource calls. */
 
 import type { Env } from "./env";
+import { syncRecord, TaskError } from "./task_scheduler";
+import { leaseAccount, AccountError } from "./account_pool";
 import {
-  appendCaseEvent,
   getAdmission,
   getRun,
   isLive,
-  patchCase,
   type Admission,
-  type CaseEvent,
 } from "./run_store";
 
 const ALIASES: Record<string, string> = {
@@ -30,7 +25,6 @@ const ALIASES: Record<string, string> = {
   lease: "lease",
 };
 
-const RESERVED = new Set(["run_id", "session_id", "text", "image_base64", "image_mime", "event"]);
 
 class CallbackError extends Error {
   constructor(
@@ -45,15 +39,6 @@ function clip(value: unknown, max: number): string {
   return String(value ?? "").slice(0, max);
 }
 
-function scalars(source: Record<string, unknown>, max = 20): CaseEvent {
-  const out: CaseEvent = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (RESERVED.has(key) || Object.keys(out).length >= max) continue;
-    if (typeof value === "string") out[key] = clip(value, 200);
-    else if (typeof value === "number" || typeof value === "boolean") out[key] = value;
-  }
-  return out;
-}
 
 function reply(
   run_id: string,
@@ -95,22 +80,10 @@ async function requireAdmission(
   }
   const run = await getRun(env.DB, run_id);
   if (!run || !isLive(run.status)) throw new CallbackError("run_finished", "这次运行已经结束");
+  if (run.cancel_requested) throw new CallbackError("task_cancelled", "任务已请求取消");
   return adm;
 }
 
-async function record(
-  env: Env,
-  adm: Admission,
-  params: Record<string, unknown>,
-  event: CaseEvent,
-  after?: (row: { summary: string; error: string }) => void,
-): Promise<void> {
-  const case_id = adm.case_id || String(params.case_id || "");
-  await patchCase(env.DB, adm.run_id, case_id, (row) => {
-    appendCaseEvent(row, event);
-    after?.(row);
-  });
-}
 
 async function dispatch(
   env: Env,
@@ -118,19 +91,8 @@ async function dispatch(
   op: string,
   params: Record<string, unknown>,
 ): Promise<{ summary: string; data?: Record<string, unknown> }> {
-  if (op === "evidence") {
-    const nested =
-      params.event && typeof params.event === "object"
-        ? (params.event as Record<string, unknown>)
-        : params;
-    await record(env, adm, params, {
-      kind: "evidence",
-      capability_id: clip(nested.capability_id || "script", 80),
-      status: clip(nested.status || "pass", 40),
-      summary: clip(nested.summary, 800),
-      error: clip(nested.error, 800),
-    });
-    return { summary: "已写入动作" };
+  if (["evidence", "note", "step", "fail"].includes(op)) {
+    throw new CallbackError("record_api_required", "详细证据必须先保存在 Scout 本机，通过 record.sync 同步摘要");
   }
 
   if (op === "lease") {
@@ -138,56 +100,35 @@ async function dispatch(
     if (case_id && case_id !== adm.case_id) {
       throw new CallbackError("case_mismatch", "case_id 与这次运行不一致");
     }
+    const run = await getRun(env.DB, adm.run_id);
+    if (run?.cancel_requested) throw new CallbackError("task_cancelled", "任务已请求取消");
+    const lease = await env.DB.prepare("SELECT lease_id,generation FROM script_device_leases WHERE run_id=? AND scout_id=? AND sn=? AND state='held'")
+      .bind(adm.run_id, adm.scout_id, adm.sn).first<{ lease_id: string; generation: number }>();
+    if (!lease) throw new CallbackError("resource_isolated", "设备租约失效或状态尚未核实");
+    await env.DB.prepare("UPDATE script_device_leases SET expires_at_ms=?,updated_at_ms=? WHERE run_id=? AND lease_id=?").bind(Date.now() + 120_000, Date.now(), adm.run_id, lease.lease_id).run();
     return {
       summary: "这次运行仍占用该节点和设备",
-      data: { occupied: true, sn: adm.sn, node_id: adm.scout_id },
+      data: { occupied: true, sn: adm.sn, node_id: adm.scout_id, lease_id: lease.lease_id, lease_generation: lease.generation },
     };
   }
 
   if (op === "account") {
-    throw new CallbackError(
-      "account_pool_missing",
-      "Cloudflare hub 尚未配置账号池，无法分配账号；请在脚本仓使用固定测试账号或等待号池迁移",
-    );
-  }
-
-  if (op === "note") {
-    const text = clip(params.text, 500);
-    await record(env, adm, params, {
-      kind: "note",
-      status: "pass",
-      ...scalars(params),
-      text,
-    });
-    return { summary: text.slice(0, 300) };
-  }
-
-  if (op === "step") {
-    const action = String(params.action || "");
-    if (action !== "enter" && action !== "leave") {
-      throw new CallbackError("script_step_missing", "步骤动作无效");
-    }
-    const title = typeof params.title === "string" ? params.title.trim().slice(0, 300) : "";
-    const number = params.number == null ? null : Number(params.number);
-    if (!title && (number === null || !Number.isFinite(number))) {
-      throw new CallbackError("script_step_missing", "步骤编号无效");
-    }
-    await record(env, adm, params, {
-      kind: "step",
-      action,
-      role: clip(params.role, 20),
-      ...(title ? { title } : { number }),
-      ...(action === "leave" ? { status: params.failed ? "fail" : "pass" } : {}),
-    });
-    return { summary: title || String(number) };
-  }
-
-  if (op === "fail") {
-    const message = clip(params.message || "脚本判定失败", 300);
-    await record(env, adm, params, { kind: "fail", status: "fail", summary: message }, (row) => {
-      row.error = message;
-    });
-    return { summary: message };
+    const run = await getRun(env.DB, adm.run_id);
+    const requirements = params.requirements && typeof params.requirements === "object" ? params.requirements as Record<string, unknown> : {};
+    return {
+      summary: "已租用本次测试账号",
+      data: await leaseAccount(env.DB, {
+        owner: adm.owner_user_id,
+        project: adm.project_id,
+        env: run?.env_profile || "test",
+        run: adm.run_id,
+        session: adm.session_id,
+        app_id: adm.app_id,
+        env_surface: run?.env_surface || "",
+        case_id: adm.case_id,
+        sn: adm.sn,
+      }, requirements),
+    };
   }
 
   throw new CallbackError("callback_unsupported", "Nexus 不处理这个回调");
@@ -209,6 +150,11 @@ export async function handleInboundExecute(
   if (cap === "script.callback") cap = String(params.op || "");
   const run_id = String(params.run_id || execute.run_id || "");
 
+  if (cap === "record.sync") {
+    try { return reply(run_id, step_idx, "pass", "记录摘要已保存", "", await syncRecord(env, scout_id, params)); }
+    catch (error) { return reply(run_id, step_idx, "fail", error instanceof Error ? error.message : "摘要保存失败", error instanceof TaskError ? error.code : "record_sync_failed"); }
+  }
+
   if (cap.startsWith("node.")) {
     return reply(run_id, step_idx, "pass", "已收到");
   }
@@ -228,7 +174,7 @@ export async function handleInboundExecute(
     const out = await dispatch(env, adm, op, params);
     return reply(run_id, step_idx, "pass", out.summary || "ok", "", out.data);
   } catch (err) {
-    if (err instanceof CallbackError) {
+    if (err instanceof CallbackError || err instanceof AccountError) {
       return reply(run_id, step_idx, "fail", err.message, err.code);
     }
     const msg = err instanceof Error ? err.message : String(err);

@@ -33,7 +33,7 @@ Mino 的服务端中枢：持有数据、准入、会话与协议，把用例脚
 
 ### 2.1 执行在 Scout，Nexus 只派发与回调
 
-`case_run` 准入后下发 `script.run`（`repo_url` / `branch` / `revision` / `script_path` / `sn` / `platform`），Scout 自己拉仓库、读 `config.yaml` 与 `pages/`、执行 `run(case)`，账号 / 步骤 / 失败 / 证据通过 `script.callback` 回来。
+节点声明 `record_api_version=1` 时，`case_run` 准入并持久保存派单后下发 `script.submit`，Scout 先落本机任务再返回接单 ACK，由独立进程拉仓执行。完整步骤与证据保存在 Scout；`record.sync` 只同步结果摘要。账号 / 租约通过资源回调处理。Python 暂保留旧节点 `script.run` 同步兼容；Cloudflare 对缺少记录能力的节点明确要求升级。接单成功不得计为测试通过，完整新闭环需要配套升级 Nexus 与 Scout。
 
 **Nexus 不读、不打包脚本仓库，不决定下一步点哪里。** 不要在 Nexus 里重新引入逐步决策循环，也不要在回调里补做决策。详见 [执行链](docs/架构/执行链.md)。
 
@@ -41,9 +41,9 @@ Mino 的服务端中枢：持有数据、准入、会话与协议，把用例脚
 
 `case.llm` / `case.vlm` 用该节点自己保存的地址、模型名和密钥直连；`case.scout.otp(account)` 按账号登录策略取码（账号自带码 → 固定码 → 本机 Gmail）。**密钥和截图不回 Nexus。**
 
-### 2.3 设备动作与脚本进度都不落本仓
+### 2.3 记录在 Scout，Nexus 保存调度真源和索引
 
-设备动作、页面定位、脚本运行都在 Scout；Nexus 只保存会话、准入、租约与回调结果。脚本步骤事件写入同一份 `session_events`，Workbench 不另建轨迹格式。
+设备动作、页面定位、脚本运行以及完整步骤/截图/断言记录都在 Scout。Nexus 持久保存任务与每例摘要索引、准入、派发状态、租约和取消意图；不保存完整执行事件或图片。Workbench 与 MCP 通过 Nexus 的已认证节点连接代理读取 Scout 记录，节点离线明确显示证据暂不可用。Python 与 Cloudflare 是同一业务的两种部署方式，必须遵守同一对外契约。取消确认或节点离线不能解除结果未知的资源隔离。
 
 ---
 

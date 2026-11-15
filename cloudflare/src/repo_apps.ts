@@ -41,7 +41,7 @@ function noSecrets(label: string, row: Row): void {
     const low = field.toLowerCase();
     if (SECRET_WORDS.some((word) => low.includes(word))) {
       throw new Error(
-        `应用 ${label}：不允许出现敏感字段 ${field}（otp.code 只留在脚本仓，由 Scout 读取；账号密码由 Nexus 号池管理）`,
+        `应用 ${label}：不允许出现敏感字段 ${field}（登录方式、验证码策略和自动补号序列由 Nexus 项目环境配置管理；脚本仓只写应用身份）`,
       );
     }
   }

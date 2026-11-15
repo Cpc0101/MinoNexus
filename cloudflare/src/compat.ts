@@ -2,20 +2,22 @@
  * Workbench-compatible HTTP surface on the Cloudflare hub.
  */
 
-import type { Env } from "./env";
+import { hubStub, type Env } from "./env";
+import { getProjectEnv, saveProjectEnv } from "./project_env";
 import { listDevices, listScouts } from "./db";
 import {
   bearer,
   createApp,
   createProject,
   deleteApp,
+  deleteProject,
   destroySession,
   listProjects,
   loginUser,
   registerUser,
   sessionUser,
 } from "./auth";
-import { getInstallStatus, issueInstallToken, scoutReleaseMeta } from "./install";
+import { getInstallStatus, issueInstallToken, scoutReleaseMeta, unbindScout } from "./install";
 import { deleteAIProvider, listAIProviders, saveAIProvider } from "./settings";
 import { readNodeTools } from "./node_tools";
 import { handleAssistant } from "./assistant";
@@ -33,6 +35,8 @@ import { getRepoApps, saveRepoApps } from "./repo_apps";
 import { listRequirements, saveRequirement } from "./requirements";
 import { startRun } from "./case_runner";
 import { getRun, toTaskJson } from "./run_store";
+import { executionRoutes } from "./execution_routes";
+import { TaskError, deviceAvailability } from "./task_scheduler";
 
 function envelope(data: unknown, msg = ""): Response {
   const body: Record<string, unknown> = { code: 200, ok: true, data };
@@ -71,7 +75,7 @@ function authStatusPayload(user: Awaited<ReturnType<typeof sessionUser>>, token 
       write_packs: false,
       write_keys: true,
       write_plugins: false,
-      run_cases: false,
+      run_cases: true,
       install_scout: true,
       scope: ["scout_online", "mcp", "device_sync", "workbench_auth", "oauth"],
       hub: "cloudflare",
@@ -366,6 +370,28 @@ export async function handleCompat(
     }
   }
 
+  {
+    const m = pathname.match(/^\/runtime\/nodes\/([^/]+)$/);
+    if (m && method === "DELETE" && m[1] !== "install-token") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const nodeId = decodeURIComponent(m[1]);
+      const unbound = await unbindScout(env.DB, gate.user!.user_id, nodeId);
+      if (!unbound) return fail(404, "没有这个节点");
+      try {
+        await hubStub(env).fetch(
+          new Request("https://hub/detach", {
+            method: "POST",
+            body: JSON.stringify({ scout_id: nodeId }),
+          }),
+        );
+      } catch {
+        /* binding is already gone */
+      }
+      return envelope(unbound, "已解除绑定");
+    }
+  }
+
   if (pathname === "/device/list" && method === "GET") {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
@@ -373,7 +399,7 @@ export async function handleCompat(
     const onlineOnly =
       url.searchParams.get("online_only") === "1" ||
       url.searchParams.get("only_online") === "true";
-    const devices = mapDevices(await listDevices(env.DB, onlineOnly));
+    const devices = await deviceAvailability(env, gate.user!.user_id, { only_online: onlineOnly, app_id: url.searchParams.get("app_id") || "" });
     return envelope({ devices, list: devices, items: devices, count: devices.length });
   }
 
@@ -398,6 +424,17 @@ export async function handleCompat(
       ),
       "已创建",
     );
+  }
+
+  {
+    const m = pathname.match(/^\/project\/([^/]+)$/);
+    if (m && method === "DELETE") {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const deleted = await deleteProject(env.DB, gate.user!.user_id, decodeURIComponent(m[1]));
+      if (!deleted) return fail(404, "没有这个项目");
+      return envelope(deleted, "已删除");
+    }
   }
 
   {
@@ -433,43 +470,18 @@ export async function handleCompat(
 
   {
     const m = pathname.match(/^\/project\/([^/]+)\/env$/);
-    if (m && method === "GET") {
+    if (m && ["GET", "PUT"].includes(method)) {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
       const projectId = decodeURIComponent(m[1]);
-      // Soft skeleton must satisfy Workbench normalizeEnvDoc (channels/environments/pipeline/profiles).
-      // Bare `{ env: {} }` makes `data?.channels.length` / normalize throw inside query effects.
-      return envelope({
-        project_id: projectId,
-        project_name: "",
-        env: {
-          default_profile: "test",
-          environments: [{ key: "test", label: "测试" }],
-          channels: [{
-            id: "android",
-            kind: "app",
-            platform: "android",
-            alias: "",
-            app_identifier: "",
-            third_party: false,
-            label: "安卓",
-            field: "package",
-            placeholder: "com.example.app",
-          }],
-          pipeline: ["test"],
-          profiles: { test: { android: { package: "" } } },
-          channel_secrets: {},
-          channel_gmail_alias: {},
-          channel_phone_seq: {},
-          login_policies: [],
-        },
-        profile_labels: { test: "测试" },
-      });
-    }
-    if (m && method === "PUT") {
-      const gate = await requireUser(request, env);
-      if (gate.error) return gate.error;
-      return envelope({ ok: true }, "已保存");
+      try {
+        return envelope(method === "GET" ? await getProjectEnv(env.DB, gate.user!.user_id, projectId)
+          : await saveProjectEnv(env.DB, gate.user!.user_id, projectId, await request.json()), method === "PUT" ? "已保存" : "");
+      } catch (error) {
+        if (error instanceof TaskError) return fail(error.http, error.message, { reason_code: error.code });
+        if (error instanceof SyntaxError) return fail(422, "环境配置 JSON 无效");
+        throw error;
+      }
     }
   }
 
@@ -581,8 +593,15 @@ export async function handleCompat(
     }
   }
 
+  if (pathname.startsWith("/case-runner/") || /^\/project\/[^/]+\/accounts(?:\/|$)/.test(pathname)) {
+    const gate = await requireUser(request, env);
+    if (gate.error) return gate.error;
+    const handled = await executionRoutes(request, env, gate.user!.user_id, pathname);
+    if (handled) return handled;
+  }
+
   {
-    const m = pathname.match(/^\/project\/([^/]+)\/(cases|case-modules|accounts|repo-apps|controls|device-app-sessions|resource-allocation-logs)$/);
+    const m = pathname.match(/^\/project\/([^/]+)\/(cases|case-modules|repo-apps|controls|device-app-sessions|resource-allocation-logs)$/);
     if (m && method === "GET") {
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
@@ -652,6 +671,7 @@ export async function handleCompat(
       app_id: String(body.app_id || ""),
       sn: String(body.sn || ""),
       case_ids: body.case_ids,
+      script_targets: body.script_targets,
       revision: String(body.revision || ""),
       env_profile: String(body.env_profile || ""),
       env_surface: String(body.env_surface || ""),
@@ -668,6 +688,7 @@ export async function handleCompat(
         status: out.status,
         total: out.total,
         sn: out.sn,
+        report_url: (await getRun(env.DB, out.run_id))?.report_url || "",
       },
       out.reused ? "沿用已有任务" : "已开始执行",
     );

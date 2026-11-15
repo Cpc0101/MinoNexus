@@ -3,7 +3,7 @@
  * script admissions for Scout script.callback validation.
  */
 
-export const RUN_LIVE = new Set(["queued", "running"]);
+export const RUN_LIVE = new Set(["queued", "running", "cancel_requested", "unknown"]);
 const CASE_TERMINAL = new Set(["pass", "fail", "blocked", "declined", "skipped", "cancelled"]);
 const MAX_EVENTS = 300;
 
@@ -24,6 +24,18 @@ export type CaseRow = {
   started_at: string | null;
   finished_at: string | null;
   events: CaseEvent[];
+  attempt_id?: string;
+  record_source?: string;
+  record_node_id?: string;
+  detail_availability?: string;
+  status_sync_at?: string;
+  summary_version?: number;
+  last_event_seq?: number;
+  sealed?: boolean;
+  assertions?: Record<string, number>;
+  source_coverage?: Record<string, unknown>;
+  source_hash?: string;
+  resource_isolated?: boolean;
 };
 
 export type RunDoc = {
@@ -49,6 +61,12 @@ export type RunDoc = {
   started_at: string;
   finished_at: string | null;
   cases: CaseRow[];
+  report_url?: string;
+  cancel_requested?: boolean;
+  resource_isolated?: boolean;
+  lease_id?: string;
+  lease_generation?: number;
+  request_fingerprint?: string;
 };
 
 export type Admission = {
@@ -161,11 +179,18 @@ export async function patchRun(
   runId: string,
   mutate: (doc: RunDoc) => void,
 ): Promise<RunDoc | null> {
-  const doc = await getRun(db, runId);
-  if (!doc) return null;
-  mutate(doc);
-  await putRun(db, doc);
-  return doc;
+  // Compare-and-swap prevents a result callback racing cancel or another case
+  // update from overwriting the entire task index.
+  for (let tries = 0; tries < 12; tries++) {
+    const row = await db.prepare("SELECT payload_json FROM app_regression_runs WHERE run_id=?").bind(runId).first<{ payload_json: string }>();
+    if (!row) return null;
+    const doc = JSON.parse(row.payload_json) as RunDoc;
+    mutate(doc);
+    const changed = await db.prepare("UPDATE app_regression_runs SET status=?,payload_json=?,updated_at_ms=? WHERE run_id=? AND payload_json=?")
+      .bind(doc.status, JSON.stringify(doc), Date.now(), runId, row.payload_json).run();
+    if (changed.meta.changes) return doc;
+  }
+  throw new Error("task_index_conflict");
 }
 
 export async function patchCase(
@@ -255,7 +280,9 @@ export function toTaskJson(doc: RunDoc, includeCases = true): Record<string, unk
     pass_rate: judged ? Math.round((passed / judged) * 100) : 0,
     error: doc.error || "",
     reason_code: doc.reason_code || "",
-    resource_isolated: false,
+    resource_isolated: Boolean(doc.resource_isolated),
+    cancel_requested: Boolean(doc.cancel_requested),
+    report_url: doc.report_url || `https://workbench.minocc.top/testing/projects/${encodeURIComponent(doc.project_id)}/apps/${encodeURIComponent(doc.app_id)}/tasks/${encodeURIComponent(doc.run_id)}`,
     started_at: doc.started_at || "",
     finished_at: doc.finished_at || null,
     busy: isLive(doc.status),
@@ -324,4 +351,16 @@ export async function suspendAdmission(db: D1Database, runId: string): Promise<v
 
 export async function clearAdmission(db: D1Database, runId: string): Promise<void> {
   await db.prepare(`DELETE FROM script_admissions WHERE run_id = ?`).bind(runId).run();
+}
+
+export async function listRuns(db: D1Database, owner: string, args: { app_id?: string; project_id?: string; status?: string; limit?: number; offset?: number } = {}): Promise<Record<string, unknown>> {
+  const limit = Math.max(1, Math.min(100, Number(args.limit || 30))), offset = Math.max(0, Number(args.offset || 0));
+  const where = "owner_user_id=? AND (?='' OR app_id=?) AND (?='' OR project_id=?) AND (?='' OR status=?)";
+  const values = [owner, args.app_id || "", args.app_id || "", args.project_id || "", args.project_id || "", args.status || "", args.status || ""];
+  const [page, count] = await Promise.all([
+    db.prepare(`SELECT payload_json FROM app_regression_runs WHERE ${where} ORDER BY created_at_ms DESC,run_id DESC LIMIT ? OFFSET ?`).bind(...values, limit, offset).all<{ payload_json: string }>(),
+    db.prepare(`SELECT COUNT(*) AS total FROM app_regression_runs WHERE ${where}`).bind(...values).first<{ total: number }>(),
+  ]);
+  const items = (page.results || []).map(row => toTaskJson(JSON.parse(row.payload_json) as RunDoc));
+  return { items, tasks: items, total: Number(count?.total || 0), limit, offset };
 }

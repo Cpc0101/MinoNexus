@@ -43,6 +43,10 @@ def expire_runs():
                     doc = run_store.get(snapshot["run_id"])
                     if not doc or not run_store.task_is_live(doc):
                         continue
+                    from mino_nexus.resources.scout_record_store import for_task
+                    if for_task(doc["run_id"]):
+                        run_store.cancel_run(doc["run_id"], reason="batch_deadline_exceeded")
+                        continue
                     for guard in unresolved(doc):
                         guard.update(state="isolated", isolation_reason="batch_deadline_exceeded")
                     for case in doc.get("cases") or []:

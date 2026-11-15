@@ -437,7 +437,7 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
   const { results } = await db
     .prepare(
       `SELECT scout_id, online, last_seen_ms, scout_version, host_json, meta_json, owner_user_id,
-              plugins_json, plugins_ready, tool_tasks_version, plugin_warning, runtime_environment
+              plugins_json, plugins_ready, tool_tasks_version, plugin_warning, runtime_environment, record_api_version
        FROM scouts ORDER BY scout_id`,
     )
     .all<{
@@ -453,6 +453,7 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
       tool_tasks_version: number | null;
       plugin_warning: string | null;
       runtime_environment: string | null;
+      record_api_version: number | null;
     }>();
 
   return (results || []).map((r) => {
@@ -489,6 +490,7 @@ export async function listScouts(db: D1Database): Promise<unknown[]> {
       tool_tasks_version: Number(r.tool_tasks_version || 0),
       plugin_warning: r.plugin_warning || "",
       runtime_environment: r.runtime_environment || "",
+      record_api_version: Number(r.record_api_version || 0),
       busy: typeof meta.busy === "boolean" ? meta.busy : undefined,
       draining: typeof meta.draining === "boolean" ? meta.draining : undefined,
     };

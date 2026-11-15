@@ -1,0 +1,22 @@
+id: scout.uninstall
+title: 卸载 Scout 并解除绑定
+description: 删除该节点在当前账号下的绑定、设备和安装记录，并断开在线连接。返回本机卸载命令。调用后弹出确认窗。确认后执行与本机系统匹配的命令，不要把命令写进对话。
+route: DELETE /runtime/nodes/{node_id}
+risk: write
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    node_id:
+      type: string
+      description: 来自 scout_list 的 node_id
+  required:
+  - node_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

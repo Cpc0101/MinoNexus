@@ -16,31 +16,39 @@ def interrupt_runs(run_ids: list[str], *, reason: str) -> list[str]:
         if not rid or rid in seen:
             continue
         seen.add(rid)
-        request_cancel(rid)
         doc = get(rid)
-        if not doc or not task_is_live(doc):
+        if not doc or not doc.get("owner_user_id"):
             continue
-        finished = finish(rid, status="cancelled", error=reason, reason_code="node_offline")
-        sns = [str(x) for x in (finished.get("sns") or []) if str(x).strip()]
-        head = str(finished.get("sn") or "").strip()
-        if head and head not in sns:
-            sns = [head, *sns]
-        release_devices_for_run(
-            rid,
-            sns=sns,
-            platforms_by_sn=finished.get("platforms_by_sn")
-            if isinstance(finished.get("platforms_by_sn"), dict)
-            else {},
-        )
-        from mino_nexus.casework.run_resource_release import release_run_resource_holdings
+        from mino_nexus.platform.identity import execution_user
+        with execution_user(doc["owner_user_id"]):
+            from mino_nexus.resources.scout_record_store import for_task
+            if doc and for_task(rid):
+                # A disconnected socket does not stop the independent Scout worker.
+                continue
+            request_cancel(rid)
+            if not doc or not task_is_live(doc):
+                continue
+            finished = finish(rid, status="cancelled", error=reason, reason_code="node_offline")
+            sns = [str(x) for x in (finished.get("sns") or []) if str(x).strip()]
+            head = str(finished.get("sn") or "").strip()
+            if head and head not in sns:
+                sns = [head, *sns]
+            release_devices_for_run(
+                rid,
+                sns=sns,
+                platforms_by_sn=finished.get("platforms_by_sn")
+                if isinstance(finished.get("platforms_by_sn"), dict)
+                else {},
+            )
+            from mino_nexus.casework.run_resource_release import release_run_resource_holdings
 
-        release_run_resource_holdings(finished, run_id=rid)
-        emit_testing_task({
-            "event": "task_finished",
-            "run_id": rid,
-            "task_id": rid,
-            "status": finished.get("status") or "cancelled",
-            "app_id": str(finished.get("app_id") or ""),
-        })
-        done.append(rid)
+            release_run_resource_holdings(finished, run_id=rid)
+            emit_testing_task({
+                "event": "task_finished",
+                "run_id": rid,
+                "task_id": rid,
+                "status": finished.get("status") or "cancelled",
+                "app_id": str(finished.get("app_id") or ""),
+            })
+            done.append(rid)
     return done

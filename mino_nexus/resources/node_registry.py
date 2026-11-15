@@ -269,6 +269,7 @@ class NodeSession:
     plugins: Optional[list[dict[str, Any]]] = None
     plugins_ready: Optional[bool] = None
     tool_tasks_version: int = 0
+    record_api_version: int = 0
     plugin_warning: str = ""
     runtime_environment: str = ""
     plugins_reported: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
@@ -424,6 +425,7 @@ class NodeRegistry:
                 platform=reg.host["os"],
                 arch=reg.arch,
                 scout_version=reg.scout_version,
+                record_api_version=1 if reg.record_api_version == 1 else 0,
                 executors={e.id: e for e in reg.executors},
                 devices=devices,
                 send=send,
@@ -545,6 +547,7 @@ class NodeRegistry:
                 raise ValueError("executor_snapshot_version_required")
             node.last_seen = time.time()
             node.busy = hb.busy
+            node.record_api_version = 1 if hb.record_api_version == 1 else 0
             node.active_runs = list(hb.active_runs or [])
             node.device_workload = list(hb.device_workload or [])
             node.executors = {executor.id: executor for executor in hb.executors}

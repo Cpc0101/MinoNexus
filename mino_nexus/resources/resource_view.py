@@ -215,6 +215,7 @@ def account_otp(
     project_id: str,
     account_id: str,
     *,
+    app_id: str = "",
     env_profile: str = "",
     env_surface: str = "",
     node_id: str = "",
@@ -238,7 +239,12 @@ def account_otp(
 
     env_key = str(env_profile or row.get("env") or "test").strip() or "test"
     surface = str(env_surface or "").strip()
-    secrets = resolve_effective_secrets(doc, env_profile=env_key, env_surface=surface)
+    secrets = resolve_effective_secrets(
+        doc,
+        env_profile=env_key,
+        env_surface=surface,
+        app_id=str(app_id or ""),
+    )
     otp = secrets.get("otp") if isinstance(secrets.get("otp"), dict) else {}
     mode = str(otp.get("mode") or "auto").strip().lower()
     fixed = str(otp.get("fixed") or "").strip()

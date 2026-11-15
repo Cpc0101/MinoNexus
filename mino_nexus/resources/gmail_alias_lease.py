@@ -269,7 +269,13 @@ def gmail_alias_lease_enabled(
     doc = env_doc if isinstance(env_doc, dict) else {}
     env_profile = str(getattr(ctx, "env_profile", "") or "test").strip() or "test"
     surface = ensure_ctx_env_surface(ctx, doc)
-    secrets = resolve_effective_secrets(doc, env_profile=env_profile, env_surface=surface)
+    app_id = str(getattr(ctx, "app_id", "") or "")
+    secrets = resolve_effective_secrets(
+        doc,
+        env_profile=env_profile,
+        env_surface=surface,
+        app_id=app_id,
+    )
     if login_kind_from_secrets(secrets) != "email":
         return False
     otp = secrets.get("otp") if isinstance(secrets.get("otp"), dict) else {}
@@ -284,6 +290,7 @@ def gmail_alias_lease_enabled(
         env_surface=surface,
         env_profile=env_profile,
         apply_email_default=True,
+        app_id=app_id,
     )
     return bool(slot.get("start"))
 

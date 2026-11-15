@@ -1,0 +1,21 @@
+id: scout.install_status
+title: 查看 Scout 安装进度
+description: 用 scout_install_token 返回的 install_id 查看安装是否完成、节点是否在线。
+route: GET /runtime/nodes/installations/{install_id}
+risk: read
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    install_id:
+      type: string
+  required:
+  - install_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

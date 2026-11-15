@@ -119,7 +119,8 @@ async def lifespan(app: FastAPI):
     from mino_nexus.platform.identity import execution_user, user_thread
     from mino_nexus.casework import run_store
     from mino_nexus.loop.case_exec import _run_in_background
-    for rid in stale:
+    from mino_nexus.resources.scout_record_store import resumable_task_ids
+    for rid in dict.fromkeys([*stale, *resumable_task_ids()]):
         recovered = run_store.get(rid)
         if not recovered or not run_store.task_is_live(recovered):
             continue
@@ -141,7 +142,6 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(policy_task, return_exceptions=True)
     scout_update_task.cancel()
     await asyncio.gather(scout_update_task, return_exceptions=True)
-    compile_task.cancel()
     doc_sync_task.cancel()
     delivery_task.cancel()
     await asyncio.gather(doc_sync_task, delivery_task, return_exceptions=True)

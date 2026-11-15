@@ -133,6 +133,10 @@ def _call(uid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
     spec = tool_by_function_name(name)
     if spec is None or "mcp" not in (spec.get("surfaces") or ["mcp"]):
         return {"isError": True, "content": [{"type": "text", "text": f"没有这个工具：{name}"}]}
+    if spec["id"] == "session.events":
+        # Keep enough room below the 256 KiB MCP envelope limit. Scout moves a
+        # larger event payload into an artifact that session_artifact can page.
+        args = {**(args if isinstance(args, dict) else {}), "max_bytes": 196608}
     profile = assistant_store.get_profile(uid)
     started = time.time()
     out = run_tool(spec, args if isinstance(args, dict) else {}, user_id=uid, profile=profile, surface="mcp")

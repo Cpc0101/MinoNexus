@@ -62,6 +62,14 @@ def dispatch_script_case(
         ctx.env_profile = str(doc.get("env_profile") or getattr(ctx, "env_profile", "") or "test")
     except Exception:
         doc = {}
+    # Persist admission before the short ACK. Long execution belongs to Scout.
+    from mino_nexus.resources.node_registry import get_registry
+    node, _ = get_registry().resolve(sn)
+    if not project_error and node is not None and node.record_api_version == 1:
+        from mino_nexus.loop.scout_record_tasks import dispatch
+        return dispatch(run_id=run_id, case=case, sn=sn, app_id=app_id, package=package,
+                        provider_id=provider_id, platform=platform, project_id=project_id,
+                        repo=repo or {}, doc=doc, ctx=ctx, node=node)
     try:
         writer = open_session(
             session_id=stream_id,
@@ -164,7 +172,7 @@ def dispatch_script_case(
         failure_stage = "run"
         SLog.e(TAG, f"script dispatch failed run={run_id} case={cid}: {summary}")
     finally:
-        unregister(run_id)
+        unregister(run_id, stream_id)
         try:
             from mino_nexus.casework.run_write_safety import protected
 

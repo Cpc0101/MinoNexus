@@ -23,7 +23,7 @@ _ALIASES = {
 }
 HANDLED = frozenset({
     "case.account", "case.note", "case.step", "case.fail",
-    "account", "note", "step", "fail", STEP_CAP, SESSION_CAP, LEASE_CAP,
+    "account", "note", "step", "fail", STEP_CAP, SESSION_CAP, LEASE_CAP, "record.sync",
 })
 
 _GUARD = threading.Lock()
@@ -53,12 +53,14 @@ class ScriptAdmission:
 
 def register(admission: ScriptAdmission) -> None:
     with _GUARD:
-        _ADMISSIONS[admission.run_id] = admission
+        _ADMISSIONS[admission.session_id] = admission
 
 
-def unregister(run_id: str) -> None:
+def unregister(run_id: str, session_id: str = "") -> None:
     with _GUARD:
-        _ADMISSIONS.pop(str(run_id or ""), None)
+        for key, value in list(_ADMISSIONS.items()):
+            if value.run_id == run_id and (not session_id or key == session_id):
+                _ADMISSIONS.pop(key, None)
 
 
 def handle(node_id: str, req: P.Execute) -> P.Result:
@@ -70,6 +72,12 @@ def handle(node_id: str, req: P.Execute) -> P.Result:
         cap = str(params.get("op") or "")
     cap = _ALIASES.get(cap, cap)
     try:
+        if cap == "record.sync":
+            from mino_nexus.loop.scout_record_tasks import receive
+            row = receive(node_id, params)
+            return P.Result(run_id=req.run_id, step_idx=req.step_idx, status=P.EventStatus.PASS,
+                            summary="summary persisted", executor_used="nexus",
+                            data={"attempt_id": row["attempt_id"], "ack_version": row["summary_version"]})
         admission = _require(node_id, params)
         with admission.lock:
             data = _call(admission, cap, params)
@@ -100,20 +108,27 @@ def _require(node_id: str, params: dict[str, Any]) -> ScriptAdmission:
     run_id = str(params.get("run_id") or "").strip()
     session_id = str(params.get("session_id") or "").strip()
     with _GUARD:
-        admission = _ADMISSIONS.get(run_id)
+        admission = _ADMISSIONS.get(session_id)
+    if admission is None and session_id:
+        from mino_nexus.loop.scout_record_tasks import restore_admission
+        admission = restore_admission(node_id, session_id)
     if admission is None or not run_id or not session_id:
         raise PermissionError("这次运行没有准入")
-    if session_id != admission.session_id:
+    if run_id != admission.run_id or session_id != admission.session_id:
         raise PermissionError("session_id 与这次运行不一致")
     if str(node_id or "") != admission.node_id:
         raise PermissionError("调用方不是这台设备所在节点")
     from mino_nexus.casework import run_store
     from mino_nexus.resources.node_registry import get_registry
+    from mino_nexus.resources.scout_record_store import for_node, TERMINAL
+    record = for_node(session_id, node_id)
+    if record and record["status"] in TERMINAL:
+        raise PermissionError("这次执行已经结束")
 
     if not run_store.task_is_live(run_store.get(run_id)):
         raise PermissionError("这次运行已经结束")
     node, reason = get_registry().resolve(admission.sn)
-    if node is None or str(node.node_id) != str(node_id or ""):
+    if node is None or str(node.node_id) != str(node_id or "") or node.owner_user_id != admission.owner_user_id:
         raise PermissionError(reason or "设备所在节点已变化")
     return admission
 
@@ -131,7 +146,7 @@ def _call(admission: ScriptAdmission, cap: str, params: dict[str, Any]) -> dict[
         raise PermissionError("这次运行没有执行账号")
     with execution_user(owner):
         if cap == "case.account":
-            return _account(admission)
+            return _account(admission, params)
         if cap == "case.note":
             return _note(admission, params)
         if cap == "case.step":
@@ -141,19 +156,43 @@ def _call(admission: ScriptAdmission, cap: str, params: dict[str, Any]) -> dict[
     raise PermissionError("Nexus 不处理这个回调")
 
 
-def _account(admission: ScriptAdmission) -> dict[str, Any]:
+def _account(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
+    from mino_nexus.resources import scout_record_store
+    from mino_nexus.resources.resource_claim_tx import _claim
+    record = scout_record_store.for_node(admission.session_id, admission.node_id)
+    request = (record or {}).get("context", {}).get("resource_request")
+    if not request:
+        return _account_impl(admission, params)
+    token = _claim.set(request)
+    try:
+        result = _account_impl(admission, params)
+        scout_record_store.save_resources(admission.session_id, request)
+        return result
+    finally:
+        _claim.reset(token)
+
+
+def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
     from mino_nexus.loop.script_runtime import ScriptAbort
     from mino_nexus.resources.accounts.lease import lease_script_account
 
+    explicit = params.get("requirements")
+    if explicit is not None and (not isinstance(explicit, dict) or any(
+            not isinstance(explicit.get(bucket, []), list) for bucket in ("all", "prefer"))):
+        raise ValueError("account_requirements_invalid")
+    selected_case = dict(admission.case)
+    if explicit is not None:
+        selected_case["account_requirements"] = explicit
+    # The allocator validates a restored lease against the requested clauses.
     row = dict(getattr(admission.ctx, "picked_account", None) or {})
-    if not str(row.get("id") or row.get("account_id") or "").strip():
-        leased, err = lease_script_account(admission.ctx, admission.case)
-        row = dict(leased or getattr(admission.ctx, "picked_account", None) or {})
+    if explicit is not None or not str(row.get("id") or row.get("account_id") or "").strip():
+        leased, err = lease_script_account(admission.ctx, selected_case)
+        row = dict(leased or {})
         if not str(row.get("id") or row.get("account_id") or "").strip():
             raise ScriptAbort(err or "这条用例没有租到账号", reason_code="resource_account_missing")
     otp = str(row.get("otp") or row.get("sms_code") or "").strip()
     if not otp:
-        # 账号行没有码时，按项目环境策略给固定码（mode=fixed）；邮箱取码仍由 Scout 本机完成。
+        # 账号行没有码时，按 Nexus 项目环境策略给固定码；邮箱收件箱也由 Nexus 策略下发给 Scout。
         from mino_nexus.resources.otp_resolve import resolve_otp
 
         otp = str(resolve_otp(getattr(admission, "ctx", None))[0] or "").strip()
@@ -172,16 +211,23 @@ def _account(admission: ScriptAdmission) -> dict[str, Any]:
 
 def _login_policy(admission: ScriptAdmission) -> dict[str, Any]:
     """把这条用例生效的登录策略交给脚本，由脚本按账号决定验证码从哪来。"""
-    from mino_nexus.resources.otp_resolve import otp_context
+    from mino_nexus.resources.otp_resolve import otp_context, resolve_gmail_inbox
 
     try:
-        _env_doc, secrets, otp_slot = otp_context(getattr(admission, "ctx", None))
+        env_doc, secrets, otp_slot = otp_context(getattr(admission, "ctx", None))
     except Exception:
         return {}
     slot = otp_slot if isinstance(otp_slot, dict) else {}
     login = secrets.get("login") if isinstance(secrets, dict) else {}
     if not slot and not login:
         return {}
+    login_kind = str((login or {}).get("kind") or "phone")
+    inbox = ""
+    if login_kind == "email":
+        try:
+            inbox = resolve_gmail_inbox(env_doc, getattr(admission, "ctx", None))
+        except Exception:
+            inbox = ""
     return {
         "otp_mode": str(slot.get("mode") or "auto"),
         "otp_fixed": str(slot.get("fixed") or ""),
@@ -189,7 +235,8 @@ def _login_policy(admission: ScriptAdmission) -> dict[str, Any]:
         "otp_subject_contains": str(slot.get("subject_contains") or ""),
         "otp_poll_interval_ms": int(slot.get("poll_interval_ms") or 200),
         "otp_max_wait_ms": int(slot.get("max_wait_ms") or 90000),
-        "login_kind": str((login or {}).get("kind") or "phone"),
+        "login_kind": login_kind,
+        "otp_inbox_address": inbox if login_kind == "email" else "",
     }
 
 
@@ -277,6 +324,14 @@ def _lease(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]
     case_id = str(params.get("case_id") or "").strip()
     if case_id and case_id != admission.case_id:
         raise PermissionError("case_id 与这次运行不一致")
+    from mino_nexus.resources.scout_record_store import for_node
+    record = for_node(admission.session_id, admission.node_id)
+    if record and (record["cancel_requested"] or record["status"] not in {"queued", "running"}):
+        raise ValueError("task_cancel_requested" if record["cancel_requested"] else "attempt_completed")
+    if record:
+        from mino_nexus.loop.scout_record_tasks import refresh_resources
+        if not refresh_resources(record):
+            raise ValueError("resource_lease_lost")
     return {
         "_summary": "这次运行仍占用该节点和设备",
         "occupied": True,

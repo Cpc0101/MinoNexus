@@ -53,12 +53,21 @@ def renew(request):
     from mino_nexus.casework.execution_policy import remaining
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
+        from mino_nexus.models.scout_record import ScoutRecord
+        # An account may have been leased by a separate callback thread after dispatch.
+        receipts = db.query(ScoutRecord).filter_by(task_id=request["run_id"], sn=request["sn"],
+                                                   owner_user_id=request["owner"]).all()
+        receipt = next((row for row in receipts if (row.context or {}).get("resource_request", {}).get("attempt_id") == request["attempt_id"]), None)
+        durable = bool(receipt and receipt.status in {"queued", "running"})
+        if receipt:
+            saved = (receipt.context or {}).get("resource_request") or {}
+            request["resource_epochs"] = saved.get("resource_epochs") or request.get("resource_epochs")
         rows, valid = _attempt_rows(db, request)
         current_time = time.time()
         run = db.get(AppRegressionRun, request["run_id"])
         valid = (valid and run is not None and run.owner_user_id == request["owner"]
                  and run.status in {"running", "queued"} and remaining(run.payload) != 0
-                 and all(row.state == "held" and row.expires_at > current_time for row in rows))
+                 and all(row.state == "held" and (row.expires_at > current_time or durable) for row in rows))
         accounts = {}
         if valid:
             for account_id in {row.detail.get("account_id") for row in rows} - {"", None}:
@@ -69,7 +78,7 @@ def renew(request):
                 except (TypeError, ValueError, OverflowError):
                     expiry = 0
                 if (account is None or account.locked or account.project_id != request["project_id"]
-                        or account.env != request["env"] or expiry <= current_time
+                        or account.env != request["env"] or (expiry <= current_time and not durable)
                         or any(lease.get(key) != request[key] for key in ("run_id", "case_id", "sn"))):
                     valid = False
                     break

@@ -200,6 +200,8 @@ def _upsert_run(doc: dict[str, Any]) -> None:
         reconciliations = merge_receipts(previous.payload if previous else None, doc)
         if previous is not None:
             frozen = previous.payload
+            if frozen.get("cancel_requested"):
+                doc["cancel_requested"] = True
             for field in ("owner_user_id", "plugin_user_id", "client_request_id", "request_digest", "derived_from",
                           "requested_total", "skipped_cases", "coverage", "sns", "device_targets", "platforms_by_sn",
                           "environment_baseline_digest", "execution_policy", "retry_contract"):
@@ -367,6 +369,8 @@ def seed_case(run_id: str, raw: dict[str, Any], index: int, *, sn: str = "", cov
         "project_id": raw.get("project_id", ""),
         "resource_key": copy.deepcopy(raw.get("resource_key")),
         "case_scene": copy.deepcopy(raw.get("case_scene")),
+        "account_requirements": copy.deepcopy(raw.get("account_requirements")),
+        "account_template_id": str(raw.get("account_template_id") or raw.get("template_id") or ""),
         "v5_publication": copy.deepcopy(raw.get("v5_publication")),
         "v5_plan_state": raw.get("v5_plan_state", "draft"),
         "wall_budget_sec": raw.get("wall_budget_sec", 0),
@@ -405,6 +409,23 @@ def _recompute(doc: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
+def _report_url(doc: dict[str, Any]) -> str:
+    import os
+    from urllib.parse import quote
+    from mino_nexus.core.mdns import http_origin, bind_port
+    origin = os.environ.get("MINO_WORKBENCH_PUBLIC_URL", "").strip().rstrip("/") or http_origin(bind_port())
+    project = str(doc.get("project_id") or "")
+    if not project and doc.get("app_id"):
+        from mino_nexus.resources.project_store import require_app
+        try:
+            project = str(require_app(doc["app_id"]).get("project_id") or "")
+        except (KeyError, ValueError, PermissionError):
+            return ""
+    if not project or not doc.get("app_id"):
+        return ""
+    return origin + "/testing/projects/" + quote(project, safe="") + "/apps/" + quote(str(doc["app_id"]), safe="") + "/tasks/" + quote(str(doc.get("run_id") or ""), safe="")
+
+
 def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> dict[str, Any]:
     from mino_nexus.casework.run_write_safety import unresolved
 
@@ -421,6 +442,9 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "run_id": doc.get("run_id") or "",
         "app_id": doc.get("app_id") or "",
         "app_name": doc.get("app_name") or "",
+        "project_id": doc.get("project_id") or "",
+        "report_url": _report_url(doc),
+        "cancel_requested": bool(doc.get("cancel_requested")),
         "run_type": doc.get("run_type") or "manual",
         "sn": sn,
         "sns": sns,
@@ -465,6 +489,16 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "boot_phases": list(doc.get("boot_phases") or []),
     }
     cases = [c for c in (doc.get("cases") or []) if isinstance(c, dict)]
+    if any(c.get("record_source") == "scout" for c in cases):
+        from mino_nexus.resources.scout_record_store import for_task
+        from mino_nexus.platform.identity import execution_user
+        with execution_user(str(doc.get("owner_user_id") or doc.get("plugin_user_id") or "")):
+            index = {row["session_id"]: row for row in for_task(str(doc.get("run_id") or ""))}
+        for case in cases:
+            record = index.get(case.get("session_id"))
+            if record:
+                case.update(status_sync_at=record["updated_at"], summary_version=record["summary_version"],
+                            detail_availability=record["summary"].get("detail_availability", "pending"))
     if include_cases:
         task["cases"] = [_public_case(c) for c in cases]
     else:
@@ -482,7 +516,8 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
 
 _CASE_BRIEF_KEYS = (
     "case_id", "name", "title", "sn", "status", "summary", "report_run_id",
-    "session_id", "duration_ms",
+    "session_id", "duration_ms", "attempt_id", "record_source", "record_node_id",
+    "detail_availability", "status_sync_at", "summary_version", "assertions", "source_coverage",
     "elapsed_ms", "module", "platform", "hitl",
 )
 
@@ -589,37 +624,11 @@ def list_runs(
 
 
 def _task_summaries(app_id: str, status: str, limit: int, offset: int) -> list[dict[str, Any]]:
-    from sqlalchemy import text
-    from mino_nexus.core.database import engine, ensure_db
-
-    ensure_db()
-    where = "WHERE 1=1"
-    params = {"limit": limit, "offset": offset}
-    if current_user_id():
-        where += " AND owner_user_id = :owner"
-        params["owner"] = current_user_id()
-    if app_id:
-        where += " AND app_id = :app_id"
-        params["app_id"] = app_id
-    if status:
-        where += " AND status = :status"
-        params["status"] = status
-    statement = text(f"""
-        SELECT run_id AS task_id, run_id, app_id, status, total, passed, failed,
-               sn, platform, started_at, finished_at,
-               json_extract(payload, '$.title') AS title,
-               json_extract(payload, '$.cases[0].name') AS first_case_name,
-               json_extract(payload, '$.cases[0].case_id') AS first_case_id
-        FROM app_regression_runs {where}
-        ORDER BY started_at DESC, run_id DESC LIMIT :limit OFFSET :offset
-    """)
-    with engine.connect() as conn:
-        rows = [dict(row) for row in conn.execute(statement, params).mappings()]
-    for row in rows:
-        first = row.pop("first_case_name") or row.pop("first_case_id", "") or row["task_id"]
-        row.pop("first_case_id", None)
-        row["title"] = row["title"] or (f"{first} 等 {int(row['total'])} 条" if row["total"] > 1 else first)
-    return rows
+    # Select one owned page before loading payloads. Use the same projection as
+    # task detail so cancellation, requested scope and late record availability
+    # cannot disappear from summary=true; this does not read any Scout evidence.
+    rows = _fetch_payloads(limit=limit, offset=offset, app_id=app_id, status=status)
+    return [to_task_json(row, include_cases=False) for row in rows]
 
 
 def last_case_results(app_id: str, case_ids: list[str] | None = None) -> dict[str, dict[str, Any]]:
@@ -778,7 +787,9 @@ def request_cancel(run_id: str) -> dict[str, Any]:
 
 def cancel_requested(run_id: str) -> bool:
     with _LOCK:
-        return run_id in _CANCEL
+        if run_id in _CANCEL:
+            return True
+    return bool((get(run_id) or {}).get("cancel_requested"))
 
 
 def task_cancelled(run_id: str) -> bool:
@@ -809,6 +820,15 @@ def cancel_run(run_id: str, *, reason: str = "已取消") -> dict[str, Any]:
         return {"ok": True, "already": True, "code": 200, "doc": doc}
     with _LOCK:
         _CANCEL.add(run_id)
+    from mino_nexus.resources.scout_record_store import for_task, request_cancel as cancel_records
+    if for_task(run_id):
+        cancel_records(run_id)
+        doc["cancel_requested"] = True
+        doc["cancel_reason"] = reason
+        for case in doc.get("cases") or []:
+            if case.get("status") == "pending":
+                case.update(status="cancelled", reason_code="task_cancelled", execution_started="no", summary=reason)
+        return {"ok": True, "code": 202, "pending": True, "doc": put(doc)}
     finished = finish(run_id, status="cancelled", error=reason)
     return {"ok": True, "code": 200, "doc": finished}
 
@@ -831,6 +851,10 @@ def reconcile_stale_running_runs(*, reason: str = "Nexus 重启，任务中断")
         for row in snapshots:
             with execution_user(row["owner_user_id"]) if row.get("owner_user_id") else nullcontext():
                 rid = str(row["run_id"])
+                from mino_nexus.resources.scout_record_store import for_task
+                if for_task(rid):
+                    # The independent Scout worker and its receipt survive this server restart.
+                    continue
                 resumable = False
                 for case in row.get("cases") or []:
                     prior = str(case.get("status") or "pending")
@@ -872,6 +896,9 @@ def patch_case(run_id: str, case_id: str, *, target_sn: str | None = None,
                    and (not execution_unit_id or case.get("execution_unit_id") == execution_unit_id)]
         if len(matches) != 1:
             raise ValueError("execution_unit_ambiguous" if matches else "execution_unit_not_found")
+        if (fields.get("record_source") == "scout" and matches[0].get("session_id") == fields.get("session_id")
+                and int(matches[0].get("summary_version") or 0) > int(fields.get("summary_version") or 0)):
+            return doc  # A delayed projection cannot regress a newer durable summary.
         matches[0].update({k: v for k, v in fields.items() if v is not None})
         return put(doc)
 
@@ -898,7 +925,7 @@ def _close_open_sessions(doc: dict[str, Any], *, summary: str = "") -> None:
 
     rid = str(doc.get("run_id") or "")
     for case in doc.get("cases") or []:
-        if not isinstance(case, dict):
+        if not isinstance(case, dict) or case.get("record_source") == "scout":
             continue
         sid = str(case.get("report_run_id") or "").strip()
         if not sid:
@@ -923,6 +950,10 @@ def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: s
     if not task_is_live(doc):
         clear_cancel(run_id)
         return doc
+    from mino_nexus.resources.scout_record_store import for_task, TERMINAL
+    pending_records = [row for row in for_task(run_id) if row["status"] not in TERMINAL]
+    if pending_records:
+        return cancel_run(run_id, reason=error or "等待 Scout 确认停止")["doc"]
     if status == "cancelled":
         for case in doc.get("cases") or []:
             if str(case.get("status") or "") in ("pending", "running"):

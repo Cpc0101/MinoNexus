@@ -1,6 +1,6 @@
 """MinoNexus ⇄ MinoScout shared wire contract; stdlib only.
 
-Contract: synchronized docs/接口/协议.md and this module. Local fixtures are not shipped.
+Contract: the synchronized Nexus/Scout protocol documents and this module.
 """
 from __future__ import annotations
 
@@ -34,18 +34,19 @@ class EventStatus(str, Enum):
     server/services/ai/regression/schemas.py::EventStatus 逐字一致（小写），
     以免搬迁时到处做名字翻译。
 
-    Router 的处置（与上游 router.py:150-170 一致）：
+    **V7 合同：EXECUTE 只选定一个 executor，任何状态都结束本次尝试。**
+    Scout 不做 fallback、不改序、不追加通道；换路是 Nexus 的决策。
 
-    | status   | Router 行为          | 语义 |
-    |----------|---------------------|------|
-    | pass     | 立即返回            | 做成了 |
-    | blocked  | 立即返回            | 需要人介入 —— 换 executor 没意义 |
-    | declined | 试下一个 executor    | 主动让位，不算故障（日志 info，不计失败） |
-    | fail     | 试下一个 executor    | 真故障，但仍兜底换通道再试 |
-    | skipped  | 试下一个 executor    | 本次未执行（前置不满足等） |
+    | status   | 语义 |
+    |----------|------|
+    | pass     | 做成了 |
+    | blocked  | 需要人介入（Scout 不问人，上报 Nexus） |
+    | declined | 我不适合做这条，让位 —— 不算故障 |
+    | fail     | 真故障（设备报错、超时、元素找不到） |
+    | skipped  | 本次未执行（前置不满足等） |
 
-    注意：`declined` 与 `fail` 都会走 fallback，区别在**是否算故障**，
-    不在"换个 executor 有没有用"。
+    `declined` 与 `fail` 的区别只在**是否算故障**（污染失败统计与归因），
+    不在"要不要换通道"。
     """
 
     PASS = "pass"
@@ -55,13 +56,20 @@ class EventStatus(str, Enum):
     DECLINED = "declined"
 
 
+# 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
+# Strategy is task metadata; actual point_policy remains node/coordinate.
 OBSERVATION_STRATEGIES = ("visual", "dom_preferred")
 OBSERVATION_CONTRACT_VERSION = 1
 
-# 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
-# 这里不再维护指令/事件白名单：N→S 由 Scout 的 `core._NODE_COMMANDS` 分发，
-# S→N 由 Nexus 的 `node_registry._NODE_EVENT_HANDLERS` 分发。收到不认识的
-# capability 时，两端都回 FAIL 并带上名字，不再靠静态清单互相猜。
+NODE_COMMAND_CAPS = frozenset({
+    "node.stop", "node.restart", "node.update", "node.log_tail",
+    "node.sleep", "node.wake",
+    "node.plugin_install", "node.plugin_remove", "node.plugin_config",
+    "node.config_export", "node.config_import",
+    "node.tools", "node.tool_task_submit", "node.tool_task_get",
+})
+# 事件白名单已删除：Scout 发什么事件由发送侧决定，Nexus 收到后按自己的
+# `resources/node_registry.py:_NODE_EVENT_HANDLERS` 查表处理；处理不了的回 FAIL。
 
 OBSERVE_CAPS = {
     "screenshot": "screenshot",
@@ -116,6 +124,7 @@ class Register:
     plugins: Optional[list[dict[str, Any]]] = None
     plugins_ready: Optional[bool] = None
     tool_tasks_version: int = 0  # explicit download-centre contract, not a version guess
+    record_api_version: int = 0  # 1: durable script.submit and Scout-local record APIs
     plugin_warning: str = ""
     runtime_environment: str = ""
     # None：旧节点没报运行能力。不能用版本号猜测是否支持当前焦点输入。
@@ -167,6 +176,7 @@ class Heartbeat:
     plugins: Optional[list[dict[str, Any]]] = None
     plugins_ready: Optional[bool] = None
     tool_tasks_version: int = 0  # explicit download-centre contract, not a version guess
+    record_api_version: int = 0
     plugin_warning: str = ""
     runtime_environment: str = ""
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
@@ -234,6 +244,88 @@ class Result:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ScriptRun:
+    """脚本运行载荷。只含冻结字段，经现有 EXECUTE.params 往返，不是新的消息类型。
+
+    Scout 自己按 repo_url / branch / revision 拉取脚本仓库；Nexus 不打包文件。
+    """
+
+    run_id: str
+    session_id: str
+    case_id: str
+    sn: str
+    platform: str
+    repo_url: str
+    branch: str = ""
+    revision: str = ""
+    script_path: str = ""
+    task_id: str = ""
+    attempt_id: str = ""
+    owner_user_id: str = ""
+    execution_timeout_sec: float = 600.0
+
+
+SCRIPT_RUN_CAPABILITY = "script.run"
+SCRIPT_SUBMIT_CAPABILITY = "script.submit"
+RECORD_API_VERSION = 1
+SCRIPT_RUN_FIELDS = ("run_id", "session_id", "case_id", "sn", "platform", "repo_url", "branch", "revision", "script_path",
+                     "task_id", "attempt_id", "owner_user_id", "execution_timeout_sec")
+_SCRIPT_RUN_FIELDS = SCRIPT_RUN_FIELDS
+
+
+def dump_script_run(payload: ScriptRun) -> dict[str, Any]:
+    return _encode(payload)
+
+
+def load_script_run(raw: dict[str, Any]) -> ScriptRun:
+    """未知字段忽略。缺冻结字段则拒绝。"""
+    if not isinstance(raw, dict):
+        raise ValueError("script_run_invalid")
+    known = {name: raw[name] for name in _SCRIPT_RUN_FIELDS if name in raw}
+    try:
+        body = _decode(ScriptRun, known)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("script_run_invalid") from exc
+    if not isinstance(body, ScriptRun):
+        raise ValueError("script_run_invalid")
+    from pathlib import PurePosixPath
+    from urllib.parse import urlsplit
+    import math
+
+    for key in ("run_id", "session_id", "case_id", "sn", "platform", "repo_url"):
+        value = getattr(body, key)
+        if not isinstance(value, str) or not value.strip() or any(ord(c) < 32 for c in value):
+            raise ValueError("script_run_incomplete")
+    for key in ("branch", "revision"):
+        value = getattr(body, key)
+        if not isinstance(value, str) or value.startswith("-") or len(value) > 200 or any(c.isspace() or ord(c) < 32 for c in value):
+            raise ValueError("script_run_revision_invalid")
+    if body.repo_url.startswith("-") or any(c.isspace() for c in body.repo_url):
+        raise ValueError("script_run_repo_invalid")
+    parsed = urlsplit(body.repo_url)
+    if parsed.scheme in {"http", "https"} and (parsed.username is not None or parsed.password is not None):
+        raise ValueError("script_run_repo_invalid")
+    if not isinstance(body.script_path, str):
+        raise ValueError("script_run_path_invalid")
+    body.script_path = body.script_path.replace("\\", "/")
+    if body.script_path and (body.script_path.startswith(("/", "~")) or ":" in body.script_path
+                            or ".." in PurePosixPath(body.script_path).parts
+                            or any(ord(c) < 32 for c in body.script_path) or not body.script_path.endswith(".py")):
+        raise ValueError("script_run_path_invalid")
+    for key in ("task_id", "attempt_id", "owner_user_id"):
+        if not isinstance(getattr(body, key), str):
+            raise ValueError("script_run_identity_invalid")
+    try:
+        budget = float(body.execution_timeout_sec)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("script_run_timeout_invalid") from exc
+    if not math.isfinite(budget) or not 1 <= budget <= 86400:
+        raise ValueError("script_run_timeout_invalid")
+    body.execution_timeout_sec = budget
+    return body
+
+
 PAYLOAD_BY_TYPE: dict[MsgType, type] = {
     MsgType.REGISTER: Register,
     MsgType.REGISTERED: Registered,
@@ -242,7 +334,7 @@ PAYLOAD_BY_TYPE: dict[MsgType, type] = {
     MsgType.RESULT: Result,
 }
 
-# ACK 必须的消息（发送方超时未收到应答需按 docs/接口/协议.md §6 重试）
+# ACK 必须的消息（发送方超时未收到应答需按 docs/PROTOCOL.md §6 重试）
 ACK_REQUIRED: frozenset[MsgType] = frozenset(
     {
         MsgType.REGISTER,
@@ -358,93 +450,7 @@ def loads(raw: dict[str, Any]) -> Envelope:
 
 
 class UnknownMessageType(Exception):
-    """收到未知 type。按 docs/接口/协议.md §7，接收方记 warn 并忽略，不可关连接。"""
-
-
-# 脚本运行载荷。字段与 docs/接口/协议.md「脚本运行载荷」表一致，不另加版本号。
-# Nexus 只触发：仓库拉取、定位脚本、读 config.yaml、执行都在 Scout。
-SCRIPT_RUN_CAPABILITY = "script.run"
-SCRIPT_RUN_FIELDS = ("run_id", "session_id", "case_id", "sn", "platform", "repo_url", "branch", "revision", "script_path")
-
-
-@dataclass
-class ScriptRun:
-    run_id: str
-    session_id: str
-    case_id: str
-    sn: str
-    platform: str
-    repo_url: str
-    branch: str = ""
-    revision: str = ""
-    script_path: str = ""
-
-
-def _script_path_unsafe(path: str) -> bool:
-    from pathlib import Path
-
-    text = str(path or "").strip().replace("\\", "/")
-    if not text or text.startswith("/") or text.startswith("~"):
-        return True
-    if len(text) >= 2 and text[1] == ":":
-        return True
-    parts = Path(text).parts
-    return any(part in {"", ".", ".."} for part in parts)
-
-
-def _git_token_unsafe(value: str) -> bool:
-    """分支、提交是不透明字符串，但不能被 git 当成命令行选项或带空白控制字符。"""
-    text = str(value or "")
-    return text.startswith("-") or len(text) > 200 or any(ch.isspace() or ord(ch) < 32 for ch in text)
-
-
-def dump_script_run(payload: ScriptRun) -> dict[str, Any]:
-    """脚本运行载荷 → dict。只含合同字段，空字符串也保留。"""
-    return {
-        "run_id": str(payload.run_id or ""),
-        "session_id": str(payload.session_id or ""),
-        "case_id": str(payload.case_id or ""),
-        "sn": str(payload.sn or ""),
-        "platform": str(payload.platform or ""),
-        "repo_url": str(payload.repo_url or ""),
-        "branch": str(payload.branch or ""),
-        "revision": str(payload.revision or ""),
-        "script_path": str(payload.script_path or "").replace("\\", "/"),
-    }
-
-
-def load_script_run(raw: dict[str, Any]) -> ScriptRun:
-    """dict → 脚本运行载荷。未知字段忽略；缺字段或不合法则拒绝。
-
-    repo_url 必填且不带内嵌凭据；branch、revision 可空（revision 空表示取分支最新）；
-    script_path 可空（Scout 按 tests/**/<case_id>.py 找），非空时必须是仓库内的 .py。
-    """
-    if not isinstance(raw, dict):
-        raise ValueError("script_run_invalid")
-    missing = [key for key in SCRIPT_RUN_FIELDS if key not in raw]
-    if missing:
-        raise ValueError("script_run_incomplete")
-    repo_url = str(raw.get("repo_url") or "").strip()
-    if not repo_url or repo_url.startswith("-") or "@" in repo_url.split("//", 1)[-1].split("/", 1)[0]:
-        raise ValueError("script_run_repo_invalid")
-    branch = str(raw.get("branch") or "").strip()
-    revision = str(raw.get("revision") or "").strip()
-    if _git_token_unsafe(branch) or _git_token_unsafe(revision):
-        raise ValueError("script_run_revision_invalid")
-    script_path = str(raw.get("script_path") or "").replace("\\", "/")
-    if script_path and (_script_path_unsafe(script_path) or not script_path.endswith(".py")):
-        raise ValueError("script_run_path_invalid")
-    return ScriptRun(
-        run_id=str(raw.get("run_id") or ""),
-        session_id=str(raw.get("session_id") or ""),
-        case_id=str(raw.get("case_id") or ""),
-        sn=str(raw.get("sn") or ""),
-        platform=str(raw.get("platform") or ""),
-        repo_url=repo_url,
-        branch=branch,
-        revision=revision,
-        script_path=script_path,
-    )
+    """收到未知 type。按 docs/PROTOCOL.md §7，接收方记 warn 并忽略，不可关连接。"""
 
 
 @dataclass

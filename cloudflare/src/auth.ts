@@ -256,6 +256,40 @@ export async function createProject(
   return { project_id, id: project_id, name, description, created_at: now };
 }
 
+export async function deleteProject(
+  db: D1Database,
+  owner_user_id: string,
+  projectIdRaw: string,
+): Promise<Record<string, unknown> | null> {
+  const project_id = String(projectIdRaw || "").trim();
+  if (!project_id) return null;
+  const row = await db
+    .prepare(`SELECT project_id, name FROM projects WHERE project_id = ? AND owner_user_id = ?`)
+    .bind(project_id, owner_user_id)
+    .first<{ project_id: string; name: string }>();
+  if (!row) return null;
+  const apps = await db
+    .prepare(`SELECT app_id, name FROM apps WHERE project_id = ? AND owner_user_id = ?`)
+    .bind(project_id, owner_user_id)
+    .all<{ app_id: string; name: string }>();
+  await db.batch([
+    db.prepare(`DELETE FROM script_admissions WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
+    db.prepare(`DELETE FROM app_regression_runs WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
+    db.prepare(`DELETE FROM project_requirements WHERE project_id = ?`).bind(project_id),
+    db.prepare(`DELETE FROM project_repo_apps WHERE project_id = ?`).bind(project_id),
+    db.prepare(`DELETE FROM project_script_repos WHERE project_id = ?`).bind(project_id),
+    db.prepare(`DELETE FROM apps WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
+    db.prepare(`DELETE FROM projects WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
+  ]);
+  return {
+    id: row.project_id,
+    project_id: row.project_id,
+    name: row.name,
+    app_ids: (apps.results || []).map((app) => app.app_id),
+    app_names: (apps.results || []).map((app) => app.name),
+  };
+}
+
 export async function deleteApp(
   db: D1Database,
   owner_user_id: string,
@@ -283,6 +317,7 @@ export async function createApp(
   project_id: string,
   nameRaw: string,
   platforms = "",
+  descriptionRaw = "",
 ): Promise<Record<string, unknown>> {
   /** Match project_store.create_app: platforms is a comma-separated string. */
   const project = await db
@@ -297,6 +332,7 @@ export async function createApp(
     .map((p) => p.trim().toLowerCase())
     .filter((p) => allowed.has(p));
   const platformsStr = [...new Set(normalized)].join(",");
+  const description = String(descriptionRaw || "").trim().slice(0, 2000);
   const { results } = await db.prepare(`SELECT app_id FROM apps`).all<{ app_id: string }>();
   const app_id = serial(
     (results || []).map((r) => r.app_id),
@@ -306,15 +342,16 @@ export async function createApp(
   await db
     .prepare(
       `INSERT INTO apps (app_id, project_id, owner_user_id, name, platform, meta_json, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(app_id, project_id, owner_user_id, name, platformsStr || null, now)
+    .bind(app_id, project_id, owner_user_id, name, platformsStr || null, description ? JSON.stringify({ description }) : null, now)
     .run();
   return {
     app_id,
     id: app_id,
     project_id,
     name,
+    description,
     platforms: platformsStr,
     platform: platformsStr,
   };

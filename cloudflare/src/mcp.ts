@@ -4,7 +4,8 @@
  */
 
 import type { Env } from "./env";
-import { listProjects, createApp, createProject, deleteApp } from "./auth";
+import { hubStub } from "./env";
+import { listProjects, createApp, createProject, deleteApp, deleteProject } from "./auth";
 import { listDevices, listScouts } from "./db";
 import {
   ACCESS_PREFIX,
@@ -17,8 +18,21 @@ import { resolveMcpToken } from "./mcp_tokens";
 import { handlePluginRoutes } from "./plugin_routes";
 import { startRun } from "./case_runner";
 import { getRepoApps, saveRepoApps } from "./repo_apps";
-import { getRun, toTaskJson } from "./run_store";
+import { getRun, listRuns, toTaskJson } from "./run_store";
+import { cancelTask, deviceAvailability, TaskError } from "./task_scheduler";
+import { artifactChunk, readEvents, readRecord, screenshotMetadata, listSessions } from "./record_proxy";
+import { listAccounts, saveAccount, deleteAccount, importAccounts, AccountError } from "./account_pool";
+import { getInstallStatus, issueInstallToken, unbindScout } from "./install";
 import { requireOwnedProject, saveRepo } from "./script_repo";
+import { getProjectEnv, saveProjectEnv } from "./project_env";
+import {
+  acceptsEventStream,
+  cancelled,
+  prepareConfirm,
+  saveElicitationResult,
+  streamConfirmedCall,
+  toolNeedsConfirm,
+} from "./mcp_confirm";
 
 type JsonRpcId = string | number | null;
 
@@ -27,9 +41,12 @@ type JsonRpcRequest = {
   id?: JsonRpcId;
   method?: string;
   params?: Record<string, unknown>;
+  result?: unknown;
+  error?: unknown;
 };
 
 const PROTOCOL = "2025-03-26";
+const PROTOCOLS = new Set(["2025-03-26", "2025-06-18", "2025-11-25"]);
 
 /** Tool specs copied from mino_nexus/prompts/assistant/tools/*.yaml (mcp surface). */
 const TOOLS = [
@@ -74,6 +91,57 @@ const TOOLS = [
     },
   },
   {
+    name: "scout_install_token",
+    title: "申请 Scout 安装命令",
+    description:
+      "为当前账号签发 15 分钟的 Scout 安装命令，返回 install_id、expires_at 和各系统 commands。调用后弹出确认窗。确认后把与本机系统匹配的那条命令交给本机执行，不要把 token 或完整命令写进对话。安装进度用 scout_install_status。",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    annotations: {
+      title: "申请 Scout 安装命令",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "scout_install_status",
+    title: "查看 Scout 安装进度",
+    description: "用 scout_install_token 返回的 install_id 查看安装是否完成、节点是否在线。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { install_id: { type: "string" } },
+      required: ["install_id"],
+    },
+    annotations: {
+      title: "查看 Scout 安装进度",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "scout_uninstall",
+    title: "卸载 Scout 并解除绑定",
+    description:
+      "删除该节点在当前账号下的绑定、设备和安装记录，并断开在线连接。返回本机卸载命令。调用后弹出确认窗。确认后执行与本机系统匹配的命令，不要把命令写进对话。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { node_id: { type: "string", description: "来自 scout_list 的 node_id" } },
+      required: ["node_id"],
+    },
+    annotations: {
+      title: "卸载 Scout 并解除绑定",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: "device_list",
     title: "兼容设备列表",
     description: "实时查询设备。status 为 online/offline。",
@@ -97,7 +165,8 @@ const TOOLS = [
   {
     name: "app_create",
     title: "创建应用",
-    description: "在项目下创建一个应用，返回它的 id。",
+    description:
+      "在项目下创建一个应用，返回它的 id。调用后服务端弹出确认窗，用户可以修改项目、名称、平台和说明。不要在对话里先追问，直接调用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -123,7 +192,7 @@ const TOOLS = [
     name: "project_create",
     title: "创建项目",
     description:
-      "创建一个项目，返回项目 id。name 必填，description 可选。调用前必须把名称和说明展示给用户，等用户确认或改完再调用，不要擅自创建。",
+      "创建一个项目，返回项目 id。name 必填，description 可选。调用后服务端弹出确认窗，用户可以修改名称和说明。不要在对话里先追问，直接调用。",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -145,7 +214,7 @@ const TOOLS = [
     name: "app_delete",
     title: "删除应用",
     description:
-      "删除一个误建的应用，只删应用记录。app_id 来自 project_list。调用前必须向用户展示应用 id 和名称，得到明确的删除确认后再调用。",
+      "删除一个误建的应用，只删应用记录。app_id 来自 project_list。调用后服务端弹出删除确认窗。不要在对话里先追问，直接调用。",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -156,6 +225,27 @@ const TOOLS = [
     },
     annotations: {
       title: "删除应用",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "project_delete",
+    title: "删除项目",
+    description:
+      "删除一个项目及其下的应用记录。project_id 来自 project_list。调用后服务端弹出删除确认窗。不要在对话里先追问，直接调用。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        project_id: { type: "string", description: "要删除的项目 id" },
+      },
+      required: ["project_id"],
+    },
+    annotations: {
+      title: "删除项目",
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: true,
@@ -308,7 +398,7 @@ const TOOLS = [
   {
     name: "requirement_save",
     title: "登记需求",
-    description: "保存需求 ID、名称和一条渠道链接。ID 同时是脚本目录 tests/<需求ID>/。",
+    description: "保存需求 ID、名称和一条渠道链接。ID 同时是脚本目录 tests/<需求ID>/。调用后服务端弹出确认窗，用户可以修改这些字段。不要在对话里先追问，直接调用。",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -333,7 +423,7 @@ const TOOLS = [
     name: "project_script_repo_set",
     title: "设置项目脚本仓库",
     description:
-      "保存项目的脚本仓库地址和分支。Nexus 只记地址，不拉取仓库，不保存 Git 令牌；Scout 在本机用自己的 git 凭据拉取。",
+      "保存项目的脚本仓库地址和分支。Nexus 只记地址，不拉取仓库，不保存 Git 令牌；Scout 在本机用自己的 git 凭据拉取。调用后服务端弹出确认窗，用户可以修改地址和分支。不要在对话里先追问，直接调用。",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -356,7 +446,7 @@ const TOOLS = [
     name: "repo_apps_sync",
     title: "同步脚本仓库的应用清单",
     description:
-      "脚本仓库根目录 config.yaml 的 apps 改动并 push 后必须调用。revision 填 push 后的 commit，branch 填分支。差异更新：apps 只填这次新增或修改的应用（取自 config.yaml，按 key 整项替换；每个应用要有 platform，身份字段只有 package / bundle_id / url，可带 envs；不要传 app_id、不要传 otp）。未带 app_id 时 Nexus 按 key 对齐或自动创建应用并回填。删除的应用 key 填进 remove；没出现的应用保持不变。不能含账号密码或 otp。Nexus 不读仓库，凭此知道项目能测哪些应用。",
+      "脚本仓库根目录 config.yaml 的 apps 改动并 push 后必须调用。revision 填 push 后的 commit，branch 填分支。差异更新：apps 只填这次新增或修改的应用（取自 config.yaml，按 key 整项替换；每个应用要有 platform，身份字段只有 package / bundle_id / url，可带 envs；不要传 app_id、不要传 otp）。未带 app_id 时 Nexus 按 key 对齐或自动创建应用并回填。删除的应用 key 填进 remove；没出现的应用保持不变。不能含账号密码或 otp。Nexus 不读仓库，凭此知道项目能测哪些应用。调用后服务端弹出确认窗，用户可以修改提交、分支和应用 JSON。不要在对话里先追问，直接调用。",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -421,6 +511,29 @@ const TOOLS = [
       openWorldHint: false,
     },
   },
+  ...[
+    { name: "task_list", title: "任务列表", description: "查询当前账号的持久任务摘要。", properties: { app_id: { type: "string" }, project_id: { type: "string" }, status: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 } }, required: [] },
+    { name: "task_cancel", title: "取消任务", description: "持久保存取消意图；仅在 Scout 确认停止后任务才显示 cancelled。", properties: { task_id: { type: "string" } }, required: ["task_id"] },
+    { name: "session_list", title: "执行记录列表", description: "查询当前账号的记录索引；完整证据保存在 Scout。", properties: { run_id: { type: "string" }, app_id: { type: "string" }, case_id: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, required: [] },
+    { name: "session_record", title: "执行记录摘要", description: "经已认证节点连接读取 Scout 上的实时记录摘要。", properties: { session_id: { type: "string" } }, required: ["session_id"] },
+    { name: "session_events", title: "执行证据", description: "读取 Scout 本地事件。from_seq 是排他游标，下一页使用 next_seq；完整大节点通过 session_artifact 读取；节点离线明确返回证据暂不可用。", properties: { session_id: { type: "string" }, from_seq: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 200 }, max_bytes: { type: "integer", minimum: 1024, maximum: 196608, default: 196608 } }, required: ["session_id"] },
+    { name: "session_artifact", title: "完整证据分块", description: "读取已有证据的一个分块。大节点树从事件的 artifact_id 获取；下一块 offset=offset+bytes_read，直到 eof。UTF-8 完整时附 text，否则读取 data_base64。", properties: { session_id: { type: "string" }, artifact_id: { type: "string" }, offset: { type: "integer", minimum: 0, default: 0 }, length: { type: "integer", minimum: 1, maximum: 65536, default: 32768 } }, required: ["session_id", "artifact_id"] },
+    { name: "session_screenshot", title: "截图证据", description: "读取已有截图的元数据和需登录的下载地址，不重新操作设备。用 session_events 找 seq 或 artifact_id。", properties: { session_id: { type: "string" }, seq: { type: "integer", minimum: 1 }, artifact_id: { type: "string" } }, required: ["session_id"] },
+    { name: "resource_env_get", title: "项目环境配置", description: "读取项目在 Nexus 保存的环境、渠道、登录策略、验证码策略和自动新增账号序列。", properties: { project_id: { type: "string" } }, required: ["project_id"] },
+    { name: "resource_env_set", title: "保存项目环境配置", description: "保存项目在 Nexus 的环境配置。登录方式、验证码策略、Gmail 收件箱和手机号/邮箱别名序列放在这里，不写入脚本仓；号池为空或没有匹配账号时 Nexus 按这里的策略自动补号。可只传要修改的顶层字段。调用后弹出确认窗。", properties: { project_id: { type: "string" }, env: { type: "object", description: "要合并保存的项目环境字段", additionalProperties: true } }, required: ["project_id", "env"] },
+    { name: "resource_account_list", title: "测试账号池", description: "查询当前项目的测试账号，不返回密码和验证码。", properties: { project_id: { type: "string" }, env: { type: "string" } }, required: ["project_id"] },
+    { name: "resource_account_create", title: "新增测试账号", description: "向当前项目的 Nexus 测试账号池新增账号。环境与登录身份用于租用匹配。调用后弹出确认窗。", properties: { project_id: { type: "string" }, env: { type: "string" }, display_name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, username: { type: "string" }, password: { type: "string" }, otp: { type: "string" }, kind: { type: "string" }, profile_id: { type: "string" }, note: { type: "string" }, facets: { type: "object", additionalProperties: true }, locked: { type: "boolean" } }, required: ["project_id"] },
+    { name: "resource_account_update", title: "修改测试账号", description: "修改 Nexus 测试账号池中的账号；仅传要修改的字段。调用后弹出确认窗。", properties: { project_id: { type: "string" }, account_id: { type: "string" }, env: { type: "string" }, display_name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, username: { type: "string" }, password: { type: "string" }, otp: { type: "string" }, kind: { type: "string" }, profile_id: { type: "string" }, note: { type: "string" }, facets: { type: "object", additionalProperties: true }, locked: { type: "boolean" } }, required: ["project_id", "account_id"] },
+    { name: "resource_account_delete", title: "删除测试账号", description: "删除 Nexus 测试账号池中的空闲账号；被任务租用的账号不能删除。调用后弹出确认窗。", properties: { project_id: { type: "string" }, account_id: { type: "string" } }, required: ["project_id", "account_id"] },
+    { name: "resource_account_import", title: "批量导入测试账号", description: "批量导入 Nexus 测试账号。preview=true 时只返回匹配与变更预览，不写入。调用后弹出确认窗。", properties: { project_id: { type: "string" }, rows: { type: "array", items: { type: "object", additionalProperties: true } }, default_env: { type: "string" }, on_duplicate: { type: "string", enum: ["skip", "merge", "overwrite_credentials"] }, preview: { type: "boolean" } }, required: ["project_id", "rows"] },
+  ].map(tool => ({ name: tool.name, title: tool.title, description: tool.description,
+    inputSchema: { type: "object", additionalProperties: false, properties: tool.properties, required: tool.required },
+    annotations: {
+      readOnlyHint: !["task_cancel", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import"].includes(tool.name),
+      destructiveHint: tool.name === "resource_account_delete",
+      idempotentHint: !["task_cancel", "resource_account_create", "resource_account_delete", "resource_account_import"].includes(tool.name),
+      openWorldHint: false,
+    } })),
 ] as const;
 
 function rpcResult(id: JsonRpcId | undefined, result: unknown): Response {
@@ -496,18 +609,23 @@ function agentGuidePayload(): Record<string, unknown> {
     boundaries: [
       "脚本文本只由 agent 写在本机脚本仓并通过 Git 推送；MCP 只做查询、同步元数据与触发执行，不写代码。各仓库分工与 Scout 安装见 agent 技能 overview。",
       "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
-      "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。验证码优先读脚本仓 otp.code，否则要人工提供；模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
+      "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；号池为空或没有匹配账号时由 Nexus 自动补号。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
     ],
     workbench: {
       url: "https://workbench.minocc.top",
       login_failure: "无法连接服务器",
     },
     flows: [
+      {
+        name: "安装或卸载本机 Scout",
+        tools: ["scout_install_token", "scout_install_status", "scout_list", "scout_uninstall"],
+        then: "安装先 scout_install_token，确认后只在本机执行匹配系统的命令，不要把 token 写进对话。卸载用 scout_uninstall：确认后 Nexus 删除绑定，再执行返回的本机卸载命令。",
+      },
       { name: "确认能操作哪些项目", tools: ["project_list"] },
       {
         name: "新建项目或删除误建应用",
-        tools: ["project_list", "project_create", "app_delete"],
-        then: "先把名称、说明或要删的应用列给用户。用户可以改名称和说明；删除必须得到明确确认后再调用。",
+        tools: ["project_list", "project_create", "project_delete", "app_delete"],
+        then: "直接调用工具。服务端会弹出确认窗：新建和修改可以改字段，删除只有确认。",
       },
       {
         name: "编写或修改用例脚本",
@@ -534,7 +652,7 @@ function agentGuidePayload(): Record<string, unknown> {
       },
       {
         name: "查看一次执行",
-        tools: ["task_list", "task_get", "session_list", "session_events", "session_screenshot"],
+        tools: ["task_list", "task_get", "session_list", "session_record", "session_events", "session_artifact", "session_screenshot"],
       },
       {
         name: "看资源够不够",
@@ -576,6 +694,7 @@ function mapScouts(raw: unknown[], userId: string): Record<string, unknown>[] {
       owner_user_id: s.owner_user_id || undefined,
       plugins_ready: s.plugins_ready,
       tool_tasks_version: Number(s.tool_tasks_version || 0),
+      record_api_version: Number(s.record_api_version || 0),
     }));
 }
 
@@ -662,9 +781,41 @@ async function callTool(
     });
   }
 
+  if (name === "scout_install_token") {
+    const issued = await issueInstallToken(env.DB, userId, "https://nexus.minocc.top");
+    return pack(true, "已签发安装命令", issued);
+  }
+
+  if (name === "scout_install_status") {
+    const installId = String(args.install_id || "").trim();
+    if (!installId) return pack(false, "缺少 install_id", {}, 422);
+    const status = await getInstallStatus(env.DB, installId, userId);
+    if (!status) return pack(false, "没有这次安装", {}, 404);
+    return pack(true, "", status);
+  }
+
+  if (name === "scout_uninstall") {
+    const nodeId = String(args.node_id || "").trim();
+    if (!nodeId) return pack(false, "缺少 node_id", {}, 422);
+    const unbound = await unbindScout(env.DB, userId, nodeId);
+    if (!unbound) return pack(false, "没有这个节点", {}, 404);
+    try {
+      await hubStub(env).fetch(
+        new Request("https://hub/detach", {
+          method: "POST",
+          body: JSON.stringify({ scout_id: nodeId }),
+        }),
+      );
+    } catch {
+      /* binding is already gone */
+    }
+    return pack(true, "已解除绑定", unbound);
+  }
+
   if (name === "device_list") {
     const onlyOnline = args.only_online !== false;
-    return pack(true, "", mapDevices(await listDevices(env.DB, onlyOnline)));
+    try { return pack(true, "", await deviceAvailability(env, userId, { only_online: onlyOnline, app_id: String(args.app_id || "") })); }
+    catch (error) { if (error instanceof TaskError) return pack(false, error.message, { reason_code: error.code }, error.http); throw error; }
   }
 
   if (name === "app_create") {
@@ -675,6 +826,7 @@ async function callTool(
         String(args.project_id || ""),
         String(args.name || ""),
         String(args.platforms || ""),
+        String(args.description || ""),
       );
       return pack(true, "已创建", app);
     } catch (err) {
@@ -700,6 +852,14 @@ async function callTool(
     if (!appId) return pack(false, "缺少 app_id", {}, 422);
     const deleted = await deleteApp(env.DB, userId, appId);
     if (!deleted) return pack(false, "没有这个应用", {}, 404);
+    return pack(true, "已删除", deleted);
+  }
+
+  if (name === "project_delete") {
+    const projectId = String(args.project_id || "").trim();
+    if (!projectId) return pack(false, "缺少 project_id", {}, 422);
+    const deleted = await deleteProject(env.DB, userId, projectId);
+    if (!deleted) return pack(false, "没有这个项目", {}, 404);
     return pack(true, "已删除", deleted);
   }
 
@@ -834,6 +994,42 @@ async function callTool(
     }
   }
 
+  try {
+    if (name === "task_list") return pack(true, "", await listRuns(env.DB, userId, { app_id: String(args.app_id || ""), project_id: String(args.project_id || ""), status: String(args.status || ""), limit: Number(args.limit || 30), offset: Number(args.offset || 0) }));
+    if (name === "task_cancel") return pack(true, "已记录取消请求", toTaskJson(await cancelTask(env, userId, String(args.task_id || ""))));
+    if (name === "session_list") return pack(true, "", await listSessions(env, userId, { run_id: String(args.run_id || ""), app_id: String(args.app_id || ""), case_id: String(args.case_id || ""), limit: Number(args.limit || 30) }));
+    if (name === "session_record") return pack(true, "", await readRecord(env, userId, String(args.session_id || ""), "record.status"));
+    if (name === "session_events") return pack(true, "", await readEvents(env, userId, String(args.session_id || ""), Number(args.from_seq || 0), Number(args.limit || 100), Math.min(196608, Number(args.max_bytes || 196608))));
+    if (name === "session_artifact") return pack(true, "", await artifactChunk(env, userId, String(args.session_id || ""), String(args.artifact_id || ""), Number(args.offset ?? 0), Number(args.length ?? 32768)));
+    if (name === "session_screenshot") return pack(true, "", await screenshotMetadata(env, userId, String(args.session_id || ""), Number(args.seq || 0), String(args.artifact_id || "")));
+    if (name.startsWith("resource_")) {
+      const project_id = String(args.project_id || "").trim();
+      if (!project_id) return pack(false, "缺少 project_id", {}, 422);
+      if (name === "resource_env_get") return pack(true, "", await getProjectEnv(env.DB, userId, project_id));
+      if (name === "resource_env_set") {
+        if (!args.env || typeof args.env !== "object" || Array.isArray(args.env)) return pack(false, "env 必须是对象", {}, 422);
+        return pack(true, "项目环境配置已保存", await saveProjectEnv(env.DB, userId, project_id, args.env));
+      }
+      if (name === "resource_account_list") return pack(true, "", await listAccounts(env.DB, userId, project_id, String(args.env || "")));
+      if (name === "resource_account_create") return pack(true, "测试账号已新增", { account: await saveAccount(env.DB, userId, project_id, args) });
+      if (name === "resource_account_update") {
+        const account_id = String(args.account_id || "").trim();
+        if (!account_id) return pack(false, "缺少 account_id", {}, 422);
+        return pack(true, "测试账号已修改", { account: await saveAccount(env.DB, userId, project_id, args, account_id) });
+      }
+      if (name === "resource_account_delete") {
+        const account_id = String(args.account_id || "").trim();
+        if (!account_id) return pack(false, "缺少 account_id", {}, 422);
+        await deleteAccount(env.DB, userId, project_id, account_id);
+        return pack(true, "测试账号已删除", { account_id });
+      }
+      if (name === "resource_account_import") return pack(true, "", await importAccounts(env.DB, userId, project_id, args));
+    }
+  } catch (error) {
+    if (error instanceof TaskError || error instanceof AccountError) return pack(false, error.message, { reason_code: error.code }, error.http);
+    throw error;
+  }
+
   if (name === "task_get") {
     const task_id = String(args.task_id || "").trim();
     if (!task_id) return pack(false, "缺少 task_id", {}, 422);
@@ -866,6 +1062,7 @@ async function callTool(
       status: out.status,
       total: out.total,
       sn: out.sn,
+      report_url: (await getRun(env.DB, out.run_id))?.report_url || "",
     });
   }
 
@@ -890,10 +1087,11 @@ export async function handleMcp(
   if (auth instanceof Response) return auth;
   const { userId } = auth;
 
-  const requested = request.headers.get("mcp-protocol-version");
-  if (requested && requested !== PROTOCOL) {
-    return Response.json({ detail: `仅支持 MCP ${PROTOCOL}` }, { status: 400 });
+  const headerProtocol = request.headers.get("mcp-protocol-version") || "";
+  if (headerProtocol && !PROTOCOLS.has(headerProtocol)) {
+    return Response.json({ detail: `仅支持 MCP ${[...PROTOCOLS].join("、")}` }, { status: 400 });
   }
+  const protocol = PROTOCOLS.has(headerProtocol) ? headerProtocol : PROTOCOL;
 
   let body: JsonRpcRequest | JsonRpcRequest[];
   try {
@@ -917,6 +1115,19 @@ export async function handleMcp(
     const id = msg.id;
     const probe = userId === "system:probe";
 
+    if (!method && msg.id != null && (msg.result !== undefined || msg.error !== undefined)) {
+      const saved = await saveElicitationResult(
+        env,
+        userId,
+        String(msg.id),
+        msg.error ? { action: "cancel" } : msg.result,
+      );
+      if (!saved) {
+        out.push({ jsonrpc: "2.0", id: msg.id, error: { code: -32001, message: "没有这张确认窗" } });
+      }
+      continue;
+    }
+
     if (probe && !["initialize", "ping", "tools/list"].includes(method)) {
       out.push({
         jsonrpc: "2.0",
@@ -927,11 +1138,12 @@ export async function handleMcp(
     }
 
     if (method === "initialize") {
+      const offered = String(msg.params?.protocolVersion || "");
       out.push({
         jsonrpc: "2.0",
         id: id ?? null,
         result: {
-          protocolVersion: PROTOCOL,
+          protocolVersion: PROTOCOLS.has(offered) ? offered : protocol,
           capabilities: { tools: {} },
           serverInfo: { name: "mino-nexus", version: "0.0.1-cloudflare" },
         },
@@ -960,6 +1172,22 @@ export async function handleMcp(
         .join("");
       const waitUntil = (promise: Promise<unknown>) =>
         ctx ? ctx.waitUntil(promise) : void promise.catch(() => null);
+      if (toolNeedsConfirm(name)) {
+        if (items.length !== 1 || !acceptsEventStream(request)) {
+          out.push({ jsonrpc: "2.0", id: id ?? null, result: cancelled("当前客户端不能弹出确认窗，操作已取消") });
+          continue;
+        }
+        const prepared = await prepareConfirm(env, userId, name, args);
+        if (prepared.kind === "error") {
+          out.push({ jsonrpc: "2.0", id: id ?? null, result: prepared.result });
+          continue;
+        }
+        if (prepared.kind === "form") {
+          return streamConfirmedCall(env, userId, id ?? null, protocol, prepared, (next) =>
+            callTool(env, userId, name, next, `mcp:${scope}:${id}`, waitUntil),
+          );
+        }
+      }
       const result = await callTool(env, userId, name, args, `mcp:${scope}:${id}`, waitUntil);
       out.push({ jsonrpc: "2.0", id: id ?? null, result });
       continue;
@@ -971,6 +1199,8 @@ export async function handleMcp(
     });
   }
 
-  if (!out.length) return new Response(null, { status: 202 });
-  return Response.json(Array.isArray(body) ? out : out[0]);
+  if (!out.length) return new Response(null, { status: 202, headers: { "MCP-Protocol-Version": protocol } });
+  const response = Response.json(Array.isArray(body) ? out : out[0]);
+  response.headers.set("MCP-Protocol-Version", protocol);
+  return response;
 }

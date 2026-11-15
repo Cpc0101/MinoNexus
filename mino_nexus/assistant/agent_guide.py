@@ -28,18 +28,23 @@ def agent_guide() -> dict[str, Any]:
         "boundaries": [
             "脚本文本只由 agent 写在本机脚本仓并通过 Git 推送；MCP 只做查询、同步元数据与触发执行，不写代码。不要把脚本 POST/PUT 给 Nexus。各仓库分工与 Scout 安装见 agent 技能 overview。",
             "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
-            "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。验证码优先读脚本仓 otp.code，否则要人工提供；模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
+            "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；号池为空或没有匹配账号时由 Nexus 自动补号。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
         ],
         "workbench": _workbench(),
         "flows": [
+            {
+                "name": "安装或卸载本机 Scout",
+                "tools": ["scout_install_token", "scout_install_status", "scout_list", "scout_uninstall"],
+                "then": "安装先 scout_install_token，确认后只在本机执行匹配系统的命令，不要把 token 写进对话。卸载用 scout_uninstall：确认后 Nexus 删除绑定，再执行返回的本机卸载命令。",
+            },
             {
                 "name": "确认能操作哪些项目",
                 "tools": ["project_list"],
             },
             {
                 "name": "新建项目或删除误建应用",
-                "tools": ["project_list", "project_create", "app_delete"],
-                "then": "先把名称、说明或要删的应用列给用户。用户可以改名称和说明；删除必须得到明确确认后再调用。",
+                "tools": ["project_list", "project_create", "project_delete", "app_delete"],
+                "then": "直接调用工具。服务端会弹出确认窗：新建和修改可以改字段，删除只有确认。",
             },
             {
                 "name": "编写或修改用例脚本",
@@ -66,8 +71,9 @@ def agent_guide() -> dict[str, Any]:
                 "tools": ["task_list", "task_get", "session_list", "session_events", "session_screenshot"],
             },
             {
-                "name": "看资源够不够",
-                "tools": ["resource_overview", "resource_device_list", "resource_account_list"],
+                "name": "看资源或配置账号自动补池",
+                "tools": ["resource_overview", "resource_device_list", "resource_account_list", "resource_env_get", "resource_env_set"],
+                "then": "登录方式、验证码策略、Gmail 收件箱、手机号/Gmail 别名序号和自动补池策略由 Nexus 项目环境配置决定。号池为空或没有匹配账号时，租号会按该策略自动新增；不要把这些字段写进脚本仓 config.yaml。",
             },
         ],
     }

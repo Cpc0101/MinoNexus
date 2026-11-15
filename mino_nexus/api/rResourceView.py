@@ -30,6 +30,7 @@ class ReleaseAccountBody(BaseModel):
 
 
 class AccountOtpBody(BaseModel):
+    app_id: str = ""
     env_profile: str = ""
     env_surface: str = ""
     node_id: str = ""
@@ -128,6 +129,7 @@ def resource_account_otp(
     try:
         data = resource_view.account_otp(
             project_id, account_id,
+            app_id=body.app_id,
             env_profile=body.env_profile, env_surface=body.env_surface,
             node_id=body.node_id, sn=body.sn,
             plugin_user_id=str(sess.get("user_id") or ""),

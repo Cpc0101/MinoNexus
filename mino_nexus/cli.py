@@ -85,6 +85,7 @@ def _otp_cli(argv: list[str]) -> int:
     p.add_argument("project_id")
     p.add_argument("account_id")
     p.add_argument("--user-id", default="", help="Gmail 插件归属用户；不填则不走 Gmail")
+    p.add_argument("--app-id", default="")
     p.add_argument("--env-profile", default="")
     p.add_argument("--env-surface", default="")
     p.add_argument("--node-id", default="")
@@ -105,7 +106,7 @@ def _otp_cli(argv: list[str]) -> int:
 
     data = account_otp(
         args.project_id, args.account_id,
-        env_profile=args.env_profile, env_surface=args.env_surface,
+        app_id=args.app_id, env_profile=args.env_profile, env_surface=args.env_surface,
         node_id=args.node_id, sn=args.sn, plugin_user_id=args.user_id,
         from_allowlist=args.from_allowlist or None,
         subject_contains=args.subject_contains,

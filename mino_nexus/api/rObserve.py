@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict
 
 from mino_nexus.core.http_util import ok
 from mino_nexus.loop.observe import agent_stream
 from mino_nexus.api.deps import current_session
 from mino_nexus.casework import run_store
+from mino_nexus.loop import scout_record_proxy
 
 router = APIRouter(prefix="/case-runner", tags=["CaseRunner"])
 
@@ -83,13 +84,62 @@ def list_sessions(
     return ok({"items": items, "total": total, "limit": limit, "offset": offset})
 
 
+@router.get("/sessions/{session_id:path}/record")
+def scout_record(session_id: str, _sess: dict = Depends(current_session)):
+    record = scout_record_proxy.find_record(session_id, str(_sess["user_id"]))
+    if record is None:
+        raise HTTPException(404, detail={"reason_code": "record_not_found", "message": "执行记录不存在"})
+    try:
+        return ok(scout_record_proxy.read_summary(record))
+    except scout_record_proxy.RecordReadError as exc:
+        raise HTTPException(exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/sessions/{session_id:path}/artifacts/{artifact_id}")
+def scout_artifact(session_id: str, artifact_id: str, _sess: dict = Depends(current_session)):
+    record = scout_record_proxy.find_record(session_id, str(_sess["user_id"]))
+    if record is None:
+        raise HTTPException(404, detail={"reason_code": "record_not_found", "message": "执行记录不存在"})
+    try:
+        artifact = scout_record_proxy.read_artifact(record, artifact_id)
+    except scout_record_proxy.RecordReadError as exc:
+        raise HTTPException(exc.status_code, detail=exc.detail) from exc
+    return Response(artifact.content, media_type=artifact.mime_type, headers={
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "attachment", "ETag": f'"{artifact.sha256}"',
+    })
+
+
+@router.get("/sessions/{session_id:path}/artifacts/{artifact_id}/chunk")
+def scout_artifact_chunk(session_id: str, artifact_id: str,
+                         offset: int = Query(0, ge=0), length: int = Query(32768, ge=1, le=65536),
+                         _sess: dict = Depends(current_session)):
+    record = scout_record_proxy.find_record(session_id, str(_sess["user_id"]))
+    if record is None:
+        raise HTTPException(404, detail={"reason_code": "record_not_found", "message": "执行记录不存在"})
+    try:
+        return ok(scout_record_proxy.read_artifact_chunk(record, artifact_id, offset=offset, length=length))
+    except scout_record_proxy.RecordReadError as exc:
+        raise HTTPException(exc.status_code, detail=exc.detail) from exc
+
+
 @router.get("/sessions/{session_id:path}/events")
 def session_events(
     session_id: str,
     from_seq: int = 0,
     limit: int = 500,
+    after_seq: Optional[int] = None,
+    max_bytes: int = Query(524288, ge=4096, le=1048576),
     _sess: dict = Depends(current_session),
 ):
+    record = scout_record_proxy.find_record(session_id, str(_sess["user_id"]))
+    if record is not None:
+        try:
+            return ok(scout_record_proxy.read_events(record, after_seq=from_seq if after_seq is None else after_seq, limit=limit, max_bytes=max_bytes))
+        except scout_record_proxy.RecordReadError as exc:
+            raise HTTPException(exc.status_code, detail=exc.detail) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
     from mino_nexus.records.eventlog.writer import get_meta, read_events
 
     meta = get_meta(session_id)

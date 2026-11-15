@@ -219,6 +219,61 @@ export async function consumeInstallToken(
   return { user_id: row.user_id };
 }
 
+export function uninstallCommands(): Record<string, string> {
+  return {
+    darwin:
+      `uid=$(id -u); launchctl bootout "gui/\${uid}/com.mino.scout" >/dev/null 2>&1 || true; ` +
+      `launchctl bootout system/com.mino.scout >/dev/null 2>&1 || true; ` +
+      `rm -f "$HOME/Library/LaunchAgents/com.mino.scout.plist" /Library/LaunchDaemons/com.mino.scout.plist; ` +
+      `rm -rf "\${MINO_SCOUT_HOME:-$HOME/.mino/scout}"`,
+    linux:
+      `systemctl --user disable --now mino-scout >/dev/null 2>&1 || true; ` +
+      `rm -f "\${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/mino-scout.service"; ` +
+      `systemctl --user daemon-reload >/dev/null 2>&1 || true; ` +
+      `rm -rf "\${MINO_SCOUT_HOME:-$HOME/.mino/scout}"`,
+    win32:
+      `Get-ScheduledTask | Where-Object { $_.TaskName -like 'Mino Scout*' } | ForEach-Object { ` +
+      `Stop-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue; ` +
+      `Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false }; ` +
+      `Remove-Item -Recurse -Force (Join-Path $env:USERPROFILE '.mino\\scout')`,
+  };
+}
+
+export async function unbindScout(
+  db: D1Database,
+  user_id: string,
+  nodeIdRaw: string,
+): Promise<Record<string, unknown> | null> {
+  const node_id = String(nodeIdRaw || "").trim();
+  if (!node_id) return null;
+  const row = await db
+    .prepare(`SELECT scout_id, host_json FROM scouts WHERE scout_id = ? AND owner_user_id = ?`)
+    .bind(node_id, user_id)
+    .first<{ scout_id: string; host_json: string | null }>();
+  if (!row) return null;
+  let hostname = "";
+  if (row.host_json) {
+    try {
+      const host = JSON.parse(row.host_json) as Record<string, unknown>;
+      hostname = String(host.hostname || "");
+    } catch {
+      hostname = "";
+    }
+  }
+  await db.batch([
+    db.prepare(`DELETE FROM devices WHERE scout_id = ?`).bind(node_id),
+    db.prepare(`DELETE FROM node_tool_tasks WHERE node_id = ? AND owner_user_id = ?`).bind(node_id, user_id),
+    db.prepare(`DELETE FROM install_tokens WHERE node_id = ? AND user_id = ?`).bind(node_id, user_id),
+    db.prepare(`DELETE FROM scouts WHERE scout_id = ? AND owner_user_id = ?`).bind(node_id, user_id),
+  ]);
+  return {
+    node_id,
+    hostname,
+    unbound: true,
+    commands: uninstallCommands(),
+  };
+}
+
 export async function scoutReleaseMeta(os: string, arch: string): Promise<Record<string, unknown>> {
   const release = await loadTargets();
   const system = os === "macos" ? "darwin" : os === "windows" ? "win32" : os;

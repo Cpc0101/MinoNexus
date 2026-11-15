@@ -391,7 +391,8 @@ def _dependency_facts(requirements, target_context, target, identifier, env_doc,
     if any(row.get('event_id') == 'get_otp' for row in requirements.get('operations', [])):
         from mino_nexus.resources.otp_resolve import resolve_effective_secrets
         otp = resolve_effective_secrets(env_doc, env_profile=target['env_profile'],
-                                       env_surface=target['env_surface']).get('otp') or {}
+                                       env_surface=target['env_surface'],
+                                       app_id=str(requirements.get('app_id') or '')).get('otp') or {}
         from mino_nexus.resources.execution_otp_contract import otp_facts
         facts.update(otp_facts(otp, node=node, uid=require_user_id(), events=events or {}, executors=executors))
     from mino_nexus.navigation.atlas.nav_flow_block_catalog import load_block_row, resolve_effective_steps

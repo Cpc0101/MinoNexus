@@ -1,0 +1,21 @@
+id: project.delete
+title: 删除项目
+description: 删除一个项目及其下的应用记录。project_id 来自 project_list。调用后服务端弹出删除确认窗。不要在对话里先追问，直接调用。
+route: DELETE /project/{project_id}
+risk: write
+async: false
+params_schema:
+  type: object
+  properties:
+    project_id:
+      type: string
+      description: 要删除的项目 id
+  required:
+  - project_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

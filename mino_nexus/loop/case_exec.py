@@ -31,6 +31,12 @@ def _case_trace_fields(run_id: str, case: dict[str, Any]) -> dict[str, Any]:
     sid = str(case.get("report_run_id") or "").strip() or run_store.report_run_id(
         run_id, cid, sn=str(case.get("sn") or ""), coverage=str(case.get("coverage") or "")
     )
+    from mino_nexus.resources.scout_record_store import get as get_record
+    record = get_record(sid)
+    if record:
+        return {"session_id": sid, "attempt_id": record["attempt_id"], "record_source": "scout",
+                "record_node_id": record["node_id"], "status_sync_at": record["updated_at"],
+                "detail_availability": record["summary"].get("detail_availability", "pending")}
     resolved = resolve_session_id(sid, case_id=cid) or resolve_session_id(run_id, case_id=cid)
     meta = get_meta(resolved) if resolved else None
     if not meta:
@@ -116,6 +122,16 @@ def _run_case_list(
             continue
         if not _task_still_running(run_id):
             break
+        from mino_nexus.resources.scout_record_store import get as get_record
+        record = get_record(str(case.get("report_run_id") or ""))
+        if record:
+            from mino_nexus.loop.scout_record_tasks import wait_attempt
+            wait_attempt(record)
+            continue
+        if run_store.cancel_requested(run_id):
+            run_store.patch_case(run_id, str(case.get("case_id") or ""), target_sn=str(case.get("sn") or ""),
+                                 status="cancelled", reason_code="task_cancelled", execution_started="no")
+            continue
         if protected(run_id, sn=str(case.get("sn") or doc.get("sn") or "")):
             for untouched in cases[case_seq:]:
                 if str(untouched.get("status") or "pending") not in ("pending", "running"):
@@ -253,7 +269,7 @@ def _run_case_list(
 
             repo = get_repo(project_id) if project_id else {}
             with admission(doc, case, project_id=project_id, package=package, platform=platform) as resource_attempt:
-                ok, lease_err = ensure_case_account_lease(
+                ok, lease_err = (True, "") if case.get("script_path") else ensure_case_account_lease(
                     run_id, app_id=app_id, env_profile=str(doc.get("env_profile") or "test"),
                     platform=platform, target_package=package, case=case, scene=scene,
                     plugin_user_id=str(doc.get("plugin_user_id") or ""))
@@ -422,8 +438,10 @@ def _run_in_background(*, run_id: str, package: str, playbook: dict, provider_id
     try:
         from mino_nexus.casework.resource_transition import mark_web_run_devices
 
-        mark_web_run_devices(run_id, "guest", source="task_start", package=package, doc=doc)
-        cases = [case for case in doc.get("cases") or [] if case.get("status") in {None, "pending"}]
+        from mino_nexus.resources.scout_record_store import for_task
+        if not for_task(run_id):
+            mark_web_run_devices(run_id, "guest", source="task_start", package=package, doc=doc)
+        cases = [case for case in doc.get("cases") or [] if case.get("status") in {None, "pending", "running"}]
         worker_sns = _worker_sns_for_cases(cases, doc)
         list_kwargs = {
             "run_id": run_id,
@@ -455,7 +473,7 @@ def _run_in_background(*, run_id: str, package: str, playbook: dict, provider_id
         latest = run_store.get(run_id) or doc
         failed = (int(latest.get("failed") or 0) + int(latest.get("blocked") or 0)
                   + int(latest.get("declined") or 0) + int(latest.get("skipped") or 0))
-        status = "failed" if failed else "done"
+        status = "cancelled" if run_store.cancel_requested(run_id) else ("failed" if failed else "done")
         finished = run_store.finish(run_id, status=status, error=latest.get("error") or "")
         persist_run_finish(finished)
         emit_testing_task({
@@ -474,32 +492,40 @@ def _run_in_background(*, run_id: str, package: str, playbook: dict, provider_id
         except Exception:
             pass
     finally:
-        from mino_nexus.resources.accounts.lease import release_run_lease
-        from mino_nexus.resources.device_resource_lease import release_device_leases_for_run
+        _release_completed_run(run_id, doc, package)
 
-        latest = run_store.get(run_id) or doc
-        app_id = str((latest or doc or {}).get("app_id") or "")
-        from mino_nexus.casework.resource_transition import mark_web_run_devices
 
-        from mino_nexus.casework.run_write_safety import protected
+def _release_completed_run(run_id, doc, package):
+    latest = run_store.get(run_id) or doc
+    if run_store.task_is_live(latest):
+        return  # A durable attempt still runs; keep ownership until its terminal summary.
+    from mino_nexus.resources.accounts.lease import release_run_lease
+    from mino_nexus.resources.device_resource_lease import release_device_leases_for_run
 
-        if not protected(run_id):
-            mark_web_run_devices(
-                run_id,
-                "logged_out",
-                source="task_end",
-                package=str((latest or doc or {}).get("package") or package or ""),
-                doc=latest if isinstance(latest, dict) else doc,
-            )
-        release_run_lease(run_id, app_id=app_id)
-        release_device_leases_for_run(run_id)
-        sns = list(latest.get("sns") or [])
-        head = str(latest.get("sn") or "").strip()
-        if head and head not in sns:
-            sns = [head, *sns]
-        release_devices_for_run(
+    latest = run_store.get(run_id) or doc
+    app_id = str((latest or doc or {}).get("app_id") or "")
+    from mino_nexus.casework.resource_transition import mark_web_run_devices
+
+    from mino_nexus.casework.run_write_safety import protected
+
+    from mino_nexus.resources.scout_record_store import for_task
+    if not protected(run_id) and not for_task(run_id):
+        mark_web_run_devices(
             run_id,
-            sns=sns,
-            platforms_by_sn=latest.get("platforms_by_sn") if isinstance(latest.get("platforms_by_sn"), dict) else {},
-            allow_unbound_cleanup=False,
+            "logged_out",
+            source="task_end",
+            package=str((latest or doc or {}).get("package") or package or ""),
+            doc=latest if isinstance(latest, dict) else doc,
         )
+    release_run_lease(run_id, app_id=app_id)
+    release_device_leases_for_run(run_id)
+    sns = list(latest.get("sns") or [])
+    head = str(latest.get("sn") or "").strip()
+    if head and head not in sns:
+        sns = [head, *sns]
+    release_devices_for_run(
+        run_id,
+        sns=sns,
+        platforms_by_sn=latest.get("platforms_by_sn") if isinstance(latest.get("platforms_by_sn"), dict) else {},
+        allow_unbound_cleanup=False,
+    )

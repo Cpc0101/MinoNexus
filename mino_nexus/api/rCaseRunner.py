@@ -403,6 +403,8 @@ def cancel_task(task_id: str, _sess: dict = Depends(current_session)):
     doc = result.get("doc") or run_store.get(task_id) or {}
     if result.get("already"):
         return ok(result, msg="任务已结束")
+    if result.get("pending"):
+        return ok(result, msg="取消请求已保存，等待 Scout 确认停止")
     sns = list(doc.get("sns") or [])
     head = str(doc.get("sn") or "").strip()
     if head and head not in sns:

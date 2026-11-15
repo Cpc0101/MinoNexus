@@ -6,12 +6,19 @@ from mino_nexus.core.http_util import ok
 from mino_nexus.core.database import session_scope
 from mino_nexus.models.session_event import SessionMeta, SessionEvent
 from mino_nexus.api.deps import current_session
+from mino_nexus.loop import scout_record_proxy
 
 router = APIRouter(prefix="/case-runner", tags=["DevelopmentEvidence"])
 
 
 @router.get("/sessions/{session_id:path}/screenshot")
 def screenshot(session_id: str, seq: int = Query(ge=0), sess: dict = Depends(current_session)):
+    record = scout_record_proxy.find_record(session_id, str(sess["user_id"]))
+    if record is not None:
+        try:
+            return ok(scout_record_proxy.read_screenshot(record, seq))
+        except scout_record_proxy.RecordReadError as exc:
+            raise HTTPException(exc.status_code, detail=exc.detail) from exc
     with session_scope() as db:
         meta = db.get(SessionMeta, session_id)
         if not meta or meta.owner_user_id != str(sess["user_id"]):

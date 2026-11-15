@@ -292,6 +292,7 @@ def run_cases(
         "run_type": run_type or "manual",
         "app_id": str(app.get("id") or ""),
         "app_name": str(app.get("name") or ""),
+        "project_id": project_id,
         "sn": device_sns[0] if device_sns else "",
         "sns": device_sns,
         "coverage": cov,
@@ -342,8 +343,7 @@ def run_cases(
     fail_reason = ""
     if not device_sns:
         fail_reason = "没有在线设备。请在 Workbench 安装并连接 Scout，再选一台设备下发。"
-    elif not provider:
-        fail_reason = gate.get("reason") or "未配置用例执行大模型（Workbench → 大模型设置 → 可用 + 用例）"
+
 
     if fail_reason:
         for case in doc["cases"]:

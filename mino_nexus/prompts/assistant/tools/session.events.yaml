@@ -1,6 +1,6 @@
 id: session.events
 title: 会话原始事件
-description: 分页读取会话事件，包含工具调用/回执、guard、review、exec/vision 和 LLM 互链。按 next_from_seq 继续，不会截成摘要；查询 LLM 正文请用 session_llm_list 和 llm_get。
+description: 分页读取本人会话的完整事件。record_source=scout 时从原执行节点读取，items 包含原文快照、步骤、工具回执和断言证据；from_seq 是排他游标，将 next_seq 作为下一次 from_seq。大事件通过 artifact_id 引用，用 session_artifact 分段读取完整节点或JSON，截图用 session_screenshot。旧会话返回 events，按 next_from_seq 继续。节点离线或详情过期会明确报错。
 route: GET /case-runner/sessions/{session_id}/events
 risk: read
 async: false
@@ -9,7 +9,7 @@ params_schema:
   properties:
     session_id:
       type: string
-      description: "session_list 返回的完整会话 ID，保留 :: 和设备后缀。"
+      description: "task_get 用例或 session_list 返回的完整 session_id，保留 :: 和设备后缀。"
     from_seq:
       type: integer
       minimum: 0
@@ -18,7 +18,7 @@ params_schema:
       type: integer
       minimum: 1
       maximum: 2000
-      default: 500
+      default: 100
   required:
   - session_id
 param_resolvers: {}

@@ -1,0 +1,18 @@
+id: session.artifact
+title: 分段读取执行证据
+description: 只读本人 Scout 执行事件关联的完整证据，artifact_id 来自 session_events。按字节分段读取大节点、JSON 或其他证据；优先阅读 text，缺少 text 时解码 data_base64。下一次 offset = offset + bytes_read，直到 eof=true；sha256 属于整个文件，合并全部字节后可核对。UTF-8 字符可能跨分段，不能把字符数当字节偏移。已有截图优先用 session_screenshot。
+route: GET /case-runner/sessions/{session_id}/artifacts/{artifact_id}/chunk
+risk: read
+async: false
+params_schema:
+  type: object
+  properties:
+    session_id: {type: string}
+    artifact_id: {type: string}
+    offset: {type: integer, minimum: 0, default: 0}
+    length: {type: integer, minimum: 1, maximum: 65536, default: 32768}
+  required: [session_id, artifact_id]
+param_resolvers: {}
+result_pick: [data]
+surfaces: [mcp]
+enabled: true

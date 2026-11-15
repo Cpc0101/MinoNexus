@@ -1,0 +1,15 @@
+id: session.record
+title: 执行记录摘要
+description: 从原执行 Scout 读取本人指定 session_id 的当前记录摘要，包含执行状态、断言计数、原文覆盖引用、记录版本和详情保留状态。task_get 提供云端索引；本工具读取原节点记录。节点离线不代表测试失败。完整事件用 session_events，已有截图用 session_screenshot。
+route: GET /case-runner/sessions/{session_id}/record
+risk: read
+async: false
+params_schema:
+  type: object
+  properties:
+    session_id: {type: string}
+  required: [session_id]
+param_resolvers: {}
+result_pick: [data]
+surfaces: [mcp]
+enabled: true

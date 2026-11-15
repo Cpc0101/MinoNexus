@@ -645,3 +645,19 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 
 对话入站与收件箱工具已移除；相关 HTTP / MCP 入口不再提供。Webhook 群通知（`plugin.bot.send`）与飞书/Meego CLI 工作项能力保留。
 
+
+## Scout 本地执行记录
+
+支持 `record_api_version=1` 的 Scout 接收 `script.submit` 后立即返回已接单。`/case-runner/run` 和任务接口返回 `report_url`；Python 使用 `MINO_WORKBENCH_PUBLIC_URL`（未设时为本实例地址），Cloudflare 使用配置的 Workbench 公网地址。路径固定为 `/testing/projects/{project_id}/apps/{app_id}/tasks/{task_id}`。接单不代表用例通过。
+
+任务定义、归属、资源占用及最后确认的用例摘要保存在 Nexus。完整事件、界面节点、原图、原文快照、断言及文件哈希保存在实际执行的 Scout。WorkBench 和 Agent 仍只访问 Nexus，由 Nexus 按持久索引中的原节点、原账号代理；设备后来换节点不会改变历史记录来源。
+
+| 接口 | 数据来源及行为 |
+| --- | --- |
+| `GET /case-runner/tasks`、`GET /case-runner/tasks/{task_id}` | Nexus 摘要；每条用例带 `record_source=scout`、`record_node_id`、`session_id`、`attempt_id`、`detail_availability`、`status_sync_at` |
+| `GET /case-runner/sessions/{session_id}/record` | 原 Scout 的执行摘要 |
+| `GET /case-runner/sessions/{session_id}/events?from_seq=0&limit=100` | 原 Scout 的事件分页；游标为 exclusive，支持 `after_seq`；返回 `items/next_seq/high_watermark/has_more/sealed` |
+| `GET /case-runner/sessions/{session_id}/artifacts/{artifact_id}` | 原 Scout 的图片或节点文件；需认证，返回真实 MIME，Workbench 通过认证请求获得 Blob |
+| `POST /case-runner/tasks/{task_id}/cancel` | 先持久化取消意图；确认 worker 停止后才收口。`resource_isolated=true` 时继续保留资源隔离 |
+
+`session_events`、`session_screenshot`、`session_record`、`session_artifact` MCP 使用同一权限和记录服务。大型界面节点通过 artifact 引用及有界分段读取，避免超过 MCP 响应限制。读取历史截图不重新拍当前设备。节点离线为 `evidence_temporarily_unavailable`，不是空事件；记录缺失和过期也明确返回，原执行结果保持不变。旧会话仍使用原 Nexus 会话后端。

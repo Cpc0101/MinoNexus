@@ -124,6 +124,7 @@ def _login_kind_for_ctx(ctx: Any, env_doc: dict[str, Any], *, prompt: str = "") 
         env_doc,
         env_profile=env_profile,
         env_surface=surface,
+        app_id=str(getattr(ctx, "app_id", "") or ""),
     )
     return login_kind_from_secrets(secrets)
 
@@ -215,6 +216,7 @@ def _pick_row(
     env_doc: dict[str, Any],
     *,
     project_id: str = "",
+    app_id: str = "",
     requirements: dict[str, Any],
     env_profile: str,
     platform: str,
@@ -255,11 +257,12 @@ def _pick_row(
         env_doc,
         env_profile=env_profile,
         env_surface=surface,
+        app_id=app_id,
     )
     kind = login_kind_from_secrets(secrets)
     matched_kind = filter_accounts_for_login_kind(ranked, kind=kind)
-    if matched_kind:
-        ranked = matched_kind
+    # 登录身份是硬约束：没有匹配账号时进入自动补池，不能回退租另一种身份。
+    ranked = matched_kind
     for row in ranked:
         if bool(row.get("locked")):
             continue
@@ -749,6 +752,7 @@ def _lease_for_context(
     candidate = _pick_row(
         env_doc,
         project_id=project_id,
+        app_id=str(getattr(ctx, "app_id", "") or ""),
         requirements=requirements,
         env_profile=env_profile,
         platform=platform,

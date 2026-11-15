@@ -75,7 +75,10 @@ def _inbox_from_scout(*, plugin_user_id: str = "", node_id: str = "", sn: str = 
 
 
 def gmail_inbox_address(env_doc: dict | None, *, plugin_user_id: str = "", node_id: str = "", sn: str = "") -> str:
-    del env_doc
+    doc = env_doc if isinstance(env_doc, dict) else {}
+    inbox = _norm_gmail_inbox(doc.get("gmail_inbox")).get("address", "")
+    if inbox and "@" in inbox:
+        return inbox
     return _inbox_from_scout(plugin_user_id=plugin_user_id, node_id=node_id, sn=sn)
 
 
@@ -121,11 +124,17 @@ def format_run_credential_hint(
     *,
     env_profile: str = "test",
     env_surface: str = "",
+    app_id: str = "",
     plugin_user_id: str = "",
 ) -> str:
     """跑批注入 history：与 project_env 登录/接码配置一致，避免模型走错手机/邮箱分支。"""
     doc = env_doc if isinstance(env_doc, dict) else {}
-    secrets = resolve_effective_secrets(doc, env_profile=env_profile, env_surface=env_surface)
+    secrets = resolve_effective_secrets(
+        doc,
+        env_profile=env_profile,
+        env_surface=env_surface,
+        app_id=app_id,
+    )
     kind = login_kind_from_secrets(secrets)
     otp = secrets.get("otp") if isinstance(secrets.get("otp"), dict) else {}
     mode = str(otp.get("mode") or "auto").strip().lower()
