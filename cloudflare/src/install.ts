@@ -2,7 +2,7 @@
 
 const TTL_SEC = 15 * 60;
 const MANIFEST_URL =
-  "https://github.com/pengchengluoyi/MinoScout/releases/latest/download/manifest.json";
+  "https://github.com/Cpc0101/MinoScout/releases/latest/download/manifest.json";
 
 function randomHex(bytes = 16): string {
   const buf = new Uint8Array(bytes);
