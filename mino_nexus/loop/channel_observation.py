@@ -225,12 +225,21 @@ def capture_decision_frame(proxy: Any, ctx: Any, *, hierarchy: bool = True) -> t
         if isinstance(focus, dict) and focus:
             ctx.web_focus = dict(focus)
     ctx.viewport_wh = (0, 0)
+    raw_viewport = ctx.observation_contract.get("viewport_wh") if isinstance(ctx.observation_contract, dict) else None
+    if isinstance(raw_viewport, (list, tuple)) and len(raw_viewport) >= 2:
+        try:
+            width, height = int(raw_viewport[0]), int(raw_viewport[1])
+            if width > 0 and height > 0:
+                ctx.viewport_wh = (width, height)
+        except (TypeError, ValueError):
+            pass
     shot = None
     try:
         shot = proxy.observe("screenshot", force_fresh=True)
     except Exception:
         shot = None
-    if shot is not None and int(getattr(shot, "width", 0) or 0) > 0 and int(getattr(shot, "height", 0) or 0) > 0:
+    # full-page 截图的图片高度不等于交互视口；只有层级没有给出视口时才用图片尺寸兜底。
+    if ctx.viewport_wh == (0, 0) and shot is not None and int(getattr(shot, "width", 0) or 0) > 0 and int(getattr(shot, "height", 0) or 0) > 0:
         ctx.viewport_wh = (int(shot.width), int(shot.height))
     thumb = ""
     if shot is not None and getattr(shot, "has_image", lambda: False)():
