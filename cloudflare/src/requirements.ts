@@ -39,6 +39,8 @@ async function validated(db: D1Database, input: RequirementInput, old?: Requirem
   return { id, title, source_url, cases_url, app_ids, app_id: app_ids.length === 1 ? app_ids[0] : "", project_id: input.project_id };
 }
 export async function saveRequirement(db: D1Database, input: RequirementInput): Promise<RequirementRow> {
+  // Existing MCP clients can explicitly rename through save without creating a duplicate.
+  if (input.new_requirement_id !== undefined) return updateRequirement(db, input);
   const old = (await listRequirements(db, input.project_id)).find(row => row.id === input.requirement_id);
   const row = await validated(db, input, old);
   const now = new Date().toISOString();

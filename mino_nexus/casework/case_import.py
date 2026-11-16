@@ -58,7 +58,8 @@ def list_project_requirements(project_id: str) -> list[dict[str, Any]]:
                 continue
             if rid in seen:
                 existing = next(row for row in out if row["id"] == rid)
-                existing["app_ids"].append(str(app_row.get("id") or ""))
+                if existing["app_ids"] and str(app_row.get("id") or "") not in existing["app_ids"]:
+                    existing["app_ids"].append(str(app_row.get("id") or ""))
                 existing["app_id"] = ""
                 continue
             seen.add(rid)
@@ -67,8 +68,8 @@ def list_project_requirements(project_id: str) -> list[dict[str, Any]]:
                 "title": str(req.get("title") or req.get("external_id") or rid),
                 "external_id": str(req.get("external_id") or ""),
                 "source_url": str(req.get("source_url") or ""),
-                "app_id": str(app_row.get("id") or ""),
-                "app_ids": [str(app_row.get("id") or "")],
+                "app_id": str(app_row.get("id") or "") if len(req.get("app_ids", [app_row.get("id")])) == 1 else "",
+                "app_ids": list(req.get("app_ids", [str(app_row.get("id") or "")])),
                 "cases_url": str(req.get("cases_url") or ""),
                 "project_id": project_id,
             })
@@ -228,14 +229,15 @@ def update_project_requirement(
         if next_id != rid and any(isinstance(row, dict) and row.get("id") == next_id
                                   for app in apps for row in _iter_requirements(app.env or {})):
             raise ValueError("需求 ID 已在本项目使用")
-        targets = app_ids if app_ids is not None else ([app_id] if app_id else [app.id for app, _ in matches])
+        targets = app_ids if app_ids is not None else ([app_id] if app_id else matches[0][1].get("app_ids", [app.id for app, _ in matches]))
         targets = list(dict.fromkeys(targets))
+        scope = list(targets)
         # An empty scope means all applications in this project.
         if not targets:
             targets = list(by_id)
         if any(target not in by_id for target in targets):
             raise ValueError("应用不属于当前项目")
-        requirement = {**copy.deepcopy(matches[0][1]), **patch, "id": next_id, "updated_at": _now()}
+        requirement = {**copy.deepcopy(matches[0][1]), **patch, "id": next_id, "app_ids": scope, "updated_at": _now()}
         for app in apps:
             if app.id not in targets and not any(old.id == app.id for old, _ in matches):
                 continue
@@ -253,7 +255,7 @@ def update_project_requirement(
             db.query(ProjectCase).filter(ProjectCase.project_id == project_id, ProjectCase.requirement_id == rid).update(
                 {ProjectCase.requirement_id: next_id}, synchronize_session=False)
         return {**_public_requirement(requirement), "cases_url": str(requirement.get("cases_url") or ""),
-                "app_ids": targets, "app_id": targets[0] if len(targets) == 1 else "", "project_id": project_id}
+                "app_ids": scope, "app_id": scope[0] if len(scope) == 1 else "", "project_id": project_id}
 
 
 def _requirement_title(project_id: str, requirement_id: str) -> str:

@@ -400,6 +400,7 @@ const TOOLS = [
         app_ids: { type: "array", items: { type: "string" }, description: "适用应用 ID；空列表表示项目通用。与 app_id 二选一。" },
         cases_url: { type: "string" },
         requirement_id: { type: "string" },
+        new_requirement_id: { type: "string", description: "兼容旧客户端的显式改名入口；已有需求优先使用 requirement_update。" },
         title: { type: "string" },
         source_url: { type: "string" },
       },
