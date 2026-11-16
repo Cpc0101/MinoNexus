@@ -306,6 +306,10 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
       if (!known.has(target.requirement_id)) {
         return refuse(422, "requirement_missing", `需求 ${target.requirement_id} 还没有登记`);
       }
+      const requirement = known.get(target.requirement_id)!;
+      if (requirement.app_ids.length && !requirement.app_ids.includes(app.app_id)) {
+        return refuse(422, "requirement_app_mismatch", `需求 ${target.requirement_id} 不适用于当前应用`);
+      }
       let ids = target.case_ids;
       const listed = new Map<string, string>();
       if (!ids.length) {

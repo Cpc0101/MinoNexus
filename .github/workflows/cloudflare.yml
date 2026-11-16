@@ -67,6 +67,7 @@ jobs:
         run: |
           : "${CLOUDFLARE_API_TOKEN:?Set the CLOUDFLARE_API_TOKEN repository secret}"
           : "${CLOUDFLARE_ACCOUNT_ID:?Set the CLOUDFLARE_ACCOUNT_ID repository secret}"
+          npx wrangler d1 migrations apply mino-nexus --remote
           npm run deploy
       - name: Check production health
         if: steps.revision.outputs.current == 'true'

@@ -390,13 +390,15 @@ const TOOLS = [
   {
     name: "requirement_save",
     title: "登记需求",
-    description: "保存需求 ID、名称和一条渠道链接。ID 同时是脚本目录 tests/<需求ID>/。参数齐全且用户已要求该操作时直接调用，无需再次确认。",
+    description: "保存需求 ID、名称、适用应用和需求/用例文档链接。app_ids 可关联多个应用；source_url 为需求文档，cases_url 为用例文档。ID 同时是脚本目录 tests/<需求ID>/。参数齐全且用户已要求该操作时直接调用，无需再次确认。",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         project_id: { type: "string" },
         app_id: { type: "string" },
+        app_ids: { type: "array", items: { type: "string" }, description: "适用应用 ID；空列表表示项目通用。与 app_id 二选一。" },
+        cases_url: { type: "string" },
         requirement_id: { type: "string" },
         title: { type: "string" },
         source_url: { type: "string" },
@@ -405,6 +407,33 @@ const TOOLS = [
     },
     annotations: {
       title: "登记需求",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "requirement_update",
+    title: "修改需求",
+    description: "修改已有需求的 ID、名称、适用应用及需求/用例链接。只更新传入字段；new_requirement_id 用于改名，脚本仓 tests/<旧ID>/ 需同步改名，Nexus 不修改仓库。参数齐全且用户已要求该操作时直接调用，无需再次确认。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        project_id: { type: "string" },
+        app_id: { type: "string" },
+        app_ids: { type: "array", items: { type: "string" }, description: "适用应用 ID；空列表表示项目通用。与 app_id 二选一。" },
+        cases_url: { type: "string" },
+        requirement_id: { type: "string" },
+        new_requirement_id: { type: "string" },
+        title: { type: "string" },
+        source_url: { type: "string" },
+      },
+      required: ["project_id", "requirement_id"],
+    },
+    annotations: {
+      title: "修改需求",
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
@@ -907,22 +936,21 @@ async function callTool(
     return pack(out.ok, out.summary, out.data, out.status);
   }
 
-  if (name === "requirement_save") {
+  if (name === "requirement_save" || name === "requirement_update") {
     const project_id = String(args.project_id || "").trim();
     if (!project_id) return pack(false, "缺少 project_id", {}, 422);
     if (!(await requireOwnedProject(env.DB, project_id, userId))) {
       return pack(false, "没有这个项目", {}, 404);
     }
-    const { saveRequirement } = await import("./requirements");
+    const { saveRequirement, updateRequirement } = await import("./requirements");
     try {
-      const requirement = await saveRequirement(env.DB, {
-        project_id,
-        app_id: String(args.app_id || ""),
-        requirement_id: String(args.requirement_id || ""),
-        title: String(args.title || ""),
-        source_url: String(args.source_url || ""),
-      });
-      return pack(true, "需求已保存", { requirement });
+      const input: import("./requirements").RequirementInput = { project_id, requirement_id: String(args.requirement_id || "") };
+      for (const key of ["title", "source_url", "cases_url", "app_id", "new_requirement_id"] as const) {
+        if (args[key] !== undefined) input[key] = String(args[key]);
+      }
+      if (args.app_ids !== undefined) input.app_ids = args.app_ids;
+      const requirement = await (name === "requirement_update" ? updateRequirement : saveRequirement)(env.DB, input);
+      return pack(true, name === "requirement_update" ? "需求已修改" : "需求已保存", { requirement, ...(requirement.id !== input.requirement_id ? { script_directory_rename: { from: `tests/${input.requirement_id}/`, to: `tests/${requirement.id}/` } } : {}) });
     } catch (err) {
       return pack(false, err instanceof Error ? err.message : "保存失败", {}, 422);
     }

@@ -1,0 +1,35 @@
+id: requirement.update
+title: 修改需求
+description: 修改已有需求，只更新传入字段。app_ids 为适用应用列表，new_requirement_id 用于改 ID；脚本仓 tests/<旧ID>/ 需同步改名，Nexus 不修改仓库。source_url 为需求文档，cases_url 为用例文档。无需再次确认。
+route: PUT /project/{project_id}/requirements/{requirement_id}
+risk: write
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+    requirement_id:
+      type: string
+    new_requirement_id:
+      type: string
+    app_id:
+      type: string
+    app_ids:
+      type: array
+      items:
+        type: string
+    title:
+      type: string
+    source_url:
+      type: string
+    cases_url:
+      type: string
+  required: [project_id, requirement_id]
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [im, mcp]
+enabled: true

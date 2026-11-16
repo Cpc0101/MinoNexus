@@ -32,7 +32,7 @@ import {
   workspacePlace,
 } from "./script_repo";
 import { getRepoApps, saveRepoApps } from "./repo_apps";
-import { listRequirements, saveRequirement } from "./requirements";
+import { listRequirements, saveRequirement, updateRequirement } from "./requirements";
 import { startRun } from "./case_runner";
 import { getRun, toTaskJson } from "./run_store";
 import { executionRoutes } from "./execution_routes";
@@ -552,7 +552,9 @@ export async function handleCompat(
       try {
         const requirement = await saveRequirement(env.DB, {
           project_id: projectId,
-          app_id: String(body.app_id || ""),
+          app_id: body.app_id === undefined ? undefined : String(body.app_id),
+          app_ids: body.app_ids,
+          cases_url: body.cases_url === undefined ? undefined : String(body.cases_url),
           requirement_id: String(body.requirement_id || ""),
           title: String(body.title || ""),
           source_url: String(body.source_url || ""),
@@ -561,6 +563,23 @@ export async function handleCompat(
       } catch (e) {
         return fail(400, e instanceof Error ? e.message : "保存失败");
       }
+    }
+  }
+
+  {
+    const m = pathname.match(/^\/project\/([^/]+)\/requirements\/([^/]+)$/);
+    if (m && (method === "PUT" || method === "PATCH")) {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const project_id = decodeURIComponent(m[1]);
+      if (!(await requireOwnedProject(env.DB, project_id, gate.user!.user_id))) return fail(404, "没有这个项目");
+      try {
+        const body = await readJson(request);
+        const allowed = new Set(["app_id", "app_ids", "new_requirement_id", "title", "source_url", "cases_url"]);
+        if (Object.keys(body).some(key => !allowed.has(key))) return fail(400, "未知的需求修改字段");
+        const requirement = await updateRequirement(env.DB, { ...body, project_id, requirement_id: decodeURIComponent(m[2]) });
+        return envelope({ requirement }, "需求已修改");
+      } catch (e) { return fail(400, e instanceof Error ? e.message : "修改失败"); }
     }
   }
 

@@ -31,9 +31,12 @@ class ImportRequirementCreateBody(BaseModel):
 
 class RequirementUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    app_id: str = Field(min_length=1, max_length=200)
-    title: str = ""
-    source_url: str = ""
+    app_id: str | None = None
+    app_ids: list[str] | None = Field(default=None, max_length=100)
+    new_requirement_id: str | None = None
+    title: str | None = None
+    source_url: str | None = None
+    cases_url: str | None = None
 
 
 class CaseImportPreviewBody(BaseModel):
@@ -377,7 +380,8 @@ def update_import_requirement(
 ):
     try:
         return ok({"requirement": cim.update_project_requirement(
-            project_id, body.app_id, requirement_id, source_url=body.source_url, title=body.title)})
+            project_id, body.app_id, requirement_id, source_url=body.source_url, title=body.title,
+            app_ids=body.app_ids, new_requirement_id=body.new_requirement_id, cases_url=body.cases_url)})
     except ValueError as exc:
         status = 404 if str(exc) == "需求不存在" else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
