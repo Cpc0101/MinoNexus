@@ -1,12 +1,12 @@
 # HTTP 接口
 
-## 部署与同源
+## 部署与来源
 
-正式 Workbench 与 Nexus 同源，HTTP 使用 `location.origin`，WebSocket 使用同源 `/ws`。`/node` 仍供 Scout 使用，协议不变。浏览器同源来源允许进入 WS 握手，未登录仍以 1008 拒绝；反向代理来源可用 `MINO_WORKBENCH_ORIGINS` 显式允许，CORS 默认只允许开发来源。
+Workbench 与 Nexus 独立部署。正式 Workbench 构建时用 `VITE_NEXUS_URL` 指向 Nexus，HTTP 与 WebSocket 都使用该 origin；静态站点或 CDN 域名必须写入 Nexus 的 `MINO_WORKBENCH_ORIGINS`。`/node` 仍供 Scout 使用，协议不变。未登录 WS 仍以 1008 拒绝；CORS 默认只允许开发来源，不信任任意跨域来源。
 
 `/health`、`/packs`、`/flow-blocks` 保留为 API。对应 UI 页面为 `/admin/health`、`/admin/packs`、`/admin/flow-blocks`，防止浏览器刷新误取 API。`/static` 为上传资源，不被 SPA 覆盖；静态资源缺失返回 404。
 
-正式地址 `http://服务器:50104/`；开发 Nexus 50101、Workbench Vite 60101。Nexus/Workbench 在线更新 HTTP/MCP 工具已移除，改为安装 wheel 或更新容器 tag；`/releases/scout/*` 与 Scout 安装能力保留。
+正式 Nexus 地址为 `http://服务器:50104/`；开发 Nexus 50101、Workbench Vite 60101。Nexus 在线更新 HTTP/MCP 工具已移除，改为安装 wheel 或更新容器 tag；Workbench 由自己的静态发布链路升级；`/releases/scout/*` 与 Scout 安装能力保留。
 
 ## 会话执行证据
 
@@ -546,7 +546,7 @@ Workbench 的“预检所选用例”按当前完整选择逐条调用；选择�
 
 ## 旧安装更新接口已移除
 
-原 `/sys/updates/*`、`/sys/workbench/*` 及对应 MCP 更新工具随 B5 移除。Nexus/Workbench 改由 wheel 或 Docker 统一升级，不在服务进程内下载、停写、切换和回滚。历史 D2/D3 资料仅供旧安装迁移参考，不能用来调用新版本接口。
+原 `/sys/updates/*`、`/sys/workbench/*` 及对应 MCP 更新工具随 B5 移除。Nexus 由 wheel 或 Docker 升级，Workbench 由静态发布链路升级，不在 Nexus 服务进程内下载、停写、切换和回滚。历史 D2/D3 资料仅供旧安装迁移参考，不能用来调用新版本接口。
 
 `/sys/server_info` 保留实例与版本信息，`deployment_managed=false` 表示没有内置维护助手；专用 probe token 仍仅允许 MCP 的 initialize/ping/tools/list。Scout 下载和安装入口保持原合同。
 

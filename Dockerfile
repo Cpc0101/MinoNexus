@@ -1,20 +1,15 @@
 # syntax=docker/dockerfile:1
 ARG WHEEL_STAGE=source-wheel
-FROM node:22-bookworm AS workbench
-ARG WORKBENCH_REF=main
-WORKDIR /workbench
-RUN git init && git remote add origin https://github.com/pengchengluoyi/MinoWorkbench.git && git fetch --depth=1 origin "$WORKBENCH_REF" && git checkout --detach FETCH_HEAD
-RUN npm ci && npm run build -- --base ./ && git rev-parse HEAD > /workbench-commit
 
 FROM python:3.12-slim AS source-wheel
+ARG SOURCE_COMMIT=
 WORKDIR /build
-COPY pyproject.toml ./
+COPY pyproject.toml MANIFEST.in ./
 COPY mino_nexus/ ./mino_nexus/
-COPY scripts/prepare_web.py ./scripts/prepare_web.py
-COPY --from=workbench /workbench/dist/ /web/
-COPY --from=workbench /workbench/package.json /workbench-package.json
-COPY --from=workbench /workbench-commit /workbench-commit
-RUN python scripts/prepare_web.py --dist /web --package-json /workbench-package.json --source-commit "$(cat /workbench-commit)" && python -m pip install --no-cache-dir build && python -m build --wheel --outdir /wheels
+COPY scripts/prepare_build.py ./scripts/prepare_build.py
+RUN SOURCE_COMMIT="$SOURCE_COMMIT" python scripts/prepare_build.py \
+ && python -m pip install --no-cache-dir build \
+ && python -m build --wheel --outdir /wheels
 
 # Release CI uses the already built wheel, never a second source build.
 FROM scratch AS release-wheel

@@ -1,6 +1,6 @@
 ## 正式部署
 
-Nexus 已内置 Workbench：一个 wheel、一个服务、一个 50104 端口。macOS 使用 wheel + launchd；Linux 使用 AMD64/ARM64 Docker 镜像。旧原生安装器与在线自更新链路已移除，Scout 继续独立安装。
+Nexus 与 Workbench 独立构建、独立部署。Nexus 提供 HTTP API 与 WebSocket，macOS 使用 wheel + launchd，Linux 使用 AMD64/ARM64 Docker 镜像；Workbench 在自己的仓库构建静态文件并部署到静态站点或 CDN。Nexus wheel 和容器不包含、不构建、不托管 Workbench。旧原生安装器与在线自更新链路已移除，Scout 继续独立安装。
 
 从 [Release](https://github.com/pengchengluoyi/MinoNexus/releases) 获取完整 wheel / 离线镜像并核对 SHA256。安装、Compose、升级、回滚及源码打包步骤见 [部署手册](docs/github-updates.md)。
 
@@ -10,11 +10,11 @@ mino-nexus service install
 mino-nexus service status
 ```
 
-浏览器访问 `http://127.0.0.1:50104/`。升级前先停写并备份，旧安装复制到新目录验收后保留原目录。
+Workbench 构建时通过 `VITE_NEXUS_URL` 指向 Nexus；跨域部署时在 Nexus 设置明确的 `MINO_WORKBENCH_ORIGINS`。升级前先停写并备份，旧安装复制到新目录验收后保留原目录。
 
 # MinoNexus
 
-**服务端中枢。** 持有数据、准入、会话与协议，把用例脚本下发给 [MinoScout](../MinoScout) 执行。唯一前端是 [MinoWorkbench](../MinoWorkbench)，编译进 wheel 内置，同源访问。
+**服务端中枢。** 持有数据、准入、会话与协议，把用例脚本下发给 [MinoScout](../MinoScout) 执行。唯一前端是 [MinoWorkbench](../MinoWorkbench)，在自己的发布链路构建并独立部署，不进入 Nexus wheel。
 
 MinoNexus 是 [MiniOrangeServer](../MiniOrangeServer) 拆分出的服务端那一半，与 MinoScout（设备执行节点）配对使用。
 
@@ -30,8 +30,8 @@ MinoNexus 是 [MiniOrangeServer](../MiniOrangeServer) 拆分出的服务端那�
 **一句话边界：Nexus 决定「能不能跑、跑哪条、跑在哪台设备上」，然后把仓库地址交给 Scout。**
 
 ```
-浏览器 ──HTTP/WS :50104──► MinoNexus ──WS /node──► MinoScout ──► 设备
-                            准入·会话·协议·DB        拉仓库·跑脚本
+浏览器 ──HTTP/WS──► MinoWorkbench ──HTTP/WS──► MinoNexus ──WS /node──► MinoScout ──► 设备
+                         独立静态部署              准入·会话·协议·DB        拉仓库·跑脚本
 ```
 
 ## 快速开始

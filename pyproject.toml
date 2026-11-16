@@ -50,7 +50,6 @@ version = {file = "mino_nexus/VERSION"}
 mino_nexus = [
   "VERSION",
   "BUILD.json",
-  "web/**",
   "catalog/*",
   "prompts/**",
 ]

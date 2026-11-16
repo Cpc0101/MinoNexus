@@ -8,7 +8,7 @@
 
 ## 0. 本仓库是什么
 
-Mino 的服务端中枢：持有数据、准入、会话与协议，把用例脚本下发给 [MinoScout](../MinoScout) 执行。唯一前端是 [MinoWorkbench](../MinoWorkbench)，编译进 wheel 内置，同源 `:50104` 访问。
+Mino 的服务端中枢：持有数据、准入、会话与协议，把用例脚本下发给 [MinoScout](../MinoScout) 执行。唯一前端是 [MinoWorkbench](../MinoWorkbench)，在自己的仓库构建并独立部署；Nexus wheel 和容器不得包含、构建或托管 Workbench。
 
 上游 MiniOrangeServer **已停止维护、只读、禁止改动**，仅作历史参考。
 
@@ -157,7 +157,8 @@ fastapi 0.141.1 起 `include_router(APIRouter(prefix=...))` 会把路由路径�
 
 ## 9. Workbench
 
-改 [MinoWorkbench](../MinoWorkbench) 时遵守两条：
+改 [MinoWorkbench](../MinoWorkbench) 时遵守三条：
 
 1. **删掉多余的标语、说明文字和次要标签。** 标题、控件、数据和状态本身要能说明界面；删完看不懂就重新设计布局，不要把说明写回去。
 2. **每次修改都要同时让用户体验、开发体验、AI Agent 的使用体验变好，且不破坏现有功能。**
+3. **保持独立发布。** Workbench 静态资源独立构建和部署；Nexus 不 checkout 前端仓库、不打包前端、不增加前端静态路由，也不为读取私有前端仓库申请跨仓令牌。

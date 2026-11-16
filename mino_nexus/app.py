@@ -363,8 +363,6 @@ def create_app() -> FastAPI:
             "raw": res.raw_response,
         }
 
-    from mino_nexus.core.workbench_web import mount_workbench
-    mount_workbench(app)
     return app
 
 

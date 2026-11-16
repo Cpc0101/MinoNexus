@@ -1,16 +1,17 @@
-# Nexus + Workbench 发布与升级
+# Nexus 发布与升级
 
-Nexus 和 Workbench 是一个部署单元。macOS 安装 wheel 并用 launchd 管理；Linux 使用同一 wheel 构建的 Docker 镜像。Scout 继续使用自己的原生发布与安装能力。
+Nexus 与 Workbench 独立构建、独立部署。Nexus 的 wheel 和 Docker 镜像只包含服务端；Workbench 在自己的仓库构建静态文件并发布到静态站点或 CDN。Scout 继续使用自己的原生发布与安装能力。
 
-## 构建和发布（2026-10-20 简化）
+Workbench 构建时用 `VITE_NEXUS_URL` 指向 Nexus。跨域部署时，Nexus 必须通过 `MINO_WORKBENCH_ORIGINS` 显式允许 Workbench 的完整 origin；不要信任任意来源。
 
-- Nexus 的 main push、PR 和手动 CI：拉取 Workbench main，运行 npm ci/build，将网页装入 wheel，上传完整 wheel 为 Actions artifact。
-- Nexus 的 v* tag：以 tag 作为产品版本，构建 wheel/sdist 并发布 Release；同一 wheel 再打成 AMD64/ARM64 Docker 镜像，发布 GHCR 多架构标签及分架构离线镜像包。
-- Workbench 的 main push、PR 和手动运行：构建并上传静态压缩包；v* tag 发布该静态包到 Release。
-- 不再要求先发布 Workbench、手工填写 web.lock 或手工同步 tag 与源码版本。Nexus 构建直接获取 Workbench 源码；实际源码 commit 写入包内 BUILD.json。
-- 移除重复 venv 安装烟测、容器登录/重建烟测、前端 lint 发布阻断和重复归档校验。保留实际编译/打包步骤、下载校验清单与容器运行时 HEALTHCHECK。诊断脚本可按需手动使用，不参与 Actions 门禁。
+## 构建和发布
 
-普通 push 不发布 Release。修改工作流必须提交并推送后才在 GitHub 生效。Workbench main 会随时间变化；同一个 Nexus tag 在不同时刻重跑可能取得不同的前端 commit，可通过包内 BUILD.json 追溯。需要固定源码时，将 workflow 的 checkout ref 设为指定 commit；本地 Docker 构建可传 `--build-arg WORKBENCH_REF=<commit或tag>`。
+- Nexus 的 main push、PR 和手动 CI：只运行 Nexus 自身的检查与 wheel 构建，不 checkout Workbench，也不需要读取 Workbench 私有仓库的令牌。
+- Nexus 的 `v*` tag：先校验 tag 与 `mino_nexus/VERSION` 一致，再构建 wheel/sdist 并发布 Release；同一 wheel 再打成 AMD64/ARM64 Docker 镜像，发布 GHCR 多架构标签及分架构离线镜像包。
+- Workbench 的 main push、PR 和手动运行：在 Workbench 仓库执行前端检查、构建和 Cloudflare Pages 部署；v* tag 独立发布静态压缩包。
+- Nexus 的 `BUILD.json` 只记录 Nexus 版本、源码 commit 与 dirty 状态，不记录 Workbench build ID。两端发布版本可独立演进，不要求 tag 同步。
+
+普通 push 不发布 Nexus Release。修改工作流必须提交并推送后才在 GitHub 生效。
 
 ## macOS
 
@@ -36,9 +37,9 @@ docker compose pull
 docker compose up -d
 ```
 
-现场构建：执行 `docker compose build`，再 `docker compose up -d --pull never`。Dockerfile 的默认 `source-wheel` 阶段构建 wheel；发布 CI 用 `WHEEL_STAGE=release-wheel` 安装已经构建的同一份 wheel。运行容器非 root，单进程、50104、数据卷 `/data`，禁用 mDNS。
+现场构建：执行 `docker compose build`，再 `docker compose up -d --pull never`。Dockerfile 的默认 `source-wheel` 阶段只构建 Nexus；发布 CI 用 `WHEEL_STAGE=release-wheel` 安装已经构建的同一份 Nexus wheel。运行容器非 root，单进程、50104、数据卷 `/data`，禁用 mDNS。
 
-反向代理需转发 Host、WebSocket Upgrade，并设置 `MINO_WORKBENCH_ORIGINS=https://实际域名`。仅把真实代理地址写入 `MINO_PROXY_IPS`，不笼统信任所有来源。Scout 连接 `ws://服务器:50104/node`，TLS 代理使用 `wss://域名/node`。
+反向代理需转发 Host、WebSocket Upgrade，并按 Workbench 的实际静态域名设置 `MINO_WORKBENCH_ORIGINS`。仅把真实代理地址写入 `MINO_PROXY_IPS`，不笼统信任所有来源。Scout 连接 `ws://服务器:50104/node`，TLS 代理使用 `wss://域名/node`。
 
 AI 配置通过 Workbench 按账号保存，不从 `MINO_AI_API_KEY` 等旧环境变量读取共享密钥，不把密钥写进镜像或 Compose。
 
@@ -48,4 +49,4 @@ AI 配置通过 Workbench 按账号保存，不从 `MINO_AI_API_KEY` 等旧环�
 
 ## 旧安装迁移
 
-旧安装先停止 Nexus 与 Workbench，备份后复制到新的目录，显式用新数据根启动并验收登录、历史记录和 Scout 重连。保留原目录和原版本安装包；源码移除旧安装器不意味着现场已经迁移。不要把运行中的 SQLite 主文件直接复制成备份。
+旧安装先停止 Nexus 与历史 Workbench 进程，备份后复制到新的目录，显式用新数据根启动并验收登录、历史记录和 Scout 重连。保留原目录和原版本安装包；源码移除旧安装器不意味着现场已经迁移。不要把运行中的 SQLite 主文件直接复制成备份。

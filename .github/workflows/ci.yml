@@ -14,22 +14,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: Cpc0101/MinoWorkbench
-          ref: mcp0.0.1
-          path: _workbench
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: _workbench/package-lock.json
-      - name: Build Workbench
-        working-directory: _workbench
-        run: |
-          npm ci
-          npm run build -- --base ./
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -57,10 +41,10 @@ jobs:
         # 声明了返回类型却会掉出函数末尾，调用方拿到 None 再取属性就 AttributeError
         # （2026-10-22 的 apply_turn_prior → `_prior.leave`）。
         run: python tools/check_returns.py
-      - name: Build complete wheel
+      - name: Build Nexus wheel
         run: |
-          python scripts/prepare_web.py --dist _workbench/dist
           python -m pip install build
+          python scripts/prepare_build.py
           python -m build --wheel --outdir dist
       - uses: actions/upload-artifact@v4
         with:
