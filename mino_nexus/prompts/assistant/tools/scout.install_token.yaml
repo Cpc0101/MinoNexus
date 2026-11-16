@@ -1,6 +1,6 @@
 id: scout.install_token
 title: 申请 Scout 安装命令
-description: 为当前账号签发 15 分钟的 Scout 安装命令，返回 install_id、expires_at 和各系统 commands。调用后弹出确认窗。确认后把与本机系统匹配的那条命令交给本机执行，不要把 token 或完整命令写进对话。安装进度用 scout_install_status。
+description: 为当前账号签发 15 分钟的 Scout 安装命令，返回 install_id、expires_at 和各系统 commands。把与本机系统匹配的那条命令交给本机执行，遵循客户端的本机执行权限，不要把 token 或完整命令写进对话。安装进度用 scout_install_status。
 route: POST /runtime/nodes/install-token
 risk: write
 async: false

@@ -48,14 +48,22 @@ Scout first frame example:
 
 Use the returned `node_token` on later REGISTER reconnects. Heartbeat every ~15s; hub treats a Scout offline after 45s without a fresh last_seen (and immediately on WS close).
 
+## MCP execution
+
+Authenticated tool calls execute directly after business validation. Nexus does not send `elicitation/create` or require confirmation SSE streams. Local Scout installation commands remain subject to the client’s execution permissions.
+
 ## Deploy
 
-```bash
-npx wrangler login
-npm run deploy
-```
+Pushing to `main` runs `.github/workflows/cloudflare.yml`: TypeScript and Worker bundle validation, then production deployment and a health check. Pull requests validate without deploying. Manual runs deploy only when the selected branch is `main`.
 
-Set `SCOUT_PAIR_TOKEN` / `MCP_BEARER_TOKEN` as Worker secrets for non-dev.
+Set these GitHub Actions repository secrets once:
+
+- `CLOUDFLARE_API_TOKEN`: a Cloudflare API token scoped to the production account with Workers Scripts Edit and Workers Routes Edit, plus read access to the account’s D1 databases. The Worker bindings and public route are defined in `wrangler.toml`.
+- `CLOUDFLARE_ACCOUNT_ID`: the account that owns `mino-nexus` and its bindings.
+
+Deployment jobs are serialized. Runtime Worker secrets are preserved; deployment does not apply database migrations or replace runtime secrets. Apply required migrations explicitly before releasing code that needs them.
+
+For a manual local deployment, run `npm run deploy` after validation. GitHub Actions is the default production deployment path.
 
 ## Custom domains
 

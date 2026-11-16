@@ -1,0 +1,73 @@
+name: Deploy Nexus to Cloudflare
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'cloudflare/**'
+      - '.github/workflows/cloudflare.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --dry-run --outdir dist
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-22.04
+    concurrency:
+      group: cloudflare-nexus-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - run: npm ci
+      - name: Check current main revision
+        id: revision
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_REPOSITORY: ${{ github.repository }}
+          DEPLOY_COMMIT: ${{ github.sha }}
+        run: |
+          latest=$(gh api "repos/$DEPLOY_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [ "$latest" = "$DEPLOY_COMMIT" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipped deployment because main has a newer commit."
+          fi
+      - name: Deploy production Worker
+        if: steps.revision.outputs.current == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          : "${CLOUDFLARE_API_TOKEN:?Set the CLOUDFLARE_API_TOKEN repository secret}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Set the CLOUDFLARE_ACCOUNT_ID repository secret}"
+          npm run deploy
+      - name: Check production health
+        if: steps.revision.outputs.current == 'true'
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 https://nexus.minocc.top/health

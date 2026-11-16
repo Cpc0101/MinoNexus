@@ -1,6 +1,6 @@
 id: project.delete
 title: 删除项目
-description: 删除一个项目及其下的应用记录。project_id 来自 project_list。调用后服务端弹出删除确认窗。不要在对话里先追问，直接调用。
+description: 删除一个项目及其下的应用记录。project_id 来自 project_list。参数齐全且用户已要求该操作时直接调用，无需再次确认。
 route: DELETE /project/{project_id}
 risk: write
 async: false

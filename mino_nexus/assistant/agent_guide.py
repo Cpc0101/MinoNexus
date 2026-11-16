@@ -35,7 +35,7 @@ def agent_guide() -> dict[str, Any]:
             {
                 "name": "安装或卸载本机 Scout",
                 "tools": ["scout_install_token", "scout_install_status", "scout_list", "scout_uninstall"],
-                "then": "安装先 scout_install_token，确认后只在本机执行匹配系统的命令，不要把 token 写进对话。卸载用 scout_uninstall：确认后 Nexus 删除绑定，再执行返回的本机卸载命令。",
+                "then": "安装先 scout_install_token 获取命令，再在本机执行匹配系统的命令，遵循客户端的本机执行权限，不要把 token 写进对话。用户要求卸载时调用 scout_uninstall 删除绑定，再执行返回的本机卸载命令。Nexus 不追加确认。",
             },
             {
                 "name": "确认能操作哪些项目",
@@ -44,7 +44,7 @@ def agent_guide() -> dict[str, Any]:
             {
                 "name": "新建项目或删除误建应用",
                 "tools": ["project_list", "project_create", "project_delete", "app_delete"],
-                "then": "直接调用工具。服务端会弹出确认窗：新建和修改可以改字段，删除只有确认。",
+                "then": "参数齐全且用户已要求该操作时直接调用工具。Nexus 不追加确认；参数缺失时补齐参数，删除须对应用户明确要求的对象。",
             },
             {
                 "name": "编写或修改用例脚本",

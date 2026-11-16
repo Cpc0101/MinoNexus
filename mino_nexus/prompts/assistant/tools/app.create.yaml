@@ -1,6 +1,6 @@
 id: app.create
 title: 创建应用
-description: 在项目下创建一个应用，返回它的 id。写脚本仓库 config.yaml 的 apps 前，如果项目里还没有这个应用，先调用本工具拿到 id，再把它填进 config.yaml 的 app_id。创建前先用 project_list 确认同名应用不存在，不要重复创建。调用后服务端弹出确认窗，用户可以修改项目、名称、平台和说明。不要在对话里先追问，直接调用。
+description: 在项目下创建一个应用，返回它的 id。写脚本仓库 config.yaml 的 apps 前，如果项目里还没有这个应用，先调用本工具拿到 id，再把它填进 config.yaml 的 app_id。创建前先用 project_list 确认同名应用不存在，不要重复创建。参数齐全且用户已要求该操作时直接调用，无需再次确认。
 route: POST /project/app/create
 risk: write
 async: false

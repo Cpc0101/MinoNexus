@@ -1,6 +1,6 @@
 id: project.create
 title: 创建项目
-description: 创建一个项目，返回项目 id。name 必填，description 可选。调用后服务端弹出确认窗，用户可以修改名称和说明。不要在对话里先追问，直接调用。
+description: 创建一个项目，返回项目 id。name 必填，description 可选。参数齐全且用户已要求该操作时直接调用，无需再次确认。
 route: POST /project/create
 risk: write
 async: false
