@@ -1,4 +1,6 @@
-"""手机号自动开号：按应用×环境的起始位递增（默认 17000000000），租号失败或未注册时写入号池。"""
+"""手机号自动补池：按应用×环境的起始位递增（默认 17000000000），只登记候选号；
+业务侧是否已注册必须由 App 验证，不能在补池时假定。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -116,7 +118,7 @@ def should_provision_phone_seq(
     wants_new = (requirements_want_unregistered(requirements)
                  or precondition_wants_unregistered(prompt) or wants_empty_shape)
     return (wants_new and phone_pool_lease_enabled(env_doc, ctx)
-            and _fresh_requirements_match(requirements, env_doc or {}))
+            and _provisionable_requirements_match(requirements, env_doc or {}))
 
 
 def _channel_stem(env_doc: dict, surface: str) -> str:
@@ -130,7 +132,7 @@ def _channel_stem(env_doc: dict, surface: str) -> str:
 
 
 def fresh_phone_facets(env_doc: dict[str, Any]) -> dict[str, str]:
-    """补池初始值来自 fresh_user 合同；不复制请求中的任意业务事实。"""
+    """评估候选号可被补成什么形状；这些值不是业务事实，不能直接落库。"""
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
     from mino_nexus.resources.accounts.requirement_compile import PROFILE_SHAPE_FACETS
     from mino_nexus.resources.resource_pool import facets_from_profile
@@ -160,7 +162,8 @@ def fresh_phone_facets(env_doc: dict[str, Any]) -> dict[str, str]:
     return facets
 
 
-def _fresh_requirements_match(requirements: dict[str, Any], env_doc: dict[str, Any]) -> bool:
+def _provisionable_requirements_match(requirements: dict[str, Any], env_doc: dict[str, Any]) -> bool:
+    """判断候选号是否具备满足前置的补池路径，不表示当前已满足业务事实。"""
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
     from mino_nexus.resources.resource_pool import match_requirements
 
@@ -209,7 +212,7 @@ def provision_phone_seq_account(
     env_profile = str(getattr(ctx, "env_profile", "") or "test").strip() or "test"
     if requirements.get("env") and requirements["env"] != env_profile:
         return None
-    if not phone_pool_lease_enabled(env_doc, ctx) or not _fresh_requirements_match(requirements, env_doc):
+    if not phone_pool_lease_enabled(env_doc, ctx) or not _provisionable_requirements_match(requirements, env_doc):
         return None
     surface = ensure_ctx_env_surface(ctx, env_doc)
     pid = str(project_id or "").strip()
@@ -218,7 +221,12 @@ def provision_phone_seq_account(
     aid = phone_seq_account_id(ctx, project_id=pid, run_id=run_id)
     if not aid:
         return None
-    initial_facets = fresh_phone_facets(env_doc)
+    # 号池唯一性和业务侧「是否已注册」是两件事。序列号只证明这个手机号此前
+    # 没有出现在当前项目的 Nexus 号池里，不能证明它一定能完成注册；真实业务
+    # 状态要等 App 的注册/登录结果回来后再写回。
+    requested_facets = fresh_phone_facets(env_doc)
+    # 落库只写 Nexus 已知事实；生命周期、资料形状等业务事实留给 App 核验。
+    initial_facets = {"lifecycle": "unknown", "session": "logged_out", "health": "available"}
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
         existing = db.get(PoolAccount, aid)
@@ -238,7 +246,10 @@ def provision_phone_seq_account(
         slot = get_channel_phone_seq(doc, env_surface=surface, env_profile=env_profile, app_id=app_id)
         start = slot.get("start") or _DEFAULT_PHONE_START
         number = max(int(start), int(slot.get("next") or start))
-        # 老号可能来自导入/其他渠道；不能把已存在手机号重新宣称为新用户。
+        # 这里只检查 Nexus 本地号池的唯一性，不查询业务侧注册状态。
+        # 命中的已有记录可能是老号，也可能是尚未核验的新号，因此不能据此
+        # 宣称任何业务事实；序列只是换到当前项目尚未占用的下一个号码。
+        local_collisions: list[str] = []
         for _ in range(1000):
             phone = str(number)
             if len(phone) != 11:
@@ -246,6 +257,8 @@ def provision_phone_seq_account(
             collision = db.query(PoolAccount.id).filter_by(project_id=pid, env=env_profile, phone=phone).first()
             if collision is None:
                 break
+            if len(local_collisions) < 20:
+                local_collisions.append(phone)
             number += 1
         else:
             raise ValueError("phone_seq_collision_limit")
@@ -260,8 +273,8 @@ def provision_phone_seq_account(
         project.env = doc
         now = int(time.time())
         account = PoolAccount(id=aid, project_id=pid, env=env_profile, phone=phone,
-            display_name=f"{_channel_stem(doc, surface)}+{phone}"[:80], profile_id="fresh_user",
-            note=f"phone_seq auto {surface}+{phone}", lease={}, locked=0,
+            display_name=f"{_channel_stem(doc, surface)}+{phone}"[:80], profile_id="",
+            note=f"phone_seq candidate {surface}+{phone}; pending business verification", lease={}, locked=0,
             created_at=now, updated_at=now)
         db.add(account)
         for key, value in initial_facets.items():
@@ -271,8 +284,11 @@ def provision_phone_seq_account(
             case_id=str(getattr(ctx, "case_id", "") or "")[:80],
             sn=str(getattr(ctx, "sn", "") or "")[:64], account_id=aid, account_ident=phone,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            detail_json={"surface": surface, "profile": "fresh_user", "initial_facets": initial_facets,
-                         "business_state_verified": False, "source": "phone_seq_provision.v2"}))
+            detail_json={"surface": surface, "requested_lifecycle": "unregistered",
+                         "requested_facets": requested_facets, "initial_facets": initial_facets,
+                         "local_pool_collisions": local_collisions,
+                         "business_state": "unknown", "business_state_verified": False,
+                         "source": "phone_seq_provision.v3"}))
         db.flush()
         return _account_to_dict(account, initial_facets)
 

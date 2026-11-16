@@ -348,7 +348,7 @@ def provision_gmail_alias_account(
 ) -> dict[str, Any] | None:
     from mino_nexus.resources.accounts.pool_templates import new_account_id
     from mino_nexus.resources.otp_resolve import plugin_user_id_from_ctx, resolve_gmail_inbox
-    from mino_nexus.resources.project_env import save_one_test_account
+    from mino_nexus.resources.project_env import list_test_accounts, save_one_test_account
 
     uid = str(plugin_user_id or plugin_user_id_from_ctx(ctx) or "").strip()
     if not gmail_alias_lease_enabled(env_doc, ctx, plugin_user_id=uid):
@@ -362,20 +362,39 @@ def provision_gmail_alias_account(
 
     pid = str(project_id or "").strip()
     with _project_lock(pid):
-        tag, fresh_doc = _bump_alias_next(pid, surface=surface, env_profile=env_profile, app_id=str(getattr(ctx, "app_id", "") or ""))
-        email = gmail_plus_address(inbox, tag)
-        if not email:
-            SLog.w(TAG, f"skip provision: invalid inbox={inbox[:48]!r} tag={tag}")
-            return None
+        existing_emails = {
+            str(row.get("email") or "").strip().lower()
+            for row in list_test_accounts(env_doc, project_id=pid)
+            if str(row.get("env") or "test") == env_profile
+        }
+        local_collisions: list[str] = []
+        for _ in range(1000):
+            tag, fresh_doc = _bump_alias_next(
+                pid,
+                surface=surface,
+                env_profile=env_profile,
+                app_id=str(getattr(ctx, "app_id", "") or ""),
+            )
+            email = gmail_plus_address(inbox, tag)
+            if not email:
+                SLog.w(TAG, f"skip provision: invalid inbox={inbox[:48]!r} tag={tag}")
+                return None
+            if email.strip().lower() not in existing_emails:
+                break
+            if len(local_collisions) < 20:
+                local_collisions.append(email)
+            existing_emails.add(email.strip().lower())
+        else:
+            raise ValueError("gmail_alias_collision_limit")
         display = email[:80]
         aid = new_account_id()
+        # 生成别名只证明邮箱地址在 Nexus 号池里尚未使用，不证明该邮箱在业务
+        # 侧仍是新用户；业务状态必须由 App 的注册/登录结果核验后写回。
         facets = {
-            "lifecycle": "unregistered",
+            "lifecycle": "unknown",
             "session": "logged_out",
             "health": "available",
         }
-        if requirements_want_unregistered(requirements):
-            facets["lifecycle"] = "unregistered"
         row = {
             "id": aid,
             "account_id": aid,
@@ -383,7 +402,7 @@ def provision_gmail_alias_account(
             "email": email,
             "env": env_profile,
             "facets": facets,
-            "note": f"gmail_alias auto {surface}+{tag}",
+            "note": f"gmail_alias auto {surface}+{tag}; pending business verification",
         }
         saved = save_one_test_account(fresh_doc, row, project_id=pid, account_id=aid)
         SLog.i(
@@ -402,7 +421,10 @@ def provision_gmail_alias_account(
             sn=str(getattr(ctx, "sn", "") or "")[:64],
             account_id=aid,
             account_ident=email,
-            detail={"surface": surface, "tag": tag, "inbox": inbox[:64]},
+            detail={"surface": surface, "tag": tag, "inbox": inbox[:64],
+                    "local_pool_collisions": local_collisions,
+                    "requested_lifecycle": "unregistered", "initial_facets": facets,
+                    "business_state": "unknown", "business_state_verified": False},
         )
         return saved
 
