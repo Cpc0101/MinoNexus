@@ -1,3 +1,4 @@
+import { ACCESS_SQL } from "./project_access";
 /** Durable dispatch and result indexes. Never waits for a test to finish. */
 import { hubStub, type Env } from "./env";
 import { listDevices } from "./db";
@@ -88,7 +89,7 @@ export async function getDispatch(db: D1Database, attempt: string): Promise<Disp
   return db.prepare("SELECT * FROM script_dispatches WHERE attempt_id=?").bind(attempt).first<Dispatch>();
 }
 export async function getSessionDispatch(db: D1Database, owner: string, session: string): Promise<Dispatch | null> {
-  return db.prepare("SELECT * FROM script_dispatches WHERE owner_user_id=? AND session_id=?").bind(owner, session).first<Dispatch>();
+  return db.prepare(`SELECT d.* FROM script_dispatches d JOIN app_regression_runs r ON r.run_id=d.run_id JOIN projects p ON p.project_id=r.project_id WHERE d.session_id=? AND ${ACCESS_SQL}`).bind(session,owner,owner).first<Dispatch>();
 }
 function summaryIndex(raw: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -254,7 +255,7 @@ export async function deviceAvailability(env: Env, owner: string, args: { only_o
   const owned = new Set((scouts.results || []).map(s => s.scout_id));
   let platforms: string[] = [];
   if (args.app_id) {
-    const app = await env.DB.prepare("SELECT platform FROM apps WHERE app_id=? AND owner_user_id=?").bind(args.app_id, owner).first<{ platform: string }>();
+    const app = await env.DB.prepare(`SELECT a.platform FROM apps a JOIN projects p ON p.project_id=a.project_id WHERE a.app_id=? AND ${ACCESS_SQL}`).bind(args.app_id, owner, owner).first<{ platform: string }>();
     if (!app) throw new TaskError("app_not_found", "没有这个应用", 404);
     platforms = String(app.platform || "").split(",").filter(Boolean);
   }

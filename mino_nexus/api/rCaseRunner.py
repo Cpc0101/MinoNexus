@@ -13,7 +13,7 @@ from mino_nexus.core.http_util import ok
 from mino_nexus.loop import case_runner as cr
 from mino_nexus.loop.observe.agent_stream import emit_testing_task
 from mino_nexus.loop.web.web_env import release_devices_for_run
-from mino_nexus.api.deps import current_session
+from mino_nexus.api.deps import current_session, require_project_write
 from mino_nexus.resources.ui_devices import ui_devices
 from mino_nexus.runtime.run_context import WEB_PLAYWRIGHT_PARALLEL_LANES
 
@@ -151,6 +151,7 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
         app = ps.require_app(body.app_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="App not found") from exc
+    require_project_write(str(app.get("project_id") or ""), sess)
     from mino_nexus.resources import repo_apps
     if repo_apps.has_app(str(app.get("project_id") or ""), str(app.get("id") or body.app_id)) is False:
         raise HTTPException(status_code=400, detail={

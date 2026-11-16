@@ -1,3 +1,4 @@
+import { listMembers, addMember, removeMember, ProjectAccessError, canReadRun } from "./project_access";
 /**
  * Workbench-compatible HTTP surface on the Cloudflare hub.
  */
@@ -403,6 +404,21 @@ export async function handleCompat(
     return envelope({ devices, list: devices, items: devices, count: devices.length });
   }
 
+  {
+    const members = /^\/project\/([^/]+)\/members(?:\/([^/]+))?$/.exec(pathname);
+    if (members) {
+      const gate = await requireUser(request, env);
+      if (gate.error) return gate.error;
+      const project = decodeURIComponent(members[1]), user = gate.user!.user_id;
+      try {
+        if (method === "GET" && !members[2]) return envelope(await listMembers(env.DB, project, user));
+        if (method === "POST" && !members[2]) return envelope(await addMember(env.DB, project, user, String((await readJson(request)).email || "")), "成员已添加");
+        if (method === "DELETE" && members[2]) return envelope(await removeMember(env.DB, project, user, decodeURIComponent(members[2])), "成员已移除");
+        return fail(405, "不支持的操作");
+      } catch (error) { if (error instanceof ProjectAccessError) return fail(error.http, error.message); throw error; }
+    }
+  }
+
   if (pathname === "/project/list" && method === "GET") {
     const gate = await requireUser(request, env);
     if (gate.error) return gate.error;
@@ -719,7 +735,7 @@ export async function handleCompat(
       const gate = await requireUser(request, env);
       if (gate.error) return gate.error;
       const doc = await getRun(env.DB, decodeURIComponent(m[1]));
-      if (!doc || doc.owner_user_id !== gate.user!.user_id) return fail(404, "没有这个任务");
+      if (!doc || !await canReadRun(env.DB, gate.user!.user_id, doc)) return fail(404, "没有这个任务");
       return envelope(toTaskJson(doc));
     }
   }

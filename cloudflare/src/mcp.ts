@@ -1,3 +1,4 @@
+import { listMembers, addMember, removeMember, ProjectAccessError, canReadRun } from "./project_access";
 /**
  * MCP endpoint — auth and tool table match mino_nexus.api.rMcp + prompts/assistant/tools.
  * Tools dispatch to the same HTTP routes as mcp0.0.1 assistant tool YAML `route` fields.
@@ -534,6 +535,9 @@ const TOOLS = [
     },
   },
   ...[
+    { name: "project_member_list", title: "项目成员", description: "查看项目所有者及成员。", properties: { project_id: { type: "string" } }, required: ["project_id"] },
+    { name: "project_member_add", title: "添加项目成员", description: "所有者按已注册邮箱添加成员，成员可查看、编辑项目并使用自己的 Scout 执行。", properties: { project_id: { type: "string" }, email: { type: "string" } }, required: ["project_id", "email"] },
+    { name: "project_member_remove", title: "移除项目成员", description: "所有者移除成员，撤销其项目访问权限。", properties: { project_id: { type: "string" }, user_id: { type: "string" } }, required: ["project_id", "user_id"] },
     { name: "task_list", title: "任务列表", description: "查询当前账号的持久任务摘要。", properties: { app_id: { type: "string" }, project_id: { type: "string" }, status: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 } }, required: [] },
     { name: "task_cancel", title: "取消任务", description: "持久保存取消意图；仅在 Scout 确认停止后任务才显示 cancelled。", properties: { task_id: { type: "string" } }, required: ["task_id"] },
     { name: "session_list", title: "执行记录列表", description: "查询当前账号的记录索引；完整证据保存在 Scout。", properties: { run_id: { type: "string" }, app_id: { type: "string" }, case_id: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, required: [] },
@@ -551,8 +555,8 @@ const TOOLS = [
   ].map(tool => ({ name: tool.name, title: tool.title, description: tool.description,
     inputSchema: { type: "object", additionalProperties: false, properties: tool.properties, required: tool.required },
     annotations: {
-      readOnlyHint: !["task_cancel", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import"].includes(tool.name),
-      destructiveHint: tool.name === "resource_account_delete",
+      readOnlyHint: !["project_member_add", "project_member_remove", "task_cancel", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import"].includes(tool.name),
+      destructiveHint: ["resource_account_delete", "project_member_remove"].includes(tool.name),
       idempotentHint: !["task_cancel", "resource_account_create", "resource_account_delete", "resource_account_import"].includes(tool.name),
       openWorldHint: false,
     } })),
@@ -793,6 +797,14 @@ async function callTool(
     return pack(true, "", agentGuidePayload());
   }
 
+  if (name.startsWith("project_member_")) {
+    try {
+      const project = String(args.project_id || "");
+      if (name === "project_member_list") return pack(true, "", await listMembers(env.DB,project,userId));
+      if (name === "project_member_add") return pack(true, "成员已添加", await addMember(env.DB,project,userId,String(args.email || "")));
+      if (name === "project_member_remove") return pack(true, "成员已移除", await removeMember(env.DB,project,userId,String(args.user_id || "")));
+    } catch (error) { if (error instanceof ProjectAccessError) return pack(false,error.message,{},error.http); throw error; }
+  }
   if (name === "project_list") {
     return pack(true, "", await listProjects(env.DB, userId));
   }
@@ -1054,6 +1066,7 @@ async function callTool(
       if (name === "resource_account_import") return pack(true, "", await importAccounts(env.DB, userId, project_id, args));
     }
   } catch (error) {
+    if (error instanceof ProjectAccessError) return pack(false,error.message,{},error.http);
     if (error instanceof TaskError || error instanceof AccountError) return pack(false, error.message, { reason_code: error.code }, error.http);
     throw error;
   }
@@ -1062,7 +1075,7 @@ async function callTool(
     const task_id = String(args.task_id || "").trim();
     if (!task_id) return pack(false, "缺少 task_id", {}, 422);
     const doc = await getRun(env.DB, task_id);
-    if (!doc || doc.owner_user_id !== userId) return pack(false, "没有这个任务", {}, 404);
+    if (!doc || !await canReadRun(env.DB, userId, doc)) return pack(false, "没有这个任务", {}, 404);
     return pack(true, "", toTaskJson(doc));
   }
 

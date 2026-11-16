@@ -50,6 +50,7 @@ from mino_nexus.models.nav_flow_block_catalog import NavFlowBlockCatalog
 from mino_nexus.models.node import Node, Studio
 from mino_nexus.models.plugin import PluginPolicy, UserPluginSecret
 from mino_nexus.models.pool_account import PoolAccount, PoolAccountFacet
+from mino_nexus.models.project_member import ProjectMember
 from mino_nexus.models.project import App, Project
 from mino_nexus.models.project_pool_config import ProjectPoolConfig
 from mino_nexus.models.run import AppRegressionRun

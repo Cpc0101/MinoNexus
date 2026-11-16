@@ -1,3 +1,4 @@
+import { ACCESS_SQL } from "./project_access";
 /** Read Scout-owned records through the authenticated Nexus node connection. */
 import type { Env } from "./env";
 import { scoutExecute, merged } from "./rpc";
@@ -11,7 +12,7 @@ async function scoped(env: Env, owner: string, session: string): Promise<Dispatc
 export async function readRecord(env: Env, owner: string, session: string, capability: "record.status" | "record.events" | "record.artifact", params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   const job = await scoped(env, owner, session);
   const result = await scoutExecute(env, { scout_id: job.scout_id, capability_id: capability, timeout_ms: 15_000,
-    params: { ...params, task_id: job.run_id, session_id: job.session_id, attempt_id: job.attempt_id, owner_user_id: owner } });
+    params: { ...params, task_id: job.run_id, session_id: job.session_id, attempt_id: job.attempt_id, owner_user_id: job.owner_user_id } });
   if (!result.ok) {
     const code = result.error || "record_unavailable";
     if (["scout_offline", "scout_disconnected", "scout_error", "rpc_timeout", "record_unavailable"].includes(code))
@@ -21,7 +22,7 @@ export async function readRecord(env: Env, owner: string, session: string, capab
   const data = merged(result);
   if (capability === "record.status") {
     const identity = { task_id: job.run_id, run_id: job.run_id, session_id: job.session_id, attempt_id: job.attempt_id,
-      case_id: job.case_id, owner_user_id: owner, node_id: job.scout_id };
+      case_id: job.case_id, owner_user_id: job.owner_user_id, node_id: job.scout_id };
     if (Object.entries(identity).some(([key, value]) => data[key] !== value) || !Number.isSafeInteger(data.summary_version) || Number(data.summary_version) < Math.max(1, job.sync_version) || typeof data.sealed !== "boolean")
       throw new TaskError("record_contract_invalid", "执行节点返回的记录身份或版本无效", 502);
   }
@@ -111,8 +112,8 @@ export async function artifactResponse(env: Env, owner: string, session: string,
 }
 export async function listSessions(env: Env, owner: string, args: { run_id?: string; app_id?: string; case_id?: string; limit?: number; offset?: number } = {}): Promise<Record<string, unknown>> {
   const limit = Math.max(1, Math.min(100, Number(args.limit || 30))), offset = Math.max(0, Number(args.offset || 0));
-  const page = await env.DB.prepare("SELECT d.* FROM script_dispatches d JOIN app_regression_runs r ON r.run_id=d.run_id WHERE d.owner_user_id=? AND (?='' OR d.run_id=?) AND (?='' OR d.case_id=?) AND (?='' OR r.app_id=?) ORDER BY d.created_at_ms DESC LIMIT ? OFFSET ?")
-    .bind(owner, args.run_id || "", args.run_id || "", args.case_id || "", args.case_id || "", args.app_id || "", args.app_id || "", limit, offset).all<Dispatch>();
+  const page = await env.DB.prepare(`SELECT d.* FROM script_dispatches d JOIN app_regression_runs r ON r.run_id=d.run_id JOIN projects p ON p.project_id=r.project_id WHERE ${ACCESS_SQL} AND (?='' OR d.run_id=?) AND (?='' OR d.case_id=?) AND (?='' OR r.app_id=?) ORDER BY d.created_at_ms DESC LIMIT ? OFFSET ?`)
+    .bind(owner, owner, args.run_id || "", args.run_id || "", args.case_id || "", args.case_id || "", args.app_id || "", args.app_id || "", limit, offset).all<Dispatch>();
   return { items: (page.results || []).map(row => ({ ...JSON.parse(row.result_json || "{}"), task_id: row.run_id, run_id: row.run_id, session_id: row.session_id, attempt_id: row.attempt_id,
     case_id: row.case_id, record_source: "scout", record_node_id: row.scout_id, detail_availability: row.sync_version ? "available" : "pending" })), limit, offset };
 }

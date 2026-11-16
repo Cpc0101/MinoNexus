@@ -1,3 +1,4 @@
+import { requireProjectOwner } from "./project_access";
 /** Project environment configuration persisted in owner-scoped D1 settings. */
 import { TaskError } from "./task_scheduler";
 
@@ -39,6 +40,7 @@ function response(project: Project, env: Json): Json {
     profile_labels: Object.fromEntries((env.environments as Json[]).map(row => [String(row.key), String(row.label || row.key)])) };
 }
 export async function getProjectEnv(db: D1Database, owner: string, id: string): Promise<Json> {
+  owner = await requireProjectOwner(db, id, owner);
   const project = await projectGate(db, owner, id);
   return response(project, (await stored(db, owner, id)).env);
 }
@@ -74,6 +76,7 @@ function validate(previous: Json, input: unknown): Json {
 }
 
 async function writeProjectEnv(db: D1Database, owner: string, id: string, current: { raw: string | null; env: Json }, next: Json): Promise<Json> {
+  owner = await requireProjectOwner(db, id, owner);
   const project = await projectGate(db, owner, id);
   const updated = await db.prepare("INSERT INTO user_settings(owner_user_id,key,value_json,updated_at_ms) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM projects WHERE project_id=? AND owner_user_id=?) ON CONFLICT(owner_user_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at_ms=excluded.updated_at_ms WHERE user_settings.value_json=?")
     .bind(owner, KEY(id), JSON.stringify(next), Date.now(), id, owner, current.raw).run();
@@ -82,6 +85,7 @@ async function writeProjectEnv(db: D1Database, owner: string, id: string, curren
 }
 
 export async function saveProjectEnv(db: D1Database, owner: string, id: string, input: unknown): Promise<Json> {
+  owner = await requireProjectOwner(db, id, owner);
   const project = await projectGate(db, owner, id);
   for (let retry = 0; retry < 5; retry++) {
     const current = await stored(db, owner, id), next = validate(current.env, input);
@@ -101,6 +105,7 @@ export async function updateProjectEnv(
   id: string,
   mutate: (env: Json) => Json,
 ): Promise<Json> {
+  owner = await requireProjectOwner(db, id, owner);
   await projectGate(db, owner, id);
   for (let retry = 0; retry < 8; retry++) {
     const current = await stored(db, owner, id);

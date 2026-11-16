@@ -39,7 +39,7 @@ IM_INBOX_TABLES = (
     "im_inbox_items",
 )
 
-ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + IM_INBOX_TABLES + ("scout_record_index",)
+ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + IM_INBOX_TABLES + ("scout_record_index", "project_members")
 
 RETIRED_TABLES = (
     "m_case_run_trace",

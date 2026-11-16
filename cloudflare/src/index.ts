@@ -1,3 +1,4 @@
+import { ProjectAccessError } from "./project_access";
 import type { Env } from "./env";
 import { hubStub } from "./env";
 import { handleMcp } from "./mcp";
@@ -72,8 +73,13 @@ export default {
         },
       });
     } else {
-      const compat = await handleCompat(request, env, url.pathname, ctx);
-      response = compat || new Response("Not found", { status: 404 });
+      try {
+        const compat = await handleCompat(request, env, url.pathname, ctx);
+        response = compat || new Response("Not found", { status: 404 });
+      } catch (error) {
+        if (!(error instanceof ProjectAccessError)) throw error;
+        response = Response.json({ok:false,code:error.http,msg:error.message},{status:error.http});
+      }
     }
 
     return withCors(request, response);

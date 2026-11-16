@@ -1,3 +1,4 @@
+import { requireProjectOwner } from "./project_access";
 /**
  * Port of mino_nexus.resources.repo_apps — script repo app manifest synced by agents.
  * Scout repo speaks keys (platform / package / url); Nexus speaks app_id.
@@ -236,7 +237,7 @@ export async function saveRepoApps(
   const merged = { ...previous, ...changed };
   if (!Object.keys(merged).length) throw new Error("同步后项目不能没有任何应用");
   if (Object.keys(merged).length > MAX_APPS) throw new Error(`apps 最多 ${MAX_APPS} 个应用`);
-  const cleaned = await bindAppIds(db, args.owner_user_id, pid, merged, previous);
+  const cleaned = await bindAppIds(db, await requireProjectOwner(db, pid, args.owner_user_id), pid, merged, previous);
 
   await db
     .prepare(

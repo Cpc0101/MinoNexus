@@ -1,3 +1,4 @@
+import { ACCESS_SQL } from "./project_access";
 /**
  * Validate and persist a run before asynchronous Scout submission.
  * Detailed records stay on Scout; the scheduler reconciles summary indexes.
@@ -257,11 +258,11 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
 
   const app = await db
     .prepare(
-      `SELECT app_id, project_id, name, platform FROM apps
-       WHERE owner_user_id = ? AND (app_id = ? OR name = ?)
-       ORDER BY (app_id = ?) DESC LIMIT 1`,
+      `SELECT a.app_id, a.project_id, a.name, a.platform FROM apps a JOIN projects p ON p.project_id=a.project_id
+       WHERE ${ACCESS_SQL} AND (a.app_id = ? OR a.name = ?) AND (? = '' OR a.project_id = ?)
+       ORDER BY (a.app_id = ?) DESC LIMIT 1`,
     )
-    .bind(userId, appRef, appRef, appRef)
+    .bind(userId, userId, appRef, appRef, String(args.project_id || ""), String(args.project_id || ""), appRef)
     .first<{ app_id: string; project_id: string; name: string; platform: string | null }>();
   if (!app) return refuse(404, "app_not_found", "没有这个应用");
   const wantedProject = String(args.project_id || "").trim();

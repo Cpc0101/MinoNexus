@@ -1,3 +1,4 @@
+import { ACCESS_SQL } from "./project_access";
 /**
  * Run ledger on D1 — roughly mino_nexus.casework.run_store (task json shape) plus
  * script admissions for Scout script.callback validation.
@@ -355,11 +356,11 @@ export async function clearAdmission(db: D1Database, runId: string): Promise<voi
 
 export async function listRuns(db: D1Database, owner: string, args: { app_id?: string; project_id?: string; status?: string; limit?: number; offset?: number } = {}): Promise<Record<string, unknown>> {
   const limit = Math.max(1, Math.min(100, Number(args.limit || 30))), offset = Math.max(0, Number(args.offset || 0));
-  const where = "owner_user_id=? AND (?='' OR app_id=?) AND (?='' OR project_id=?) AND (?='' OR status=?)";
-  const values = [owner, args.app_id || "", args.app_id || "", args.project_id || "", args.project_id || "", args.status || "", args.status || ""];
+  const where = `${ACCESS_SQL} AND (?='' OR r.app_id=?) AND (?='' OR r.project_id=?) AND (?='' OR r.status=?)`;
+  const values = [owner, owner, args.app_id || "", args.app_id || "", args.project_id || "", args.project_id || "", args.status || "", args.status || ""];
   const [page, count] = await Promise.all([
-    db.prepare(`SELECT payload_json FROM app_regression_runs WHERE ${where} ORDER BY created_at_ms DESC,run_id DESC LIMIT ? OFFSET ?`).bind(...values, limit, offset).all<{ payload_json: string }>(),
-    db.prepare(`SELECT COUNT(*) AS total FROM app_regression_runs WHERE ${where}`).bind(...values).first<{ total: number }>(),
+    db.prepare(`SELECT r.payload_json FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${where} ORDER BY r.created_at_ms DESC,r.run_id DESC LIMIT ? OFFSET ?`).bind(...values, limit, offset).all<{ payload_json: string }>(),
+    db.prepare(`SELECT COUNT(*) AS total FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${where}`).bind(...values).first<{ total: number }>(),
   ]);
   const items = (page.results || []).map(row => toTaskJson(JSON.parse(row.payload_json) as RunDoc));
   return { items, tasks: items, total: Number(count?.total || 0), limit, offset };

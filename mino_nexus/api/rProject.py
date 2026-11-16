@@ -322,7 +322,9 @@ def create_app(item: AppCreate, sess: dict = Depends(current_session)):
 
 @router.get("/list")
 def list_projects(_sess: dict = Depends(current_session)):
-    return ps.list_projects()
+    from mino_nexus.resources.project_members import visible_project_ids
+    visible = visible_project_ids(_sess)
+    return [{**row, "role": "owner" if row.get("created_by") == _sess.get("user_id") else "member"} for row in ps.list_projects() if row["id"] in visible]
 
 
 @router.delete("/app/{app_id}", dependencies=[Depends(app_maintainer)])
@@ -334,7 +336,7 @@ def delete_app(app_id: str, _sess: dict = Depends(current_session)):
     return ok(data, msg="deleted")
 
 
-@router.get("/app/{app_id}")
+@router.get("/app/{app_id}", dependencies=[Depends(app_maintainer)])
 def get_app(app_id: str, _sess: dict = Depends(current_session)):
     try:
         return ok(ps.get_app_detail(app_id))
@@ -1196,3 +1198,36 @@ def delete_project(project_id: str, _sess: dict = Depends(current_session)):
     except KeyError as exc:
         _missing(exc)
     return ok(data, msg="deleted")
+
+
+class ProjectMemberBody(BaseModel):
+    email: str
+
+
+def _member_result(operation, *args):
+    try:
+        return ok(operation(*args))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="只有项目所有者可以管理成员") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/members")
+def get_project_members(project_id: str, sess: dict = Depends(current_session)):
+    from mino_nexus.resources.project_members import list_members
+    return _member_result(list_members, project_id, sess)
+
+
+@router.post("/{project_id}/members")
+def post_project_member(project_id: str, body: ProjectMemberBody, sess: dict = Depends(current_session)):
+    from mino_nexus.resources.project_members import add_member
+    return _member_result(add_member, project_id, sess, body.email)
+
+
+@router.delete("/{project_id}/members/{user_id}")
+def delete_project_member(project_id: str, user_id: str, sess: dict = Depends(current_session)):
+    from mino_nexus.resources.project_members import remove_member
+    return _member_result(remove_member, project_id, sess, user_id)

@@ -661,3 +661,9 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 | `POST /case-runner/tasks/{task_id}/cancel` | 先持久化取消意图；确认 worker 停止后才收口。`resource_isolated=true` 时继续保留资源隔离 |
 
 `session_events`、`session_screenshot`、`session_record`、`session_artifact` MCP 使用同一权限和记录服务。大型界面节点通过 artifact 引用及有界分段读取，避免超过 MCP 响应限制。读取历史截图不重新拍当前设备。节点离线为 `evidence_temporarily_unavailable`，不是空事件；记录缺失和过期也明确返回，原执行结果保持不变。旧会话仍使用原 Nexus 会话后端。
+
+## 项目成员
+
+`GET /project/{project_id}/members` 返回 `{members:[{user_id,email,role,added_at}],can_manage}`。
+`POST` 同一路径接收 `{email}`，仅支持已注册邮箱；`DELETE /project/{project_id}/members/{user_id}` 移除成员。只有所有者可管理成员，不能移除所有者。
+成员可查看和编辑项目需求、应用、仓库、环境及账号资源，通过 MCP 操作，并使用本人 Scout 执行共享脚本。节点绑定、执行任务身份仍属于发起账号；项目成员不因此获得其他人的节点管理权。任务及证据按当前项目成员关系可见，移除后不再允许读取或新建执行，已经开始的任务保留原执行身份。

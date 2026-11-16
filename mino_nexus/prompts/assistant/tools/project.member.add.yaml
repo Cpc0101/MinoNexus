@@ -1,0 +1,24 @@
+id: project.member.add
+title: 添加项目成员
+description: 查询项目成员；只有所有者可添加或移除已注册邮箱成员。
+route: POST /project/{project_id}/members
+risk: write
+async: false
+params_schema:
+  type: object
+  properties:
+    project_id:
+      type: string
+    email:
+      type: string
+  required:
+  - project_id
+  - email
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- im
+- mcp
+enabled: true

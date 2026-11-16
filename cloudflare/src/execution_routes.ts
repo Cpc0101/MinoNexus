@@ -1,3 +1,4 @@
+import { ProjectAccessError, canReadRun } from "./project_access";
 /** Shared HTTP business routes for persistent tasks, records and account pools. */
 import type { Env } from "./env";
 import { AccountError, listAccounts, saveAccount, deleteAccount } from "./account_pool";
@@ -33,7 +34,7 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
       if (task[2] && method === "POST") return ok(toTaskJson(await cancelTask(env, owner, id)));
       if (!task[2] && method === "GET") {
         const run = await getRun(env.DB, id);
-        if (!run || run.owner_user_id !== owner) throw new TaskError("task_not_found", "没有这个任务", 404);
+        if (!run || !await canReadRun(env.DB, owner, run)) throw new TaskError("task_not_found", "没有这个任务", 404);
         return ok(toTaskJson(run));
       }
     }
@@ -49,6 +50,7 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
     }
     return null;
   } catch (error) {
+    if (error instanceof ProjectAccessError) return Response.json({ok:false,code:error.http,msg:error.message},{status:error.http});
     if (error instanceof TaskError || error instanceof AccountError) return Response.json({ ok: false, code: error.http, reason_code: error.code, msg: error.message }, { status: error.http });
     throw error;
   }

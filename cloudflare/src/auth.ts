@@ -1,3 +1,4 @@
+import { ACCESS_SQL, requireProjectOwner } from "./project_access";
 /** User accounts + session tokens on D1 (Workbench login). */
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -177,15 +178,15 @@ export async function listProjects(db: D1Database, owner_user_id: string): Promi
   /** Match mino_nexus.resources.project_store.list_projects shape (id + apps). */
   const { results: projects } = await db
     .prepare(
-      `SELECT project_id, name, description, created_at_ms FROM projects WHERE owner_user_id = ? ORDER BY created_at_ms DESC`,
+      `SELECT p.project_id, p.owner_user_id, p.name, p.description, p.created_at_ms FROM projects p WHERE ${ACCESS_SQL} ORDER BY p.created_at_ms DESC`,
     )
-    .bind(owner_user_id)
-    .all<{ project_id: string; name: string; description: string | null; created_at_ms: number }>();
+    .bind(owner_user_id, owner_user_id)
+    .all<{ owner_user_id: string; project_id: string; name: string; description: string | null; created_at_ms: number }>();
   const { results: apps } = await db
     .prepare(
-      `SELECT app_id, project_id, name, platform, created_at_ms FROM apps WHERE owner_user_id = ?`,
+      `SELECT a.app_id, a.project_id, a.name, a.platform, a.created_at_ms FROM apps a JOIN projects p ON p.project_id=a.project_id WHERE ${ACCESS_SQL}`,
     )
-    .bind(owner_user_id)
+    .bind(owner_user_id, owner_user_id)
     .all<{
       app_id: string;
       project_id: string;
@@ -216,6 +217,8 @@ export async function listProjects(db: D1Database, owner_user_id: string): Promi
     const projectApps = appsByProject.get(p.project_id) || [];
     const repo = repoByProject.get(p.project_id);
     return {
+      owner_user_id: p.owner_user_id,
+      role: p.owner_user_id === owner_user_id ? "owner" : "member",
       project_id: p.project_id,
       id: p.project_id,
       name: p.name,
@@ -279,6 +282,7 @@ export async function deleteProject(
     db.prepare(`DELETE FROM project_repo_apps WHERE project_id = ?`).bind(project_id),
     db.prepare(`DELETE FROM project_script_repos WHERE project_id = ?`).bind(project_id),
     db.prepare(`DELETE FROM apps WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
+    db.prepare(`DELETE FROM project_members WHERE project_id=? AND EXISTS(SELECT 1 FROM projects WHERE project_id=? AND owner_user_id=?)`).bind(project_id,project_id,owner_user_id),
     db.prepare(`DELETE FROM projects WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
   ]);
   return {
@@ -320,6 +324,7 @@ export async function createApp(
   descriptionRaw = "",
 ): Promise<Record<string, unknown>> {
   /** Match project_store.create_app: platforms is a comma-separated string. */
+  owner_user_id = await requireProjectOwner(db, project_id, owner_user_id);
   const project = await db
     .prepare(`SELECT project_id FROM projects WHERE project_id = ? AND owner_user_id = ?`)
     .bind(project_id, owner_user_id)

@@ -1,3 +1,4 @@
+import { requireProjectOwner } from "./project_access";
 /** Account pool and atomic leases. Business facets rank accounts; never prove prep. */
 import { requireOwnedProject } from "./script_repo";
 import { getProjectEnv, updateProjectEnv } from "./project_env";
@@ -39,12 +40,13 @@ async function projectGate(db: D1Database, owner: string, project: string): Prom
   if (!await requireOwnedProject(db, project, owner)) throw new AccountError("project_not_found", "没有这个项目", 404);
 }
 export async function listAccounts(db: D1Database, owner: string, project: string, env = ""): Promise<Record<string, unknown>> {
+  owner = await requireProjectOwner(db, project, owner);
   await projectGate(db, owner, project);
   const rows = await db.prepare("SELECT * FROM pool_accounts WHERE owner_user_id=? AND project_id=? AND (?='' OR env=?) ORDER BY created_at,id")
     .bind(owner, project, env, env).all<Account>();
   const accounts = (rows.results || []).map(r => publicAccount(r));
   const environments = [...new Set((rows.results || []).map(r => r.env))].map(key => ({ key, label: key }));
-  return { accounts, environments, default_profile: "test" };
+  return { accounts, environments, default_profile: String(((await getProjectEnv(db, owner, project)).env as Record<string, unknown>)?.default_profile || "test") };
 }
 export type ImportMode = "skip" | "merge" | "overwrite_credentials";
 
@@ -85,6 +87,7 @@ export async function importAccounts(
   project: string,
   input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  owner = await requireProjectOwner(db, project, owner);
   await projectGate(db, owner, project);
   const rawRows = input.rows;
   if (!Array.isArray(rawRows) || !rawRows.length) throw new AccountError("account_import_empty", "rows 必须是非空账号列表");
@@ -148,6 +151,7 @@ export async function importAccounts(
 }
 
 export async function saveAccount(db: D1Database, owner: string, project: string, input: Record<string, unknown>, accountId = ""): Promise<Record<string, unknown>> {
+  owner = await requireProjectOwner(db, project, owner);
   await projectGate(db, owner, project);
   const id = accountId || `acc_${crypto.randomUUID().replaceAll("-", "")}`;
   const old = accountId ? await db.prepare("SELECT * FROM pool_accounts WHERE id=? AND project_id=? AND owner_user_id=?").bind(id, project, owner).first<Account>() : null;
@@ -173,6 +177,7 @@ export async function saveAccount(db: D1Database, owner: string, project: string
   return publicAccount(saved!);
 }
 export async function deleteAccount(db: D1Database, owner: string, project: string, id: string): Promise<void> {
+  owner = await requireProjectOwner(db, project, owner);
   await projectGate(db, owner, project);
   const row = await db.prepare("SELECT * FROM pool_accounts WHERE id=? AND project_id=? AND owner_user_id=?").bind(id, project, owner).first<Account>();
   if (!row) throw new AccountError("account_not_found", "没有这个账号", 404);
@@ -377,6 +382,7 @@ function planFacets(): Record<string, unknown> {
 }
 
 export async function leaseAccount(db: D1Database, scope: LeaseScope, requirements: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  scope = { ...scope, owner: await requireProjectOwner(db, scope.project, scope.owner) };
   const all = clauses(requirements.all), prefer = clauses(requirements.prefer);
   if (!all.length) all.push({ facet: "health", op: "eq", value: "available" });
   if (requirements.env && requirements.env !== scope.env) throw new AccountError("account_env_mismatch", "账号环境必须与本次任务一致");

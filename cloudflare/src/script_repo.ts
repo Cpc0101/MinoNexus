@@ -1,3 +1,4 @@
+import { projectOwner } from "./project_access";
 /**
  * Port of mino_nexus.casework.script_workspace get_repo / save_repo / public_url.
  * Cloudflare hub stores address only — Scout clones at run time (no Worker checkout).
@@ -92,9 +93,5 @@ export async function requireOwnedProject(
   projectId: string,
   userId: string,
 ): Promise<boolean> {
-  const row = await db
-    .prepare(`SELECT project_id FROM projects WHERE project_id = ? AND owner_user_id = ?`)
-    .bind(projectId, userId)
-    .first();
-  return Boolean(row);
+  return Boolean(await projectOwner(db, projectId, userId));
 }
