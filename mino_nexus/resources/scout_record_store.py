@@ -17,7 +17,7 @@ _SUMMARY_FIELDS = frozenset({
     "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "elapsed_ms",
     "execution_started", "started_at", "finished_at", "summary_version", "last_event_seq", "sealed",
     "detail_availability", "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report",
-    "execution_stopped", "browser_closed", "scout_process_generation",
+    "execution_stopped", "browser_closed", "scout_process_generation", "data_outputs", "data_missing", "run_purpose",
 })
 
 
@@ -110,6 +110,9 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
                 raise PermissionError("record_owner_mismatch")
         if str(incoming.get("run_id") or "") != str(row.payload.get("run_id") or ""):
             raise ValueError("record_run_mismatch")
+        for key in ("platform", "script_path"):
+            if str(incoming.get(key) or "") != str(row.payload.get(key) or ""):
+                raise PermissionError("record_owner_mismatch")
         if str(incoming.get("node_id") or "") != node_id:
             raise PermissionError("record_owner_mismatch")
         if version <= row.summary_version:
@@ -121,6 +124,10 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
                                                      "execution_stopped", "browser_closed", "scout_process_generation")):
             raise ValueError("record_terminal_conflict")
         summary = {key: deepcopy(value) for key, value in incoming.items() if key in _SUMMARY_FIELDS}
+        from mino_nexus.core.protocol import validate_data_summary
+        summary.update(validate_data_summary(summary))
+        if row.status in TERMINAL and any(row.summary.get(key, default) != summary[key] for key, default in (("data_outputs", {}), ("data_missing", []))):
+            raise ValueError("record_terminal_conflict")
         if "test_report" in summary:
             from mino_nexus.contract.business_report import normalize_test_report
             summary["test_report"] = normalize_test_report(summary["test_report"])
@@ -133,6 +140,14 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
                     summary[key] = datetime.fromtimestamp(value / 1000 if value > 1e12 else value, timezone.utc).isoformat() if value else ""
                 except (ValueError, OverflowError, OSError):
                     raise ValueError("record_timestamp_invalid") from None
+        if isinstance(summary.get("assertions"), dict):
+            raw_counts = summary["assertions"]
+            aliases = {"total": "assertions", "pass": "passed", "fail": "failed", "unknown": "inconclusive"}
+            summary["assertions"] = {key: raw_counts.get(key, raw_counts.get(alias)) for key, alias in aliases.items()}
+        from mino_nexus.contract.business_report import validate_report_summary
+        validate_report_summary(summary, row.payload)
+        if row.status in TERMINAL and any(row.summary.get(key) != summary.get(key) for key in ("test_report", "assertions", "source_coverage", "source_hash", "revision", "started_at", "finished_at", "elapsed_ms", "last_event_seq", "run_purpose")):
+            raise ValueError("record_terminal_conflict")
         # No arbitrary nested logs or screenshots may be hidden in a summary.
         import json
         if len(json.dumps(summary, ensure_ascii=False).encode()) > 131072:

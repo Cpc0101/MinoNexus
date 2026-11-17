@@ -19,6 +19,5 @@ result_pick:
 - data
 card: answer
 surfaces:
-- im
 - mcp
 enabled: true

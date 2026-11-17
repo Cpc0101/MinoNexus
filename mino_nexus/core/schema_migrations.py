@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 
 NAV_ENTRY_TABLES = (
     "nav_page_entries",
@@ -35,11 +35,11 @@ OAUTH_TABLES = (
     "oauth_tokens",
 )
 
-IM_INBOX_TABLES = (
-    "im_inbox_items",
-)
+ACCOUNT_DATA_TABLES = ("pool_account_data", "pool_account_data_requests")
 
-ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + IM_INBOX_TABLES + ("scout_record_index", "project_members")
+# Historical IM inbox tables have no registered model or current consumer. Preserve
+# them in existing databases, but do not require them when creating a current schema.
+ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + ("scout_record_index", "project_members", "agent_workflows") + ACCOUNT_DATA_TABLES
 
 RETIRED_TABLES = (
     "m_case_run_trace",
@@ -67,6 +67,8 @@ def apply_additive_migrations(engine: Engine, metadata) -> None:
                 conn.exec_driver_sql(f'DROP TABLE "{name}"')
         if version < SCHEMA_VERSION:
             for name in ADDITIVE_TABLES:
+                if name in present:
+                    continue
                 table = metadata.tables.get(name)
                 if table is None:
                     raise RuntimeError(f"schema_model_not_registered:{name}")

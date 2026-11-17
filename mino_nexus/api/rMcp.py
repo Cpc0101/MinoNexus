@@ -38,7 +38,7 @@ def _annotations(spec: dict[str, Any]) -> dict[str, Any]:
         "title": str(spec.get("title") or spec.get("id") or ""),
         "readOnlyHint": not write,
         "destructiveHint": False,
-        "idempotentHint": not write,
+        "idempotentHint": not write or str(spec.get("id") or "").startswith("agent.workflow."),
         "openWorldHint": False,
     }
 

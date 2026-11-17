@@ -27,7 +27,17 @@ def agent_guide() -> dict[str, Any]:
     guide = {
         "channel": "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
         "first_call": "agent_guide",
+        "agent_workflow": {
+            "owner": "agent",
+            "tools": ["agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get"],
+            "storage": "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；Python SQLite / Cloudflare D1，不使用 Agent 本地数据库",
+            "stages": ["analysis", "authoring", "preparation", "verification"],
+            "contract": "每轮调查 start 占用预算、finish 保存事实，allowed=false 按原因改变方案或交付阶段。重复阻塞须有新事实或明确不同方案；写结果未知先核对原任务并 resolve。普通状态轮询不算新调查。进度不是测试判定。",
+        },
         "boundaries": [
+            "缺数据后的查找、构造、替代和重试决策只属于 Agent；脚本仓不内置 get_or_create、缺数据自动补数或自动换号。flows 只执行明确业务操作、识别阶段、等待、定位指定对象和复用验证方法。",
+            "账号业务标签与资产记忆是选号线索，缺省、未知或未命中不得单独阻塞执行。申请账号时用 case.nexus.account(data_need=描述) 留存所需数据；resource_account_data_list/save/delete 管理独立对象引用记忆，不创建被测业务数据、不进行全量盘点。",
+            "对象生产后绑定实际 ID 或区分特征，弹窗重绘、跨页和跨应用使用该变量重新定位并验证关联。业务阶段放 flows，原文映射和整例编排留用例。相同缺口无新观察时停止重复申请与整例重跑，Agent 选择有依据的准备路径；写结果未知先查同一任务。探针与准备用途排除正式统计；task_get.statistics 按执行次数、原文预期和辅助断言分列，completed 是已结束。通过率无判定为 null；blocked/declined/skipped/cancelled 不算 failed。报告绑定同一 task/session/attempt/revision/source_hash 和带时区记录时间；准备及续跑独立，不把历史局部通过拼成本次结论。缺完整证据时展示保存的摘要并说明证据暂不可用。",
             "脚本文本只由 agent 写在本机脚本仓并通过 Git 推送；MCP 只做查询、同步元数据与触发执行，不写代码。不要把脚本 POST/PUT 给 Nexus。各仓库分工与 Scout 安装见 agent 技能 overview。",
             "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
             "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；号池为空或没有匹配账号时由 Nexus 自动补号。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
@@ -71,6 +81,11 @@ def agent_guide() -> dict[str, Any]:
             {
                 "name": "查看一次执行",
                 "tools": ["task_list", "task_get", "session_list", "session_events", "session_screenshot"],
+            },
+            {
+                "name": "记录账号业务数据并准备输入",
+                "tools": ["resource_account_select", "resource_account_list", "resource_account_data_list", "resource_account_data_save", "resource_account_data_delete", "case_run", "task_get"],
+                "then": "Agent 先用 resource_account_select(data_requirements=[{kind, attributes}], env, app_id) 取得按资产记忆排序的空闲候选；无匹配仍选择符合登录身份和环境的账号。用 case_inputs 按用例 ID 或脚本路径传入 account_id 和业务对象。脚本 case.data.require 返回 data_missing 时，Agent 读取 task_get 的 cases[].data_missing 和本次证据，在已有授权范围内选择明确的准备脚本，通过 case_run(source_context={parent_task_id, purpose:\"prepare\", data_need}, case_inputs) 单独执行。准备脚本显式操作并 case.data.bind 输出对象和 account_id；Agent 核对 cases[].data_outputs、写入 resource_account_data_save，再用新的 client_request_id 和 purpose:\"resume\" 创建原用例的新任务，传回相同 account_id 与对象。Nexus 只保存关系和调度，脚本仓不含自动造数、换号或重试策略；写入结果未知先查询同一次 attempt，不能重复创建。",
             },
             {
                 "name": "看资源或配置账号自动补池",

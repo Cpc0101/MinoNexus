@@ -62,32 +62,35 @@ def _clip(text: str, budget: int, unit: str) -> str:
 
 def _notification_payloads(doc: dict[str, Any], task_id: str, *, base_url: str = "",
                            max_characters: int = 1600, length_unit: str = "characters") -> list[dict]:
-    from collections import Counter
+    from mino_nexus.contract.execution_report import task_report, result, purpose
     from mino_nexus.assistant.assistant_cards import render_text
     from mino_nexus.assistant.assistant_reports import report_url
     cases = [case for case in doc.get("cases") or [] if isinstance(case, dict)]
-    counts = Counter(str(case.get("status") or "pending") for case in cases)
-    normal = {"pass", "skip", "skipped"}
+    statistics = task_report(doc)
+    formal = statistics["formal"]
+    cases = [{**case, "status": {"passed": "pass", "failed": "fail", "pending": "pending"}.get(result(case), result(case)),
+              "reporting_purpose": purpose(case, doc)} for case in cases]
+    normal = {"pass"}
     abnormal = [(index, case) for index, case in enumerate(cases, 1) if case.get("status") not in normal]
-    failed = counts["fail"]
-    blocked = sum(counts[key] for key in ("blocked", "untestable", "unverifiable", "unexecutable", "declined", "pending", "queued", "running"))
-    statuses = {**_STATUS, "blocked": "未能执行", "pending": "未执行", "queued": "未执行", "running": "结果未确认"}
+    failed, blocked = formal["failed"], formal["blocked"]
+    statuses = {**_STATUS, "unverified": "未核验", "blocked": "执行受阻", "pending": "未执行", "queued": "未执行", "running": "结果未确认"}
     url = report_url(doc, task_id, base_url=base_url,
                      case_id=str(cases[0].get("case_id") or "") if len(cases) == 1 else "")
     limit = max(256, min(int(max_characters), 1600))
-    status = "failed" if failed or doc.get("status") == "failed" else "blocked" if blocked else "done"
+    task_verdict = statistics["result_status"]
+    status = "failed" if task_verdict == "fail" else "pass" if task_verdict == "pass" else task_verdict
     context = " · ".join(str(doc.get(key) or "") for key in ("app_name", "platform") if doc.get(key))
-    if len(cases) == 1:
-        overview = context
-    elif cases:
-        overview = f"共 {len(cases)} 条：通过 {counts['pass']}，失败 {failed}，未能执行 {blocked}"
-        rest = len(cases) - counts['pass'] - failed - blocked
-        if rest:
-            overview += f"，跳过/取消 {rest}"
-        if context:
-            overview += "。" + context
-    else:
-        overview = f"任务{_RUN_STATUS.get(str(doc.get('status') or ''), '已结束')}，没有可用的用例结果明细。"
+    overview = (f"正式 {formal['total']} 次执行：通过 {formal['passed']}，失败 {failed}，受阻 {blocked}，"
+                f"拒绝 {formal['declined']}，跳过 {formal['skipped']}，取消 {formal['cancelled']}，未核验 {formal['unverified']}。"
+                f"编写调试 {statistics['authoring']['total']}，数据准备 {statistics['preparation']['total']}。")
+    expected = statistics["expectations"]
+    if expected["cases_reported"]:
+        overview += f"原文预期 {expected['total']}：通过 {expected['pass']}，未通过 {expected['fail']}，未核验 {expected['unknown']}，未执行 {expected['not_run']}。"
+    overview += f"任务 {task_id}。"
+    if statistics["source"]["parent_task_id"]:
+        overview += f"关联任务 {statistics['source']['parent_task_id']}。"
+    if context:
+        overview += context
     if doc.get("status") == "cancelled":
         overview = "任务已取消。" + overview
     if not url:
@@ -103,7 +106,7 @@ def _notification_payloads(doc: dict[str, Any], task_id: str, *, base_url: str =
 
     def card_for(items: list[dict], summary: str = overview) -> dict:
         if len(cases) == 1 and items:
-            blocks = [{"type": "case_results", "items": items}]
+            blocks = [{"type": "summary", "text": summary}, {"type": "case_results", "items": items}]
             if context:
                 blocks.append({"type": "kv", "items": [["测试应用 / 渠道", context]]})
             if not url:
@@ -111,7 +114,7 @@ def _notification_payloads(doc: dict[str, Any], task_id: str, *, base_url: str =
         else:
             blocks = ([{"type": "summary", "text": summary}] if summary else []) + ([{"type": "case_results", "items": items}] if items else [])
         return {"version": 1, "template": "task_result", "card_type": "notification", "status": status,
-                "header": {"title": "测试结果", "tone": "danger" if status == "failed" else "warn" if abnormal else "success"},
+                "header": {"title": "测试结果", "tone": "danger" if status == "failed" else "success" if task_verdict == "pass" else "warn"},
                 "blocks": blocks, "actions": actions}
 
     def fits(items: list[dict], summary: str = overview) -> bool:
@@ -129,7 +132,7 @@ def _notification_payloads(doc: dict[str, Any], task_id: str, *, base_url: str =
             advice = ""
         row = {"number": number if len(cases) > 1 else "", "case_id": str(case.get("case_id") or ""),
                "name": _clip(str(case.get("name") or case.get("case_id") or "未命名").replace("\n", " "), 90, length_unit),
-               "status": verdict, "status_label": statuses.get(verdict, "结果待确认"),
+               "status": verdict, "status_label": ({"authoring": "编写调试 · ", "preparation": "数据准备 · ", "unclassified": "用途未确认 · "}.get(case["reporting_purpose"], "") + statuses.get(verdict, "结果待确认")),
                "summary": _clip(summary, 100 if show_limited else 220, length_unit), "advice": _clip(advice, 140, length_unit)}
         if not fits(current + [row]) and current:
             pages.append(card_for(current))
@@ -141,7 +144,7 @@ def _notification_payloads(doc: dict[str, Any], task_id: str, *, base_url: str =
             row["summary"] = _clip(summary, max(0, available), length_unit) if summary and available > 0 else ""
         if not fits([row]):
             # 极短渠道只发送计数和详情入口，不能伪造已展示全部结果。
-            brief = card_for([], f"共 {len(cases)} 条：通过 {counts['pass']}，失败 {failed}，未能执行 {blocked}。详情见报告。")
+            brief = card_for([], f"正式 {formal['total']} 次：通过 {formal['passed']}，失败 {failed}，受阻 {blocked}。编写调试 {statistics['authoring']['total']}，数据准备 {statistics['preparation']['total']}。任务 {task_id}，详情见报告。")
             if _measure(render_text(brief), length_unit) > limit:
                 brief['actions'] = []
                 brief['blocks'].append({'type': 'problem', 'text': '报告链接过长，未能完整发送。请在 Workbench 查看对应任务。'})
@@ -289,5 +292,5 @@ def retry_pending_notifications() -> None:
             continue
         with execution_user(owner):
             doc = run_store.get(target)
-            if doc and doc.get("owner_user_id") == owner and doc.get("status") in ("done", "failed", "cancelled"):
+            if doc and doc.get("owner_user_id") == owner and doc.get("finished_at") and not run_store.task_is_live(doc):
                 on_run_finished(doc)

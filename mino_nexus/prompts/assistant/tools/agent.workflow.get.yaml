@@ -1,0 +1,12 @@
+id: agent.workflow.get
+title: 读取 Agent 进度
+description: 读取当前用户四阶段进度、预算、尝试历史和未知写入引用。仅为 Agent 进度，正式结论读取原 Scout 任务。
+route: GET /assistant/workflows/{workflow_id}
+risk: read
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128}},"required":["workflow_id"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

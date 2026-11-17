@@ -3,6 +3,7 @@
 import type { Env } from "./env";
 import { syncRecord, TaskError } from "./task_scheduler";
 import { leaseAccount, AccountError } from "./account_pool";
+import { recordAccountDataRequest, validateDataNeed } from "./account_data";
 import {
   getAdmission,
   getRun,
@@ -113,11 +114,11 @@ async function dispatch(
   }
 
   if (op === "account") {
+    const dataNeed = validateDataNeed(params.data_need ?? "");
     const run = await getRun(env.DB, adm.run_id);
     const requirements = params.requirements && typeof params.requirements === "object" ? params.requirements as Record<string, unknown> : {};
-    return {
-      summary: "已租用本次测试账号",
-      data: await leaseAccount(env.DB, {
+    requirements.data_requirements = params.data_requirements;
+    const data = await leaseAccount(env.DB, {
         owner: adm.owner_user_id,
         project: adm.project_id,
         env: run?.env_profile || "test",
@@ -127,8 +128,9 @@ async function dispatch(
         env_surface: run?.env_surface || "",
         case_id: adm.case_id,
         sn: adm.sn,
-      }, requirements),
-    };
+      }, requirements);
+    await recordAccountDataRequest(env.DB, adm.owner_user_id, adm.project_id, String(data.id || data.account_id || ""), adm.run_id, adm.session_id, adm.app_id, adm.case_id, dataNeed);
+    return { summary: "已租用本次测试账号", data };
   }
 
   throw new CallbackError("callback_unsupported", "Nexus 不处理这个回调");

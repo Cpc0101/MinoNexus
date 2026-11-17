@@ -454,6 +454,11 @@ Workbench 入口：项目配置 → 「项目维护者」。
 | GET | `/resources/logs` | 资源分配日志；`account_ident` 掩码、`detail` 递归脱敏、`page_size≤100` |
 | GET | `/resources/env` | 环境/渠道/号池结构；只返回 `configured` 与 `secret_slots` 名称，不返回密钥 |
 | GET | `/assistant/agent-guide` | MCP `agent.guide`。外部 agent 的入口：工具分组和脚本、Git、设备的分工。不依赖仓库里的 skill 文件 |
+| GET | `/assistant/workflows/{workflow_id}` | MCP agent_workflow_get；当前登录用户的四阶段进度、预算、尝试历史与原任务引用 |
+| POST | `/assistant/workflows/{workflow_id}/init` | MCP agent_workflow_init；scope、units、stage_budget（默认6）、total_budget（默认24）。重复初始化不修改范围或预算 |
+| POST | `/assistant/workflows/{workflow_id}/start` | MCP agent_workflow_start；attempt_id/unit/stage/action、evidence/blocker/writes，原子消耗调查预算，返回 allowed/reason/next |
+| POST | `/assistant/workflows/{workflow_id}/finish` | MCP agent_workflow_finish；outcome/evidence/blocker/task_id/write_outcome/note，固定结果，同内容幂等 |
+| POST | `/assistant/workflows/{workflow_id}/resolve` | MCP agent_workflow_resolve；只追加同一原 task_id 的核对证据，保留未知写入历史 |
 | GET | `/resources/script-guide` | MCP `script.guide`。返回 `workspace`（本机工作目录根、检出目录、虚拟环境）、仓库公开地址和分支，以及 `case.*` 基础指令。不含仓库凭据 |
 | POST | `/resources/accounts/reserve` | MCP 预约；body `{account_id?, env?, lifecycle?, run_id?, ttl_sec?}`；写号池 lease，账号立刻算 `occupied`；返回账号/密码/OTP 明文 |
 | POST | `/resources/accounts/{account_id}/release` | body `{run_id}`；必须与当前 lease 一致，否则 409 |
@@ -672,3 +677,19 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 ## Web 任务资源核验
 
 `POST /case-runner/tasks/{task_id}/resources/reconcile` 仅任务 owner 可调用，返回最新任务 JSON。必须已结束且为 Web 任务；每个已接受 attempt 的原 Scout 封存记录、当前停止及浏览器关闭证明通过后，按当前摘要版本和租约代次原子释放并保存 resource_resolution。结果未知、原节点离线、版本或代次变化返回明确失败，资源不变；实体设备返回 resource_baseline_required。重复恢复幂等，历史业务结果不改成通过。Cloudflare MCP `task_resource_reconcile({task_id})` 与此接口共用逻辑。
+
+## 账号数据记录
+
+两种部署均提供 `GET /project/{project_id}/resources/accounts/{account_id}/data`（app_id/kind/limit/offset 过滤，默认 50、上限 200），返回 `{items, total, requests, requests_total, advisory:true}`。申请需求使用独立的 request_limit/request_offset 分页（默认 20、上限 200），按 app_id 过滤，不受资产 kind 筛选影响。两个列表按 updated_at 倒序及稳定主键排序。空列表只说明未记录，不阻塞选号。Workbench 账号管理提供台账查看、新增、编辑、删除及申请需求历史，来源任务链接使用已记录的 app_id/run_id。
+
+`PUT .../data` 接收 data_id（账号内稳定标识）、kind、object_ref，及可选 app_id、title、attributes、source_task_id。整条 upsert，未传可选字段使用空值；返回 `{item}`。attributes 最多 8192 UTF-8 字节。`DELETE .../data/{data_id}` 返回 `{deleted}`，仅删除记忆。项目访问、账号归属和 app_id 的项目归属由服务端校验；账号持有租约不阻止更新记忆。密码、OTP、令牌及签名下载凭据不得作为对象数据写入。
+
+MCP 对应 `resource_account_data_list/save/delete`。业务标签仅在脚本选号路径中作为偏好，身份/环境/项目和租约仍约束分配。申请 `data_need` 是数据描述，实际缺口由 Agent 选择准备路径。
+
+
+运行时数据：POST `/case-runner/run` 新增 `case_inputs`（按用例 ID/脚本路径传业务字典）及 `source_context`（parent_task_id、purpose=prepare/resume、data_need）。GET 任务返回 source_context、每例 data_outputs/data_missing。POST `/project/{project_id}/resources/accounts/select` 接受 env/app_id/data_requirements，返回按独立资产记忆排序的空闲 accounts，无记忆匹配不会排除候选，也不预约账号。两种部署接口一致。
+
+
+## 任务统计与报告
+
+任务列表/详情含 `statistics`（version=1、unit=case_execution）：execution_units、formal、authoring、preparation、unclassified，expectations、assertions、auxiliary_assertions，result_status、source、timing。顶层 passed/failed/blocked/declined/skipped/cancelled/unverified 与正式分组一致；total/completed 与全部执行分组一致，completed 仅代表已结束。无正式判定 pass_rate=null。列表用例摘要保留用途、test_report、封存和时间字段。应用 tasks/summary 的 items 使用同一投影。完整字段含义见 [执行统计与报告口径](../专题/执行统计与报告口径.md)。

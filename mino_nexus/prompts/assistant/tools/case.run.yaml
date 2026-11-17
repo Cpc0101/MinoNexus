@@ -64,6 +64,20 @@ params_schema:
             type: array
             items:
               type: string
+    case_inputs:
+      type: object
+      description: 按 case_id 或脚本路径传入业务对象与 account_id，禁止传凭据；每例 16KiB，总共 64KiB。
+    source_context:
+      type: object
+      properties:
+        parent_task_id:
+          type: string
+        purpose:
+          type: string
+          enum: [prepare, resume]
+        data_need:
+          type: string
+      required: [parent_task_id, purpose]
     revision:
       type: string
       description: 脚本所在的 git 提交 SHA，必须已 push 到项目仓库。Nexus 不校验，原样交给 Scout；Scout 自己拉取仓库，在该提交上读脚本，远端找不到由 Scout 返回 revision_missing，不回退到分支最新。不传则 Scout 取分支最新。

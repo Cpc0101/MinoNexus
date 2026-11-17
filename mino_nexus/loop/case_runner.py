@@ -113,6 +113,8 @@ def run_cases(
     expected_build: str = "",
     revision: str = "",
     script_targets: Optional[list[dict[str, Any]]] = None,
+    case_inputs: Optional[dict[str, Any]] = None,
+    source_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     phases: list[tuple[str, int]] = []
@@ -127,6 +129,9 @@ def run_cases(
     from mino_nexus.loop.script_targets import normalize_script_targets
 
     targets = normalize_script_targets(script_targets)
+    from mino_nexus.core.protocol import validate_case_inputs, validate_source_context
+    case_inputs = validate_case_inputs(case_inputs)
+    source_context = validate_source_context(source_context)
     if client_request_id and (len(client_request_id) > 160 or not all(character.isalnum() or character in "_.:-" for character in client_request_id)):
         raise ValueError("run_request_id_invalid")
     request_digest = digest({"app_id": app.get("id"), "sn": sn, "sns": sns, "coverage": coverage,
@@ -134,7 +139,7 @@ def run_cases(
         "requirement_id": requirement_id, "release_id": release_id, "slot_id": slot_id,
         "provider_id": provider_id, "playwright_headless": playwright_headless, "env_profile": env_profile,
         "env_surface": env_surface, "action_scheme": action_scheme, "execution_mode": execution_mode, "expected_build": expected_build,
-        "revision": revision, "script_targets": targets})
+        "revision": revision, "script_targets": targets, "case_inputs": case_inputs, "source_context": source_context})
     if client_request_id:
         from mino_nexus.core.database import session_scope
         from mino_nexus.models.run_admission import RunAdmission
@@ -248,6 +253,15 @@ def run_cases(
         requested_total = len(cases)
         if not cases:
             raise ValueError("没有可执行的脚本。")
+    known_inputs = {str(c.get("case_id") or "") for c in cases} | {str(c.get("script_path") or "") for c in cases}
+    if set(case_inputs) - known_inputs:
+        raise ValueError("case_inputs_target_unknown")
+    if source_context:
+        parent = run_store.get(source_context["parent_task_id"])
+        if not parent or parent.get("owner_user_id") != require_user_id() or parent.get("project_id") != project_id or parent.get("env_profile") != resolved_env:
+            raise ValueError("source_context_scope_mismatch")
+    for c in cases:
+        c["inputs"] = case_inputs.get(str(c.get("script_path") or ""), case_inputs.get(str(c.get("case_id") or ""), {}))
     seeded = [
         run_store.seed_case(
             run_id,
@@ -276,6 +290,8 @@ def run_cases(
         "run_id": run_id,
         "client_request_id": client_request_id,
         "request_digest": request_digest,
+        "case_inputs": case_inputs,
+        "source_context": source_context,
         "derived_from": derived_from,
         "expected_build": expected_build,
         "revision": str(revision or "").strip(),
@@ -347,7 +363,10 @@ def run_cases(
 
     if fail_reason:
         for case in doc["cases"]:
-            case["status"] = "fail"
+            case["status"] = "blocked"
+            case["execution_started"] = "no"
+            case["reason_code"] = "device_unavailable"
+            case["failure_stage"] = "admission"
             case["summary"] = fail_reason
             case["error"] = fail_reason
         doc["error"] = fail_reason

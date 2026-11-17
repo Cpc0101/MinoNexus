@@ -7,6 +7,7 @@ from typing import Any
 
 from mino_nexus.core.database import session_scope
 from mino_nexus.models.pool_account import PoolAccount, PoolAccountFacet
+from mino_nexus.models.account_data import AccountData, AccountDataRequest
 
 
 def _now() -> int:
@@ -154,6 +155,9 @@ def replace_all(project_id: str, rows: list[dict[str, Any]]) -> None:
         held = db.query(PoolAccount).filter(PoolAccount.project_id == pid).all()
         if any((row.lease or {}).get("run_id") for row in held):
             raise ValueError("resource_busy: 存在未释放的账号租约，暂不能整表替换号池")
+        retained = {str(row.get("account_id") or row.get("id") or "") for row in rows or []}
+        for model in (AccountData, AccountDataRequest):
+            db.query(model).filter(model.project_id == pid, model.account_id.notin_(retained)).delete(synchronize_session=False)
         db.query(PoolAccountFacet).filter(PoolAccountFacet.project_id == pid).delete(
             synchronize_session=False
         )
@@ -194,6 +198,8 @@ def delete_one(project_id: str, account_id: str) -> bool:
         held = db.query(PoolAccount).filter(PoolAccount.project_id == pid, PoolAccount.id == aid).one_or_none()
         if held is not None and (held.lease or {}).get("run_id"):
             raise ValueError("resource_busy: 该账号租约尚未释放，不能删除账号")
+        for model in (AccountData, AccountDataRequest):
+            db.query(model).filter_by(project_id=pid, account_id=aid).delete(synchronize_session=False)
         db.query(PoolAccountFacet).filter(
             PoolAccountFacet.project_id == pid,
             PoolAccountFacet.account_id == aid,

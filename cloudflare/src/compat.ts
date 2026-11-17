@@ -306,8 +306,8 @@ export async function handleCompat(
   if (pathname === "/sys/server_info" && method === "GET") {
     return envelope({
       service: "mino-nexus-cloudflare",
-      version: "0.0.1",
-      nexus_version: "0.0.1-cloudflare",
+      version: "0.1.88",
+      nexus_version: "0.1.88-cloudflare",
       scope: ["scout_online", "mcp", "device_sync", "workbench_auth"],
       workbench: true,
       http_url: "https://nexus.minocc.top",
@@ -336,7 +336,7 @@ export async function handleCompat(
       nodes: [],
       node_count: scouts.length,
       nodes_alive: alive,
-      nexus_version: "0.0.1-cloudflare",
+      nexus_version: "0.1.88-cloudflare",
       jobs: { ok: true },
     });
   }
@@ -707,6 +707,7 @@ export async function handleCompat(
       sn: String(body.sn || ""),
       case_ids: body.case_ids,
       script_targets: body.script_targets,
+      case_inputs: body.case_inputs, source_context: body.source_context,
       revision: String(body.revision || ""),
       env_profile: String(body.env_profile || ""),
       env_surface: String(body.env_surface || ""),
@@ -876,8 +877,8 @@ export async function enhancedHealth(env: Env): Promise<Response> {
   return Response.json({
     ok: true,
     service: "mino-nexus-cloudflare",
-    version: "0.0.1",
-    nexus_version: "0.0.1-cloudflare",
+    version: "0.1.88",
+    nexus_version: "0.1.88-cloudflare",
     status: "ok",
     nodes: Array.isArray(scouts) ? scouts.length : 0,
     nodes_alive: alive,

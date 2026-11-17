@@ -1,0 +1,12 @@
+id: agent.workflow.finish
+title: 记录 Agent 调查结果
+description: 固定调查结果及事实证据，已结束记录不可改写。写入结果未知须记录原 task_id；阶段进度不等于测试通过。
+route: POST /assistant/workflows/{workflow_id}/finish
+risk: write
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["progress","blocked","complete","failed","deferred"]},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}},"blocker":{"type":"string","maxLength":2000},"task_id":{"type":"string","maxLength":128},"write_outcome":{"type":"string","enum":["known","unknown"],"default":"known"},"note":{"type":"string","maxLength":2000}},"required":["workflow_id","attempt_id","outcome"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

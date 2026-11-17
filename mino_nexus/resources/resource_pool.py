@@ -464,6 +464,9 @@ def account_facet_values_for_match(row: dict[str, Any] | None) -> dict[str, str]
         v = str(val or "").strip().lower()
         if k and v:
             out[k] = v
+    # Identity comes from the account row, never from editable business tags.
+    for key in ("id", "account_id", "phone", "email", "username", "env"):
+        out[key] = str(row.get(key) or (row.get("id") if key == "account_id" else "") or "")
     return out
 
 

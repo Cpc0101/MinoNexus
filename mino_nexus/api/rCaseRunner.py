@@ -66,6 +66,8 @@ class RunRequest(BaseModel):
     env_surface: str = ""
     revision: str = ""
     script_targets: Optional[List["ScriptTarget"]] = None
+    case_inputs: dict = Field(default_factory=dict)
+    source_context: dict = Field(default_factory=dict)
 
 
 class ScriptTarget(BaseModel):
@@ -184,6 +186,8 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             client_request_id=body.client_request_id,
             revision=revision,
             script_targets=[item.model_dump() for item in body.script_targets] if body.script_targets else None,
+            case_inputs=body.case_inputs,
+            source_context=body.source_context,
         )
         return ok(snapshot, msg="AI-led 回归任务已启动")
     except (cr.DeviceBusy, ResourceBusy) as exc:

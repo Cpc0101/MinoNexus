@@ -283,11 +283,11 @@ def _handle_owned_inbound(inbound: dict[str, Any], owner: str) -> None:
         dispatch_log.reset(bound)
 
 
-def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> str:
+def _process_claimed_inbound(inbound: dict[str, Any], owner: str, key: str) -> str | None:
     """处理一条已抢占的入站消息。
 
     返回 "deferred" 表示这条消息被外接 agent 接管，内建助手已跳过回复；
-    其他情况（含早退）返回空串，调用方按「内建助手已处理」记账。
+    其他情况（含早退）返回 None，调用方按「内建助手已处理」记账。
     """
     channel, chat_id, sender = (str(inbound.get(k) or "") for k in ("channel", "chat_id", "sender_id"))
     text = str(inbound.get("text") or "").strip()

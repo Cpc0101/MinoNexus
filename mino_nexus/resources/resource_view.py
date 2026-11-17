@@ -769,3 +769,15 @@ def release_account(project_id: str, account_id: str, *, run_id: str = "") -> tu
     if latest is not None and str(_lease(latest).get("run_id") or ""):
         return False, "释放时租约已变化，未释放"
     return True, ""
+
+
+def select_accounts(project_id: str, *, env: str = "", app_id: str = "", data_requirements=None):
+    """Advisory shortlist; leasing still enforces the actual identity and scope."""
+    from mino_nexus.resources.account_data_match import rank_account_data
+    doc = _env_doc(project_id)
+    items = [_public_account(row, doc) for row in list_test_accounts(doc, project_id=project_id)]
+    items = _filter_accounts(items, env=env, state="free", lifecycle="", q="", raw_idents={}, raw_displays={})
+    for item in items:
+        for key in ("password", "otp", "sms_code"):
+            item.pop(key, None)
+    return {"accounts": rank_account_data(project_id, items, data_requirements, app_id=app_id), "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds")}

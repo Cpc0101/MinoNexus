@@ -1,0 +1,27 @@
+id: resource.account.data.delete
+title: 删除账号数据记录
+description: 只删除账号数据记忆，不删除被测应用内的业务对象。
+route: DELETE /project/{project_id}/resources/accounts/{account_id}/data/{data_id}
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id: {type: string}
+    account_id: {type: string}
+    data_id: {type: string}
+  required:
+  - project_id
+  - account_id
+  - data_id
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true
+

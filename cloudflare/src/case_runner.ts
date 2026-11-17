@@ -12,6 +12,8 @@ import { getRepoApps, hasApp, keyForApp } from "./repo_apps";
 import { listRequirements, requirementIdOk } from "./requirements";
 import { findRunByRequest, newCaseRow, type RunDoc } from "./run_store";
 import { enqueueRun, deviceAvailability, TaskError } from "./task_scheduler";
+import { caseInputs, sourceContext } from "./runtime_data";
+import { getRun } from "./run_store";
 
 const MAX_CASES = 100;
 const CASE_ID = /^[A-Za-z0-9_.\-]{1,120}$/;
@@ -19,6 +21,8 @@ const REVISION = /^[A-Za-z0-9][A-Za-z0-9._\/\-]{0,119}$/;
 const PLATFORMS = new Set(["android", "ios", "web", "mac", "win"]);
 
 export type StartRunArgs = {
+  case_inputs?: unknown;
+  source_context?: unknown;
   userId: string;
   app_id: string;
   sn?: string;
@@ -240,7 +244,10 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
     return refuse(422, "revision_invalid", "revision 必须是 commit SHA 或分支/标签名");
   }
 
-  const requestFingerprint = JSON.stringify({ app: appRef, sn: String(args.sn || ""), case_ids: caseIds, script_targets: targets, revision,
+  let inputs: Record<string, Record<string, unknown>>, source: Record<string, unknown>;
+  try { inputs = caseInputs(args.case_inputs); source = sourceContext(args.source_context); }
+  catch (error) { return refuse(422, "runtime_data_invalid", (error as Error).message); }
+  const requestFingerprint = JSON.stringify({ app: appRef, sn: String(args.sn || ""), case_ids: caseIds, script_targets: targets, revision, case_inputs: inputs, source_context: source,
     project: String(args.project_id || ""), env_profile: String(args.env_profile || "test"), env_surface: String(args.env_surface || "") });
   const reused = await findRunByRequest(db, userId, String(args.client_request_id || ""));
   if (reused) {
@@ -346,7 +353,15 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
   }
   const envProfile = String(args.env_profile || "").trim() || "test";
   const now = new Date().toISOString();
+  const inputTargets = new Set(planned.flatMap(item => [item.case_id, item.script_path]));
+  if (Object.keys(inputs).some(key => !inputTargets.has(key))) return refuse(422, "case_inputs_target_unknown", "运行输入对应的用例不在本次任务中");
+  if (source.parent_task_id) {
+    const parent = await getRun(db, String(source.parent_task_id));
+    if (!parent || parent.owner_user_id !== userId || parent.project_id !== projectId || parent.env_profile !== envProfile) return refuse(422, "source_context_scope_mismatch", "父任务须属于本次执行账号、项目与环境");
+  }
   const doc: RunDoc = {
+    case_inputs: inputs,
+    source_context: source,
     run_id: runId,
     task_id: runId,
     client_request_id: String(args.client_request_id || "").trim().slice(0, 160),
@@ -372,6 +387,7 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
     cases: planned.map((item) => {
       const row = newCaseRow(item.case_id, device.device_id, `ses_${randomHex(12)}`);
       row.script_path = item.script_path;
+      row.inputs = inputs[item.script_path] || inputs[item.case_id] || {};
       return row;
     }),
   };

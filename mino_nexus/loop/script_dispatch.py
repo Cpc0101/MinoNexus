@@ -89,6 +89,7 @@ def dispatch_script_case(
     except SessionPersistenceError as exc:
         return _outcome("blocked", str(exc), t0, reason_code=exc.reason_code, failure_stage=exc.failure_stage, started="no")
 
+    data_summary = {}
     status, summary, reason_code, failure_stage, started = "fail", "", "", "", "no"
     steps: list[dict[str, Any]] = []
     try:
@@ -119,6 +120,8 @@ def dispatch_script_case(
                         branch=str((repo or {}).get("branch") or ""),
                         revision=str(doc.get("revision") or ""),
                         script_path=str(case.get("script_path") or ""),
+                        inputs=case.get("inputs") or {},
+                        source_context=doc.get("source_context") or {},
                     )))
                     body = P.dump_script_run(payload)
                     admission = ScriptAdmission(
@@ -159,10 +162,16 @@ def dispatch_script_case(
                     if result is None:
                         status, summary, reason_code, failure_stage = "fail", "节点没有返回脚本结果", "script_no_result", "run"
                     else:
+                        result_data = getattr(result, "data", None) or {}
+                        data_summary = P.validate_data_summary(result_data)
+                        data_summary.update({key: result_data[key] for key in ("run_purpose", "assertions", "source_coverage", "source_hash", "started_at", "finished_at") if key in result_data})
+                        if "test_report" in result_data:
+                            from mino_nexus.contract.business_report import normalize_test_report
+                            data_summary["test_report"] = normalize_test_report(result_data["test_report"])
                         raw_status = getattr(getattr(result, "status", None), "value", None) or getattr(result, "status", "")
-                        status = _map_status(str(raw_status))
+                        status = _map_status(str((result_data.get("script_run") or {}).get("state") or raw_status))
                         summary = str(getattr(result, "summary", "") or getattr(result, "error", "") or "")[:240]
-                        reason_code = "" if status == "pass" else str(getattr(result, "error", "") or "")[:80]
+                        reason_code = "" if status == "pass" else str((result_data.get("execution") or {}).get("reason_code") or getattr(result, "error", "") or "")[:80]
                         failure_stage = "" if status == "pass" else "run"
                         if status != "pass" and not summary:
                             summary = "脚本执行失败"
@@ -189,7 +198,7 @@ def dispatch_script_case(
     return _outcome(
         status, summary or status, t0,
         reason_code=reason_code, failure_stage=failure_stage, started=started, steps=steps,
-        isolated=status == "blocked",
+        isolated=status == "blocked" and reason_code != "data_missing", data_summary=data_summary,
     )
 
 
@@ -297,11 +306,13 @@ def _outcome(
     started: str = "no",
     steps: list[dict[str, Any]] | None = None,
     isolated: bool = False,
+    data_summary: dict | None = None,
 ) -> dict[str, Any]:
     return {
         "status": status,
         "summary": summary[:240],
         "steps": list(steps or []),
+        **(data_summary or {}),
         "elapsed_ms": int((time.time() - t0) * 1000),
         "reason_code": reason_code,
         "failure_stage": failure_stage,

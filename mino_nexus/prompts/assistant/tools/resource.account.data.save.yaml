@@ -1,0 +1,35 @@
+id: resource.account.data.save
+title: 保存账号数据记录
+description: 保存已观察或创建的业务对象引用与特征。data_id 为账号内稳定标识，重复保存更新同条记录。本工具只保存记忆，不创建业务数据；不存凭据、文件或页面句柄。
+route: PUT /project/{project_id}/resources/accounts/{account_id}/data
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id: {type: string}
+    account_id: {type: string}
+    data_id: {type: string, minLength: 1, maxLength: 128}
+    app_id: {type: string, maxLength: 128}
+    kind: {type: string, minLength: 1, maxLength: 64}
+    object_ref: {type: string, minLength: 1, maxLength: 2048}
+    title: {type: string, maxLength: 300}
+    attributes: {type: object, additionalProperties: true}
+    source_task_id: {type: string, maxLength: 128}
+  required:
+  - project_id
+  - account_id
+  - data_id
+  - kind
+  - object_ref
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true
+

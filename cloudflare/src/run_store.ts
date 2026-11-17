@@ -1,3 +1,4 @@
+import { taskReport, executionOutcome } from "./execution_report";
 import { ACCESS_SQL } from "./project_access";
 /**
  * Run ledger on D1 — roughly mino_nexus.casework.run_store (task json shape) plus
@@ -11,6 +12,8 @@ const MAX_EVENTS = 300;
 export type CaseEvent = Record<string, unknown>;
 
 export type CaseRow = {
+  data_outputs?: Record<string, unknown>;
+  data_missing?: Record<string, unknown>[];
   case_id: string;
   status: string;
   summary: string;
@@ -36,11 +39,17 @@ export type CaseRow = {
   assertions?: Record<string, number>;
   source_coverage?: Record<string, unknown>;
   source_hash?: string;
+  test_report?: Record<string, unknown>;
+  run_purpose?: string;
+  revision?: string;
+  inputs?: Record<string, unknown>;
   resource_isolated?: boolean;
   resource_resolution?: Record<string, unknown>;
 };
 
 export type RunDoc = {
+  case_inputs?: Record<string, Record<string, unknown>>;
+  source_context?: Record<string, unknown>;
   run_id: string;
   task_id: string;
   client_request_id: string;
@@ -209,13 +218,7 @@ export async function patchCase(
 }
 
 export function aggregateStatus(cases: CaseRow[]): string {
-  if (!cases.length) return "fail";
-  const has = (...names: string[]) => cases.some((c) => names.includes(c.status));
-  if (cases.every((c) => c.status === "pass")) return "pass";
-  if (has("fail", "declined", "skipped")) return "fail";
-  if (has("blocked")) return "blocked";
-  if (has("cancelled")) return "cancelled";
-  return "fail";
+  return executionOutcome(cases);
 }
 
 export async function finishRun(
@@ -228,13 +231,13 @@ export async function finishRun(
     if (!isLive(doc.status)) return;
     for (const row of doc.cases) {
       if (row.status === "pending" || row.status === "running") {
-        row.status = error ? "fail" : "cancelled";
+        row.status = error ? row.started_at ? "blocked" : "skipped" : "cancelled";
         row.summary = row.summary || error || "任务已结束，本条未执行";
         row.reason_code = row.reason_code || reasonCode || "batch_aborted";
         row.finished_at = row.finished_at || new Date().toISOString();
       }
     }
-    doc.status = aggregateStatus(doc.cases);
+    doc.status = doc.cancel_requested ? "cancelled" : executionOutcome(doc.cases, doc);
     doc.error = error || doc.error;
     doc.reason_code = reasonCode || doc.reason_code;
     doc.finished_at = new Date().toISOString();
@@ -243,17 +246,15 @@ export async function finishRun(
 
 export function toTaskJson(doc: RunDoc, includeCases = true): Record<string, unknown> {
   const cases = doc.cases || [];
-  const count = (...names: string[]) => cases.filter((c) => names.includes(c.status)).length;
-  const total = cases.length;
-  const completed = cases.filter((c) => CASE_TERMINAL.has(c.status)).length;
-  const passed = count("pass");
-  const failed = count("fail");
-  const judged = passed + failed;
+  const statistics = taskReport(doc);
+  const { total, completed } = statistics.execution_units;
+  const { passed, failed } = statistics.formal;
   const current = cases.find((c) => c.status === "running");
   const task: Record<string, unknown> = {
     task_id: doc.run_id,
     run_id: doc.run_id,
     client_request_id: doc.client_request_id || "",
+    source_context: doc.source_context || {},
     app_id: doc.app_id,
     app_name: doc.app_name || "",
     app_key: doc.app_key || "",
@@ -272,15 +273,17 @@ export function toTaskJson(doc: RunDoc, includeCases = true): Record<string, unk
     completed,
     passed,
     failed,
-    blocked: count("blocked"),
-    declined: count("declined"),
-    cancelled: count("cancelled"),
-    skipped: count("skipped"),
+    statistics, result_status: statistics.result_status,
+    executed: statistics.execution_units.executed, not_run: statistics.execution_units.not_run,
+    execution_unknown: statistics.execution_units.execution_unknown,
+    blocked: statistics.formal.blocked, declined: statistics.formal.declined,
+    cancelled: statistics.formal.cancelled, skipped: statistics.formal.skipped,
+    unverified: statistics.formal.unverified,
     revision: doc.revision || "",
     repo_url: doc.repo_url || "",
     repo_branch: doc.repo_branch || "",
     progress: total ? Math.min(100, Math.round((completed / total) * 100)) : 0,
-    pass_rate: judged ? Math.round((passed / judged) * 100) : 0,
+    pass_rate: statistics.formal.pass_rate,
     error: doc.error || "",
     reason_code: doc.reason_code || "",
     resource_isolated: Boolean(doc.resource_isolated),

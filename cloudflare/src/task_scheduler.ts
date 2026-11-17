@@ -1,5 +1,7 @@
+import { executionOutcome } from "./execution_report";
+import { dataSummary } from "./runtime_data";
 import { ACCESS_SQL } from "./project_access";
-import { normalizeTestReport } from "./business_report";
+import { normalizeTestReport, validateReportSummary } from "./business_report";
 /** Durable dispatch and result indexes. Never waits for a test to finish. */
 import { hubStub, type Env } from "./env";
 import { listDevices } from "./db";
@@ -67,7 +69,9 @@ export async function enqueueRun(env: Env, doc: RunDoc, hint: Record<string, unk
       const params = { task_id: doc.run_id, run_id: doc.run_id, session_id: row.session_id, attempt_id: row.attempt_id,
         owner_user_id: doc.owner_user_id, case_id: row.case_id, sn: doc.sn, platform: doc.platform,
         repo_url: doc.repo_url, branch: doc.repo_branch, revision: doc.revision, script_path: row.script_path,
-        execution_timeout_sec: 600 };
+        execution_timeout_sec: 600,
+        ...(Object.keys(row.inputs || {}).length ? {inputs: row.inputs} : {}),
+        ...(Object.keys(doc.source_context || {}).length ? {source_context: doc.source_context} : {}) };
       statements.push(db.prepare("INSERT INTO script_dispatches(attempt_id,run_id,case_id,session_id,scout_id,owner_user_id,params_json,hint_json,updated_at_ms,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)")
         .bind(row.attempt_id, doc.run_id, row.case_id, row.session_id, doc.scout_id, doc.owner_user_id, JSON.stringify(params),
           JSON.stringify({ ...hint, lease_id: lease.lease_id, lease_generation: lease.generation }), now, now + index));
@@ -99,9 +103,13 @@ export async function getDispatch(db: D1Database, attempt: string): Promise<Disp
 export async function getSessionDispatch(db: D1Database, owner: string, session: string): Promise<Dispatch | null> {
   return db.prepare(`SELECT d.* FROM script_dispatches d JOIN app_regression_runs r ON r.run_id=d.run_id JOIN projects p ON p.project_id=r.project_id WHERE d.session_id=? AND ${ACCESS_SQL}`).bind(session,owner,owner).first<Dispatch>();
 }
+function canonical(value: unknown): string {
+  const sorted = (v: unknown): unknown => Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, item]) => [k, sorted(item)])) : v;
+  return JSON.stringify(sorted(value));
+}
 function summaryIndex(raw: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  const text = ["task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform", "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "execution_started", "scout_process_generation", "started_at", "finished_at", "detail_availability", "source_hash"];
+  const result: Record<string, unknown> = dataSummary(raw);
+  const text = ["task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform", "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "execution_started", "scout_process_generation", "started_at", "finished_at", "detail_availability", "source_hash", "run_purpose"];
   for (const key of text) if (raw[key] !== undefined) result[key] = raw[key] === null ? null : String(raw[key]).slice(0, key === "summary" ? 1000 : 500);
   for (const key of ["summary_version", "last_event_seq", "elapsed_ms"]) result[key] = Math.max(0, Number(raw[key] || 0));
   result.sealed = raw.sealed === true;
@@ -138,6 +146,7 @@ export async function syncRecord(env: Env, scoutId: string, raw: Record<string, 
   const version = Number(raw.summary_version);
   if (!Number.isSafeInteger(version) || version < 1) throw new TaskError("record_summary_invalid", "记录摘要版本无效", 422);
   const index = summaryIndex(raw), status = String(index.status || "");
+  validateReportSummary(index, submitted);
   if (!["queued", "running", ...TERMINAL].includes(status) || !["accepted", "running", "completed", "interrupted", "cancel_requested"].includes(String(index.state)))
     throw new TaskError("record_summary_invalid", "记录状态无效", 422);
   const terminal = TERMINAL.has(status);
@@ -147,6 +156,8 @@ export async function syncRecord(env: Env, scoutId: string, raw: Record<string, 
   for (let retry = 0; version > job.sync_version; retry++) {
     if (job.state === "terminal" && !terminal) throw new TaskError("record_state_regression", "已完成的执行不能恢复为运行态", 409);
     const previous = JSON.parse(job.result_json || "{}") as Record<string, unknown>;
+    if (job.state === "terminal" && ["data_outputs", "data_missing"].some(key => JSON.stringify(previous[key] ?? (key === "data_outputs" ? {} : [])) !== JSON.stringify(index[key]))) throw new TaskError("record_terminal_conflict", "已封存对象输出不能改变", 409);
+    if (job.state === "terminal" && ["test_report", "assertions", "source_coverage", "source_hash", "revision", "started_at", "finished_at", "elapsed_ms", "last_event_seq", "run_purpose"].some(key => canonical(previous[key]) !== canonical(index[key]))) throw new TaskError("record_terminal_conflict", "已封存报告与时间不能改变", 409);
     if (job.state === "terminal" && previous.status && previous.status !== status) throw new TaskError("record_terminal_conflict", "已封存记录的结论不能改变", 409);
     if (job.state === "terminal" && ["state", "reason_code", "execution_started", "resource_isolated", "execution_stopped", "browser_closed", "scout_process_generation"].some(key => previous[key] !== undefined && previous[key] !== index[key]))
       throw new TaskError("record_terminal_conflict", "已封存记录的执行边界不能改变", 409);
@@ -171,14 +182,17 @@ async function materializeSummary(env: Env, job: Dispatch, summary: Record<strin
     if (resolution) run.resource_resolution = JSON.parse(resolution.proof_json);
     const row = run.cases.find(c => c.case_id === job.case_id);
     if (!row || Number(row.summary_version || 0) > Number(summary.summary_version || 0)) return;
-    Object.assign(row, { status: terminal ? summary.status : "running", summary: summary.summary || "", reason_code: summary.reason_code || "",
+    Object.assign(row, { status: summary.status, summary: summary.summary || "", reason_code: summary.reason_code || "",
       error: summary.status === "pass" ? "" : summary.summary || "", failure_stage: summary.failure_stage || "",
       elapsed_ms: Number(summary.elapsed_ms || 0), execution_started: summary.execution_started || "unknown",
-      started_at: summary.started_at || row.started_at, finished_at: terminal ? summary.finished_at || new Date().toISOString() : null,
+      started_at: summary.started_at || null, finished_at: terminal ? summary.finished_at || null : null,
+      revision: String(summary.revision || row.revision || ""),
+      ...(summary.run_purpose ? { run_purpose: String(summary.run_purpose) } : {}),
       summary_version: Number(summary.summary_version), last_event_seq: Number(summary.last_event_seq || 0), sealed: Boolean(summary.sealed),
       resource_isolated: uncertain && !run.resource_resolution,
       ...(run.resource_resolution ? { resource_resolution: run.resource_resolution } : {}),
       detail_availability: summary.detail_availability || "available", status_sync_at: new Date().toISOString(),
+      data_outputs: summary.data_outputs || {}, data_missing: summary.data_missing || [],
       assertions: summary.assertions || {}, source_coverage: summary.source_coverage, source_hash: summary.source_hash,
       ...(summary.test_report ? { test_report: summary.test_report } : {}), events: [] });
     if (summary.revision) run.revision = String(summary.revision);
@@ -188,7 +202,7 @@ async function materializeSummary(env: Env, job: Dispatch, summary: Record<strin
     run.reason_code = run.resource_isolated ? String(summary.reason_code || run.reason_code || "execution_outcome_unknown") : "";
     if (run.cancel_requested) for (const c of run.cases) if (c.status === "pending") { c.status = "cancelled"; c.summary = "任务已取消，本条未执行"; c.execution_started = "no"; }
     if (terminal && uncertain) for (const c of run.cases) if (c.status === "pending") { c.status = "blocked"; c.summary = "上一条执行结果未知，资源保持隔离"; c.reason_code = "resource_isolated"; c.execution_started = "no"; }
-    if (run.cases.every(c => TERMINAL.has(c.status))) { run.status = aggregateStatus(run.cases); run.finished_at = new Date().toISOString(); }
+    if (run.cases.every(c => TERMINAL.has(c.status))) { run.status = run.cancel_requested ? "cancelled" : executionOutcome(run.cases, run); run.finished_at ||= new Date().toISOString(); }
     else run.status = run.cancel_requested ? "cancel_requested" : "running";
   });
   if (!doc) return;

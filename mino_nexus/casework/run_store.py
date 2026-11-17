@@ -29,7 +29,7 @@ _TASK_LIVE = frozenset({"running", "queued"})
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 _KEEP_RUNS = 400
@@ -203,7 +203,7 @@ def _upsert_run(doc: dict[str, Any]) -> None:
             if frozen.get("cancel_requested"):
                 doc["cancel_requested"] = True
             for field in ("owner_user_id", "plugin_user_id", "client_request_id", "request_digest", "derived_from",
-                          "requested_total", "skipped_cases", "coverage", "sns", "device_targets", "platforms_by_sn",
+                          "source_context", "case_inputs", "requested_total", "skipped_cases", "coverage", "sns", "device_targets", "platforms_by_sn",
                           "environment_baseline_digest", "execution_policy", "retry_contract"):
                 if field in frozen:
                     doc[field] = copy.deepcopy(frozen[field])
@@ -369,6 +369,7 @@ def seed_case(run_id: str, raw: dict[str, Any], index: int, *, sn: str = "", cov
         "project_id": raw.get("project_id", ""),
         "resource_key": copy.deepcopy(raw.get("resource_key")),
         "case_scene": copy.deepcopy(raw.get("case_scene")),
+        "inputs": copy.deepcopy(raw.get("inputs") or {}),
         "account_requirements": copy.deepcopy(raw.get("account_requirements")),
         "account_template_id": str(raw.get("account_template_id") or raw.get("template_id") or ""),
         "v5_publication": copy.deepcopy(raw.get("v5_publication")),
@@ -379,23 +380,17 @@ def seed_case(run_id: str, raw: dict[str, Any], index: int, *, sn: str = "", cov
 
 def _recompute(doc: dict[str, Any]) -> dict[str, Any]:
     cases = [c for c in (doc.get("cases") or []) if isinstance(c, dict)]
-    completed = sum(1 for c in cases if str(c.get("status") or "") in _CASE_TERMINAL)
-    passed = sum(1 for c in cases if c.get("status") == "pass")
-    failed = sum(1 for c in cases if c.get("status") in {"fail", "product_fail"})
-    blocked = sum(1 for c in cases if c.get("status") in {"blocked", "tool_blocked", "env_blocked"})
-    declined = sum(1 for c in cases if c.get("status") == "declined")
-    cancelled = sum(1 for c in cases if c.get("status") == "cancelled")
-    skipped = sum(1 for c in cases if c.get("status") in {"skip", "skipped"})
-    doc["total"] = len(cases)
-    doc["completed"] = completed
-    doc["passed"] = passed
-    doc["failed"] = failed
-    doc["blocked"] = blocked
-    for terminal in ("product_fail", "tool_blocked", "env_blocked", "unverified"):
+    from mino_nexus.contract.execution_report import task_report
+    report = task_report(doc)
+    doc["statistics"] = report
+    execution, formal = report["execution_units"], report["formal"]
+    doc.update(total=execution["total"], completed=execution["completed"],
+               executed=execution["executed"], not_run=execution["not_run"],
+               execution_unknown=execution["execution_unknown"],
+               **{key: formal[key] for key in ("passed", "failed", "blocked", "declined", "cancelled", "skipped", "unverified")})
+    for terminal in ("product_fail", "tool_blocked", "env_blocked"):
         doc[terminal] = sum(1 for c in cases if c.get("status") == terminal)
-    doc["declined"] = declined
-    doc["cancelled"] = cancelled
-    doc["skipped"] = skipped
+    completed = execution["completed"]
     current = ""
     for c in cases:
         if c.get("status") == "running":
@@ -403,9 +398,8 @@ def _recompute(doc: dict[str, Any]) -> dict[str, Any]:
             break
     doc["current_case_id"] = current
     total = doc["total"]
-    doc["progress"] = min(100, int(round(completed / total * 100))) if total else 0
-    judged = passed + failed
-    doc["pass_rate"] = int(round(passed / judged * 100)) if judged else 0
+    doc["progress"] = min(100, int(completed / total * 100 + 0.5)) if total else 0
+    doc["pass_rate"] = formal["pass_rate"]
     return doc
 
 
@@ -443,6 +437,7 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "app_id": doc.get("app_id") or "",
         "app_name": doc.get("app_name") or "",
         "project_id": doc.get("project_id") or "",
+        "source_context": copy.deepcopy(doc.get("source_context") or {}),
         "report_url": _report_url(doc),
         "cancel_requested": bool(doc.get("cancel_requested")),
         "run_type": doc.get("run_type") or "manual",
@@ -476,13 +471,18 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "repo_branch": doc.get("repo_branch") or "",
         "untestable": doc.get("untestable") or 0,
         "progress": doc.get("progress") or 0,
-        "pass_rate": doc.get("pass_rate") or 0,
+        "pass_rate": doc.get("pass_rate"),
+        "statistics": copy.deepcopy(doc["statistics"]),
+        "result_status": doc["statistics"]["result_status"],
+        "executed": doc["executed"], "not_run": doc["not_run"],
+        "execution_unknown": doc["execution_unknown"],
+        "cancelled": doc["cancelled"], "unverified": doc["unverified"],
         "error": doc.get("error") or "",
         "provider_name": doc.get("provider_name") or "",
         "model_name": doc.get("model_name") or "",
         "started_at": doc.get("started_at") or "",
         "finished_at": doc.get("finished_at") or None,
-        "busy": doc.get("status") == "running",
+        "busy": task_is_live(doc),
         "current_case_id": doc.get("current_case_id") or "",
         "title": doc.get("title") or "",
         "engine": doc.get("engine") or "agent",
@@ -520,7 +520,8 @@ _CASE_BRIEF_KEYS = (
     "case_id", "name", "title", "sn", "status", "summary", "report_run_id",
     "session_id", "duration_ms", "attempt_id", "record_source", "record_node_id",
     "detail_availability", "status_sync_at", "summary_version", "assertions", "source_coverage",
-    "elapsed_ms", "module", "platform", "hitl",
+    "elapsed_ms", "module", "platform", "hitl", "test_report", "run_purpose",
+    "execution_started", "started_at", "finished_at", "sealed", "last_event_seq", "reason_code", "source_hash", "script_path", "revision",
 )
 
 
@@ -647,21 +648,31 @@ def last_case_results(app_id: str, case_ids: list[str] | None = None) -> dict[st
                    COALESCE(json_extract(item.value, '$.status'), json_extract(item.value, '$.overall_status')) AS status,
                    COALESCE(json_extract(item.value, '$.fail_reason'), json_extract(item.value, '$.failure'),
                             json_extract(item.value, '$.error'), json_extract(item.value, '$.summary'), '') AS reason,
-                   COALESCE(json_extract(item.value, '$.finished_at'), run.finished_at, run.started_at) AS at,
+                   json_extract(item.value, '$.finished_at') AS at,
+                   item.value AS case_json, run.run_id AS task_id,
                    ROW_NUMBER() OVER (PARTITION BY json_extract(item.value, '$.case_id')
                                       ORDER BY run.started_at DESC, run.run_id DESC) AS position
             FROM app_regression_runs AS run, json_each(run.payload, '$.cases') AS item
-            WHERE run.app_id = :app_id AND (:owner = '' OR run.owner_user_id = :owner) {case_filter}
+            WHERE run.app_id = :app_id AND (:owner = '' OR run.owner_user_id = :owner)
+              AND COALESCE(json_extract(run.payload, '$.source_context.purpose'), '') != 'prepare'
+              AND COALESCE(json_extract(item.value, '$.run_purpose'), json_extract(item.value, '$.test_report.run_purpose'), 'regression') IN ('regression', 'verification') {case_filter}
         )
-        SELECT case_id, status, reason, at FROM history WHERE position = 1 AND case_id IS NOT NULL
+        SELECT case_id, status, reason, at, case_json, task_id FROM history WHERE position = 1 AND case_id IS NOT NULL
     """)
     params: dict[str, Any] = {"app_id": app_id, "owner": current_user_id()}
     if case_ids is not None:
         statement = statement.bindparams(bindparam("case_ids", expanding=True))
         params["case_ids"] = list(dict.fromkeys(case_ids))
     with engine.connect() as conn:
-        return {row["case_id"]: {"status": row["status"], "reason": str(row["reason"] or ""), "at": row["at"] or ""}
-                for row in conn.execute(statement, params).mappings()}
+        from mino_nexus.contract.execution_report import result
+        latest = {}
+        for row in conn.execute(statement, params).mappings():
+            case = _parse_payload(row["case_json"])
+            state = result(case)
+            latest[row["case_id"]] = {"status": {"passed": "pass", "failed": "fail", "pending": "running"}.get(state, state),
+                "reason": str(row["reason"] or ""), "at": row["at"] or "", "task_id": row["task_id"],
+                "attempt_id": case.get("attempt_id") or "", "session_id": case.get("session_id") or "", "source_hash": case.get("source_hash") or ""}
+        return latest
 
 
 def list_tasks(app_id: str = "", status: str = "", limit: int = 50, offset: int = 0, summary: bool = False) -> dict[str, Any]:
@@ -690,8 +701,8 @@ def summary_for_apps(app_ids: list[str]) -> list[dict[str, Any]]:
         ids = _distinct_app_ids()
     out = []
     for aid in ids:
-        rows = list_runs(limit=80, app_id=aid)
-        running = [r for r in rows if r.get("status") == "running"]
+        rows = list_runs(limit=max(1, _count_runs(app_id=aid)), app_id=aid)
+        running = [r for r in rows if task_is_live(r)]
         latest = rows[0] if rows else {}
         task = to_task_json(latest, include_cases=False) if latest else {}
         out.append({
@@ -702,11 +713,13 @@ def summary_for_apps(app_ids: list[str]) -> list[dict[str, Any]]:
             "completed": task.get("completed") or 0,
             "total": task.get("total") or 0,
             "started_at": task.get("started_at"),
-            "pass_rate": task.get("pass_rate") or 0,
+            "pass_rate": task.get("pass_rate"),
             "last_status": task.get("status") or "",
             "last_task_id": task.get("task_id") or "",
             "last_started_at": task.get("started_at"),
-            "last_pass_rate": task.get("pass_rate") or 0,
+            "last_pass_rate": task.get("pass_rate"),
+            "statistics": task.get("statistics"),
+            "result_status": task.get("result_status"),
             "total_count": len(rows),
         })
     return out
@@ -907,7 +920,7 @@ def patch_case(run_id: str, case_id: str, *, target_sn: str | None = None,
 
 def _session_status_for_close(case_status: str) -> str:
     st = str(case_status or "").strip().lower()
-    if st in ("pass", "done"):
+    if st == "pass":
         return "pass"
     if st in ("cancelled",):
         return "cancelled"
@@ -917,7 +930,7 @@ def _session_status_for_close(case_status: str) -> str:
         return "unverifiable"
     if st in ("skip", "skipped"):
         return "skip"
-    if st in ("fail", "failed", "declined"):
+    if st in ("fail", "failed"):
         return "fail"
     return st or "unknown"
 
@@ -967,10 +980,13 @@ def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: s
         # 单条失败不应把队列里未跑条目标成 cancelled；仅收口异常退出时仍挂起的行。
         for case in doc.get("cases") or []:
             if str(case.get("status") or "") in ("pending", "running"):
-                case["status"] = "fail"
+                case["status"] = "blocked" if case.get("started_at") else "skipped"
+                case["execution_started"] = case.get("execution_started") or "no"
                 case["summary"] = case.get("summary") or error or "任务异常结束，本条未执行"
                 case.setdefault("reason_code", "batch_aborted")
-    doc["status"] = status
+    from mino_nexus.contract.execution_report import outcome
+    result = outcome(doc.get("cases") or [], doc)
+    doc["status"] = "cancelled" if status == "cancelled" else result if result != "running" else "unverified"
     doc["error"] = error or doc.get("error") or ""
     if reason_code:
         doc["reason_code"] = reason_code

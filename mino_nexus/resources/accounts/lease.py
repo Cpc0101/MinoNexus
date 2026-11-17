@@ -263,8 +263,14 @@ def _pick_row(
     matched_kind = filter_accounts_for_login_kind(ranked, kind=kind)
     # 登录身份是硬约束：没有匹配账号时进入自动补池，不能回退租另一种身份。
     ranked = matched_kind
+    from mino_nexus.resources.account_data_match import rank_account_data
+    ranked = rank_account_data(project_id, ranked, requirements.get("data_requirements"), app_id=app_id)
     for row in ranked:
         if bool(row.get("locked")):
+            continue
+        aid = str(row.get("id") or "")
+        observed = observed_by_account.get(aid) if isinstance(observed_by_account, dict) else None
+        if not row_satisfies_requirements(row, requirements, env_doc, observed=observed):
             continue
         return dict(row)
     return None
@@ -603,6 +609,14 @@ def _lease_for_context(
     from mino_nexus.resources.resource_pool import relax_pool_session_for_device_login
 
     requirements = relax_pool_session_for_device_login(requirements)
+    if (need_facets or {}).get("advisory_business_data"):
+        # Script allocation uses business state as a preference, never as inventory certification.
+        strict = {"id", "account_id", "phone", "email", "username", "env"}
+        required = list(requirements.get("all") or [])
+        requirements["all"] = [clause for clause in required if clause.get("facet") in strict]
+        requirements["prefer"] = [clause for clause in required if clause.get("facet") not in strict] + list(requirements.get("prefer") or [])
+        if not requirements["all"] and not requirements["prefer"]:
+            requirements["prefer"] = [{"facet": "health", "op": "eq", "value": "available"}]
     if not (requirements.get("all") or requirements.get("prefer")):
         return None, "缺少租号需求（用例前置 / requirements）"
 
@@ -849,12 +863,14 @@ def _lease_for_context(
 
 def lease_script_account(ctx: Any, case: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str]:
     """脚本要账号时再租。只认用例上写明的 facet 子句和模板，不扫描前置散文。"""
-    from mino_nexus.resources.resource_pool import _clause, empty_requirements
+    from mino_nexus.resources.resource_pool import empty_requirements
 
     row = case if isinstance(case, dict) else {}
     explicit = row.get("account_requirements") if isinstance(row.get("account_requirements"), dict) else {}
     template_id = str(row.get("account_template_id") or row.get("template_id") or "").strip()
     req = empty_requirements()
+    from mino_nexus.resources.account_data_match import validate_data_requirements
+    req["data_requirements"] = validate_data_requirements(row.get("data_requirements"))
     env = str(getattr(ctx, "env_profile", "") or "test").strip().lower()
     if env:
         req["env"] = env
@@ -863,10 +879,9 @@ def lease_script_account(ctx: Any, case: dict[str, Any] | None) -> tuple[dict[st
             clause for clause in (explicit.get(bucket) or [])
             if isinstance(clause, dict) and str(clause.get("facet") or "").strip() and str(clause.get("op") or "").strip()
         ]
-    if not req["all"]:
-        req["all"] = [_clause("health", "eq", "available")]
     need = {
         "need_account": True,
+        "advisory_business_data": True,
         "skip_prose": True,
         "prompt": "",
         "session": "",

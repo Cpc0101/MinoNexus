@@ -1,0 +1,35 @@
+id: resource.account.select
+title: 按业务数据选号
+description: 按独立资产记忆排序空闲账号。数据与标签仅辅助选择，无匹配仍返回候选；不预约、不认证资产可用性，实际执行仍按身份、环境与租约约束租号。
+route: POST /project/{project_id}/resources/accounts/select
+risk: read
+async: false
+params_schema:
+  type: object
+  properties:
+    project_id:
+      type: string
+    env:
+      type: string
+    app_id:
+      type: string
+    data_requirements:
+      type: array
+      maxItems: 20
+      items:
+        type: object
+        properties:
+          kind:
+            type: string
+          object_ref:
+            type: string
+          attributes:
+            type: object
+        required: [kind]
+  required: [project_id]
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

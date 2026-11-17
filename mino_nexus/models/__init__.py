@@ -1,6 +1,7 @@
 """ORM：一张表一个文件。这里的类名对应 mino.db 的表，改字段要同步 docs/架构/数据模型.md。"""
 from mino_nexus.models.node_tool_task import NodeToolTask
 from mino_nexus.models.account_fact_candidate import AccountFactCandidate
+from mino_nexus.models.account_data import AccountData, AccountDataRequest
 from mino_nexus.models.app_intel import AppIntelLink, AppIntelProposal
 from mino_nexus.models.assistant import (
     AssistantMcpToken,
@@ -115,6 +116,7 @@ __all__ = [
 
 
 from mino_nexus.models.scout_update import ScoutUpdate
+from mino_nexus.models.agent_workflow import AgentWorkflow
 
 from mino_nexus.core.database import register_model_loader as _register_model_loader  # noqa: E402
 

@@ -1,0 +1,12 @@
+id: agent.workflow.start
+title: 记录 Agent 调查开始
+description: 原子消耗调查预算并识别重复阻塞。allowed=false 时读取已有记录或收敛；allowed=true 仅表示预算允许，不授予新的执行权限。
+route: POST /assistant/workflows/{workflow_id}/start
+risk: write
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"unit":{"type":"string","minLength":1,"maxLength":128},"stage":{"type":"string","enum":["analysis","authoring","preparation","verification"]},"action":{"type":"string","minLength":1,"maxLength":500},"writes":{"type":"boolean","default":false},"blocker":{"type":"string","maxLength":2000},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}}},"required":["workflow_id","attempt_id","unit","stage","action"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

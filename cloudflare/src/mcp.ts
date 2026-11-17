@@ -24,6 +24,8 @@ import { getRun, listRuns, toTaskJson } from "./run_store";
 import { cancelTask, deviceAvailability, reconcileTaskResources, TaskError } from "./task_scheduler";
 import { artifactChunk, readEvents, readRecord, screenshotMetadata, listSessions } from "./record_proxy";
 import { listAccounts, saveAccount, deleteAccount, importAccounts, AccountError } from "./account_pool";
+import { listAccountData, saveAccountData, deleteAccountData } from "./account_data";
+import { operateWorkflow, WorkflowError } from "./agent_workflow";
 import { getInstallStatus, issueInstallToken, scoutReleaseMeta, unbindScout } from "./install";
 import { requireOwnedProject, saveRepo } from "./script_repo";
 import { getProjectEnv, saveProjectEnv } from "./project_env";
@@ -364,6 +366,8 @@ const TOOLS = [
       type: "object",
       properties: {
         client_request_id: { type: "string", maxLength: 160 },
+        case_inputs: { type: "object", description: "按 case_id 或脚本路径传入业务对象与 account_id；禁止凭据。" },
+        source_context: { type: "object", properties: { parent_task_id: { type: "string" }, purpose: { type: "string", enum: ["prepare", "resume"] }, data_need: { type: "string" } }, required: ["parent_task_id", "purpose"] },
         project_id: { type: "string" },
         app_id: { type: "string" },
         env_surface: { type: "string" },
@@ -570,16 +574,25 @@ const TOOLS = [
     { name: "session_screenshot", title: "截图证据", description: "读取已有截图的元数据和需登录的下载地址，不重新操作设备。用 session_events 找 seq 或 artifact_id。", properties: { session_id: { type: "string" }, seq: { type: "integer", minimum: 1 }, artifact_id: { type: "string" } }, required: ["session_id"] },
     { name: "resource_env_get", title: "项目环境配置", description: "读取项目在 Nexus 保存的环境、渠道、登录策略、验证码策略和自动新增账号序列。", properties: { project_id: { type: "string" } }, required: ["project_id"] },
     { name: "resource_env_set", title: "保存项目环境配置", description: "保存项目在 Nexus 的环境配置。登录方式、验证码策略、Gmail 收件箱和手机号/邮箱别名序列放在这里，不写入脚本仓；号池为空或没有匹配账号时 Nexus 按这里的策略自动补号。可只传要修改的顶层字段。", properties: { project_id: { type: "string" }, env: { type: "object", description: "要合并保存的项目环境字段", additionalProperties: true } }, required: ["project_id", "env"] },
-    { name: "resource_account_list", title: "测试账号池", description: "查询当前项目的测试账号，不返回密码和验证码。", properties: { project_id: { type: "string" }, env: { type: "string" } }, required: ["project_id"] },
+    { name: "resource_account_select", title: "按业务数据选号", description: "按独立资产记忆排序空闲账号，数据与标签仅辅助选择；无匹配仍返回候选，不认证资产可用性、不预约。", properties: { project_id: { type: "string" }, env: { type: "string" }, app_id: { type: "string" }, data_requirements: { type: "array", maxItems: 20, items: { type: "object", properties: { kind: { type: "string" }, object_ref: { type: "string" }, attributes: { type: "object" } }, required: ["kind"] } } }, required: ["project_id"] },
+    { name: "resource_account_list", title: "测试账号池", description: "查询当前项目的测试账号，不返回密码和验证码。业务标签辅助选号，不证明资产可用。账号数据另用 resource_account_data_list 查询。", properties: { project_id: { type: "string" }, env: { type: "string" } }, required: ["project_id"] },
+    { name: "resource_account_data_list", title: "账号数据记录", description: "分页查询账号对象引用、特征和申请时记录的数据需求。记录仅辅助选数；缺记录不阻塞执行，缺数据由 Agent 决定准备方式。", properties: { project_id: { type: "string" }, account_id: { type: "string" }, app_id: { type: "string" }, kind: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 200 }, offset: { type: "integer", minimum: 0 }, request_limit: { type: "integer", minimum: 1, maximum: 200 }, request_offset: { type: "integer", minimum: 0 } }, required: ["project_id", "account_id"] },
+    { name: "resource_account_data_save", title: "保存账号数据记录", description: "保存已观察或创建的业务对象引用和特征，不保存凭据、完整文件或页面句柄。data_id 是账号内稳定记录标识，重复保存更新同一条；本工具不会创建被测业务数据。", properties: { project_id: { type: "string" }, account_id: { type: "string" }, data_id: { type: "string", minLength: 1, maxLength: 128 }, app_id: { type: "string", maxLength: 128 }, kind: { type: "string", minLength: 1, maxLength: 64 }, object_ref: { type: "string", minLength: 1, maxLength: 2048 }, title: { type: "string", maxLength: 300 }, attributes: { type: "object", additionalProperties: true }, source_task_id: { type: "string", maxLength: 128 } }, required: ["project_id", "account_id", "data_id", "kind", "object_ref"] },
+    { name: "resource_account_data_delete", title: "删除账号数据记录", description: "只删除账号数据记忆，不删除被测应用内的业务对象。", properties: { project_id: { type: "string" }, account_id: { type: "string" }, data_id: { type: "string" } }, required: ["project_id", "account_id", "data_id"] },
     { name: "resource_account_create", title: "新增测试账号", description: "向当前项目的 Nexus 测试账号池新增账号。环境与登录身份用于租用匹配。", properties: { project_id: { type: "string" }, env: { type: "string" }, display_name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, username: { type: "string" }, password: { type: "string" }, otp: { type: "string" }, kind: { type: "string" }, profile_id: { type: "string" }, note: { type: "string" }, facets: { type: "object", additionalProperties: true }, locked: { type: "boolean" } }, required: ["project_id"] },
     { name: "resource_account_update", title: "修改测试账号", description: "修改 Nexus 测试账号池中的账号；仅传要修改的字段。", properties: { project_id: { type: "string" }, account_id: { type: "string" }, env: { type: "string" }, display_name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, username: { type: "string" }, password: { type: "string" }, otp: { type: "string" }, kind: { type: "string" }, profile_id: { type: "string" }, note: { type: "string" }, facets: { type: "object", additionalProperties: true }, locked: { type: "boolean" } }, required: ["project_id", "account_id"] },
     { name: "resource_account_delete", title: "删除测试账号", description: "删除 Nexus 测试账号池中的空闲账号；被任务租用的账号不能删除。", properties: { project_id: { type: "string" }, account_id: { type: "string" } }, required: ["project_id", "account_id"] },
     { name: "resource_account_import", title: "批量导入测试账号", description: "批量导入 Nexus 测试账号。preview=true 时只返回匹配与变更预览，不写入。", properties: { project_id: { type: "string" }, rows: { type: "array", items: { type: "object", additionalProperties: true } }, default_env: { type: "string" }, on_duplicate: { type: "string", enum: ["skip", "merge", "overwrite_credentials"] }, preview: { type: "boolean" } }, required: ["project_id", "rows"] },
+    {"name":"agent_workflow_init","title":"初始化 Agent 进度","description":"在 Nexus 保存当前用户的范围、独立工作项和调查预算，不执行用例或创建业务数据。相同 workflow_id 的范围与预算不可改写。","properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"scope":{"type":"string","minLength":1,"maxLength":2000},"units":{"type":"array","minItems":1,"maxItems":1000,"items":{"type":"string","minLength":1,"maxLength":128}},"stage_budget":{"type":"integer","minimum":1,"maximum":10000,"default":6},"total_budget":{"type":"integer","minimum":1,"maximum":10000,"default":24}},"required":["workflow_id","scope","units"]},
+    {"name":"agent_workflow_start","title":"记录 Agent 调查开始","description":"原子消耗调查预算并识别重复阻塞。allowed=false 时读取已有记录或收敛；allowed=true 仅表示预算允许，不授予新的执行权限。","properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"unit":{"type":"string","minLength":1,"maxLength":128},"stage":{"type":"string","enum":["analysis","authoring","preparation","verification"]},"action":{"type":"string","minLength":1,"maxLength":500},"writes":{"type":"boolean","default":false},"blocker":{"type":"string","maxLength":2000},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}}},"required":["workflow_id","attempt_id","unit","stage","action"]},
+    {"name":"agent_workflow_finish","title":"记录 Agent 调查结果","description":"固定调查结果及事实证据，已结束记录不可改写。写入结果未知须记录原 task_id；阶段进度不等于测试通过。","properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["progress","blocked","complete","failed","deferred"]},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}},"blocker":{"type":"string","maxLength":2000},"task_id":{"type":"string","maxLength":128},"write_outcome":{"type":"string","enum":["known","unknown"],"default":"known"},"note":{"type":"string","maxLength":2000}},"required":["workflow_id","attempt_id","outcome"]},
+    {"name":"agent_workflow_resolve","title":"记录原任务写入核对","description":"追加同一原任务的核对证据，保留原未知写入历史，不改变测试结论或资源隔离。","properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"task_id":{"type":"string","minLength":1,"maxLength":128},"evidence":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}}},"required":["workflow_id","attempt_id","task_id","evidence"]},
+    {"name":"agent_workflow_get","title":"读取 Agent 进度","description":"读取当前用户四阶段进度、预算、尝试历史和未知写入引用。仅为 Agent 进度，正式结论读取原 Scout 任务。","properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128}},"required":["workflow_id"]},
   ].map(tool => ({ name: tool.name, title: tool.title, description: tool.description,
     inputSchema: { type: "object", additionalProperties: false, properties: tool.properties, required: tool.required },
     annotations: {
-      readOnlyHint: !["project_member_add", "project_member_remove", "task_cancel", "task_resource_reconcile", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import"].includes(tool.name),
-      destructiveHint: ["resource_account_delete", "project_member_remove"].includes(tool.name),
+      readOnlyHint: !["agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "project_member_add", "project_member_remove", "task_cancel", "task_resource_reconcile", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import", "resource_account_data_save", "resource_account_data_delete"].includes(tool.name),
+      destructiveHint: ["resource_account_delete", "project_member_remove", "resource_account_data_delete"].includes(tool.name),
       idempotentHint: !["task_cancel", "resource_account_create", "resource_account_delete", "resource_account_import"].includes(tool.name),
       openWorldHint: false,
     } })),
@@ -655,7 +668,17 @@ function agentGuidePayload(): Record<string, unknown> {
   return {
     channel: "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
     first_call: "agent_guide",
+    agent_workflow: {
+      owner: "agent",
+      tools: ["agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get"],
+      storage: "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；Python SQLite / Cloudflare D1，不使用 Agent 本地数据库",
+      stages: ["analysis", "authoring", "preparation", "verification"],
+      contract: "每轮调查 start 占用预算、finish 保存事实，allowed=false 按原因改变方案或交付阶段。重复阻塞须有新事实或明确不同方案；写结果未知先核对原任务并 resolve。普通状态轮询不算新调查。进度不是测试判定。",
+    },
     boundaries: [
+      "缺数据后的查找、构造、替代和重试决策只属于 Agent；脚本仓不内置 get_or_create、缺数据自动补数或自动换号。flows 只执行明确业务操作、识别阶段、等待、定位指定对象和复用验证方法。",
+      "账号业务标签与资产记忆是选号线索，缺省、未知或未命中不得单独阻塞执行。申请账号时用 case.nexus.account(data_need=描述) 留存所需数据；resource_account_data_list/save/delete 管理独立对象引用记忆，不创建被测业务数据、不进行全量盘点。",
+      "对象生产后绑定实际 ID 或区分特征，弹窗重绘、跨页和跨应用使用该变量重新定位并验证关联。业务阶段放 flows，原文映射和整例编排留用例。相同缺口无新观察时停止重复申请与整例重跑，Agent 选择有依据的准备路径；写结果未知先查同一任务。探针与准备用途排除正式统计；task_get.statistics 按执行次数、原文预期和辅助断言分列，completed 是已结束。通过率无判定为 null；blocked/declined/skipped/cancelled 不算 failed。报告绑定同一 task/session/attempt/revision/source_hash 和带时区记录时间；准备及续跑独立，不把历史局部通过拼成本次结论。缺完整证据时展示保存的摘要并说明证据暂不可用。",
       "脚本文本只由 agent 写在本机脚本仓并通过 Git 推送；MCP 只做查询、同步元数据与触发执行，不写代码。各仓库分工与 Scout 安装见 agent 技能 overview。",
       "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
       "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；号池为空或没有匹配账号时由 Nexus 自动补号。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
@@ -666,6 +689,11 @@ function agentGuidePayload(): Record<string, unknown> {
     },
     ...agentContract(),
     flows: [
+      {
+        name: "记录账号业务数据并准备输入",
+        tools: ["resource_account_select", "resource_account_list", "resource_account_data_list", "resource_account_data_save", "resource_account_data_delete", "case_run", "task_get"],
+        then: "Agent 先用 resource_account_select(data_requirements=[{kind, attributes}], env, app_id) 取得按资产记忆排序的空闲候选；无匹配仍选择符合登录身份和环境的账号。用 case_inputs 按用例 ID 或脚本路径传入 account_id 和业务对象。脚本 case.data.require 返回 data_missing 时，Agent 读取 task_get 的 cases[].data_missing 和本次证据，在已有授权范围内选择明确的准备脚本，通过 case_run(source_context={parent_task_id, purpose:\"prepare\", data_need}, case_inputs) 单独执行。准备脚本显式操作并 case.data.bind 输出对象和 account_id；Agent 核对 cases[].data_outputs、写入 resource_account_data_save，再用新的 client_request_id 和 purpose:\"resume\" 创建原用例的新任务，传回相同 account_id 与对象。Nexus 只保存关系和调度，脚本仓不含自动造数、换号或重试策略；写入结果未知先查询同一次 attempt，不能重复创建。",
+      },
       {
         name: "安装或卸载本机 Scout",
         tools: [
@@ -830,6 +858,13 @@ async function callTool(
 
   if (name === "agent_guide") {
     return pack(true, "", agentGuidePayload());
+  }
+
+  if (name.startsWith("agent_workflow_")) {
+    const operation = name.slice("agent_workflow_".length);
+    if (!["init", "start", "finish", "resolve", "get"].includes(operation)) return pack(false, "Unknown operation", {}, 404);
+    try { return pack(true, "", await operateWorkflow(env.DB, userId, String(args.workflow_id || ""), operation, args)); }
+    catch (error) { if (error instanceof WorkflowError) return pack(false, error.message, {}, error.http); throw error; }
   }
 
   if (name.startsWith("project_member_")) {
@@ -1094,7 +1129,22 @@ async function callTool(
         if (!args.env || typeof args.env !== "object" || Array.isArray(args.env)) return pack(false, "env 必须是对象", {}, 422);
         return pack(true, "项目环境配置已保存", await saveProjectEnv(env.DB, userId, project_id, args.env));
       }
+      if (name === "resource_account_select") {
+        const result = await listAccounts(env.DB, userId, project_id, String(args.env || ""), args.data_requirements, String(args.app_id || ""));
+        return pack(true, "数据记忆仅辅助选号", {...result, accounts: (result.accounts as Record<string, unknown>[]).filter(row => row.state === "free")});
+      }
       if (name === "resource_account_list") return pack(true, "", await listAccounts(env.DB, userId, project_id, String(args.env || "")));
+      if (name.startsWith("resource_account_data_")) {
+        const account_id = String(args.account_id || "").trim();
+        if (!account_id) return pack(false, "缺少 account_id", {}, 422);
+        if (name === "resource_account_data_list") return pack(true, "", await listAccountData(env.DB, userId, project_id, account_id, String(args.app_id || ""), String(args.kind || ""), Number(args.limit ?? 50), Number(args.offset ?? 0), Number(args.request_limit ?? 20), Number(args.request_offset ?? 0)));
+        if (name === "resource_account_data_save") return pack(true, "账号数据记录已保存", { item: await saveAccountData(env.DB, userId, project_id, account_id, args) });
+        if (name === "resource_account_data_delete") {
+          const data_id = String(args.data_id || "").trim();
+          if (!data_id) return pack(false, "缺少 data_id", {}, 422);
+          return pack(true, "", { deleted: await deleteAccountData(env.DB, userId, project_id, account_id, data_id) });
+        }
+      }
       if (name === "resource_account_create") return pack(true, "测试账号已新增", { account: await saveAccount(env.DB, userId, project_id, args) });
       if (name === "resource_account_update") {
         const account_id = String(args.account_id || "").trim();
@@ -1130,6 +1180,7 @@ async function callTool(
       sn: String(args.sn || ""),
       case_ids: args.case_ids,
       script_targets: args.script_targets,
+      case_inputs: args.case_inputs, source_context: args.source_context,
       revision: String(args.revision || ""),
       env_profile: String(args.env_profile || ""),
       env_surface: String(args.env_surface || ""),
@@ -1221,7 +1272,7 @@ export async function handleMcp(
         result: {
           protocolVersion: PROTOCOLS.has(offered) ? offered : protocol,
           capabilities: { tools: {} },
-          serverInfo: { name: "mino-nexus", version: "0.0.1-cloudflare" },
+          serverInfo: { name: "mino-nexus", version: "0.1.88-cloudflare" },
           instructions: AGENT_INSTRUCTIONS,
         },
       });

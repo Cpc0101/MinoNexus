@@ -18,7 +18,7 @@ from typing import Any, Iterable
 SCHEMA = "mino.coverage.v1"
 UI_CHANNELS = ("android", "ios", "web", "mac", "win", "linux")
 SERVER_CHANNELS = ("api", "rpc", "websocket", "db")
-_PASS = {"pass", "passed", "ok", "success", "succeeded", "completed"}
+_PASS = {"pass", "passed"}
 
 
 def _status_of(row: dict[str, Any] | None) -> str:

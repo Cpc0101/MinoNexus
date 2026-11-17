@@ -1,6 +1,8 @@
-import { ProjectAccessError, canReadRun } from "./project_access";
+import { taskReport } from "./execution_report";
+import { ProjectAccessError, canReadRun, ACCESS_SQL } from "./project_access";
 /** Shared HTTP business routes for persistent tasks, records and account pools. */
 import type { Env } from "./env";
+import { listAccountData, saveAccountData, deleteAccountData } from "./account_data";
 import { AccountError, listAccounts, saveAccount, deleteAccount } from "./account_pool";
 import { getRun, listRuns, toTaskJson } from "./run_store";
 import { TaskError, cancelTask, deviceAvailability, reconcileTaskResources } from "./task_scheduler";
@@ -11,6 +13,20 @@ function number(value: string | null, fallback: number): number { const n = Numb
 export async function executionRoutes(request: Request, env: Env, owner: string, pathname: string): Promise<Response | null> {
   const url = new URL(request.url), q = url.searchParams, method = request.method;
   try {
+    const select = /^\/project\/([^/]+)\/resources\/accounts\/select$/.exec(pathname);
+    if (select && method === "POST") {
+      const body = await request.json() as Record<string, unknown>;
+      const result = await listAccounts(env.DB, owner, decodeURIComponent(select[1]), String(body.env || ""), body.data_requirements, String(body.app_id || ""));
+      return ok({...result, accounts: (result.accounts as Record<string, unknown>[]).filter(row => row.state === "free")});
+    }
+    const accountData = /^\/project\/([^/]+)\/resources\/accounts\/([^/]+)\/data(?:\/([^/]+))?$/.exec(pathname);
+    if (accountData) {
+      const project = decodeURIComponent(accountData[1]), account = decodeURIComponent(accountData[2]);
+      const id = accountData[3] ? decodeURIComponent(accountData[3]) : "";
+      if (method === "GET" && !id) return ok(await listAccountData(env.DB, owner, project, account, q.get("app_id") || "", q.get("kind") || "", number(q.get("limit"), 50), number(q.get("offset"), 0), number(q.get("request_limit"), 20), number(q.get("request_offset"), 0)));
+      if (method === "PUT" && !id) return ok({ item: await saveAccountData(env.DB, owner, project, account, await request.json() as Record<string, unknown>) });
+      if (method === "DELETE" && id) return ok({ deleted: await deleteAccountData(env.DB, owner, project, account, id) });
+    }
     const accounts = /^\/project\/([^/]+)\/accounts(?:\/([^/]+))?$/.exec(pathname);
     if (accounts) {
       const project = decodeURIComponent(accounts[1]), id = accounts[2] ? decodeURIComponent(accounts[2]) : "";
@@ -23,9 +39,22 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
     }
     if (pathname === "/case-runner/tasks" && method === "GET") return ok(await listRuns(env.DB, owner, { app_id: q.get("app_id") || "", project_id: q.get("project_id") || "", status: q.get("status") || "", limit: number(q.get("limit"), 30), offset: number(q.get("offset"), 0) }));
     if (pathname === "/case-runner/tasks/summary" && method === "GET") {
-      const rows = await env.DB.prepare("SELECT status,COUNT(*) AS count FROM app_regression_runs WHERE owner_user_id=? GROUP BY status").bind(owner).all<{ status: string; count: number }>();
-      const counts = Object.fromEntries((rows.results || []).map(r => [r.status, Number(r.count)]));
-      return ok({ total: Object.values(counts).reduce((a, b) => a + b, 0), running: (counts.running || 0) + (counts.queued || 0) + (counts.cancel_requested || 0), failed: counts.fail || 0, succeeded: counts.pass || 0 });
+      const rows = await env.DB.prepare(`SELECT r.payload_json FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${ACCESS_SQL} ORDER BY r.created_at_ms DESC,r.run_id DESC`).bind(owner, owner).all<{ payload_json: string }>();
+      const requested = new Set((q.get("app_ids") || "").split(",").filter(Boolean));
+      const runs = (rows.results || []).map(row => JSON.parse(row.payload_json)).filter(doc => !requested.size || requested.has(doc.app_id));
+      const apps = [...new Set(runs.map(doc => String(doc.app_id)))];
+      const items = apps.map(app_id => {
+        const docs = runs.filter(doc => doc.app_id === app_id), latest = toTaskJson(docs[0], false);
+        return { app_id, running_count: docs.filter(doc => !doc.finished_at && ['running', 'queued', 'cancel_requested', 'unknown'].includes(doc.status)).length,
+          total_count: docs.length, latest_task_id: latest.task_id, last_task_id: latest.task_id,
+          status: latest.status, last_status: latest.status, completed: latest.completed, total: latest.total,
+          started_at: latest.started_at, last_started_at: latest.started_at, pass_rate: latest.pass_rate, last_pass_rate: latest.pass_rate,
+          statistics: latest.statistics, result_status: latest.result_status };
+      });
+      const outcomes = runs.map(doc => taskReport(doc));
+      return ok({ items, total: runs.length, running: runs.filter(doc => !doc.finished_at && ['running', 'queued', 'cancel_requested', 'unknown'].includes(doc.status)).length,
+        failed: outcomes.filter(report => report.formal.total > 0 && report.result_status === 'fail').length,
+        succeeded: outcomes.filter(report => report.formal.total > 0 && report.result_status === 'pass').length });
     }
     if (pathname === "/case-runner/devices" && method === "GET") return ok(await deviceAvailability(env, owner, { app_id: q.get("app_id") || "", only_online: false }));
     const task = /^\/case-runner\/tasks\/([^/]+)(\/cancel|\/resources\/reconcile)?$/.exec(pathname);

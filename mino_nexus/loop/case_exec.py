@@ -66,7 +66,7 @@ def _record_case_preflight_fail(
     provider_id: str = "",
     reason_code: str = "",
     reason_detail: dict | None = None,
-    status: str = "fail",
+    status: str = "blocked",
 ) -> None:
     """开跑前失败（租约/拒跑）也落 session，避免 Studio Session Log 404。"""
     from mino_nexus.records.eventlog.writer import open_session
@@ -186,8 +186,8 @@ def _run_case_list(
                 run_id=run_id, case=case, reason=reason, app_id=app_id, sn=sn,
                 provider_id=str(doc.get("provider_id") or ""), reason_code=reason.split(":", 1)[0],
             )
-            run_store.patch_case(run_id, cid, target_sn=sn, status="fail", summary=reason, error=reason, **_case_trace_fields(run_id, case))
-            emit_testing_task({"event": "case_finished", "run_id": run_id, "task_id": run_id, "case_id": cid, "status": "fail", "app_id": app_id})
+            run_store.patch_case(run_id, cid, target_sn=sn, status="blocked", execution_started="no", failure_stage="admission", summary=reason, error=reason, **_case_trace_fields(run_id, case))
+            emit_testing_task({"event": "case_finished", "run_id": run_id, "task_id": run_id, "case_id": cid, "status": "blocked", "app_id": app_id})
             continue
         rk = case.get("resource_key") if isinstance(case.get("resource_key"), dict) else None
         merged_scene = scene
@@ -206,13 +206,13 @@ def _run_case_list(
                 sn=sn,
                 provider_id=str(doc.get("provider_id") or ""),
             )
-            run_store.patch_case(run_id, cid, target_sn=sn, status="fail", summary=reason, error=reason, **_case_trace_fields(run_id, case))
+            run_store.patch_case(run_id, cid, target_sn=sn, status="blocked", execution_started="no", failure_stage="admission", summary=reason, error=reason, **_case_trace_fields(run_id, case))
             emit_testing_task({
                 "event": "case_finished",
                 "run_id": run_id,
                 "task_id": run_id,
                 "case_id": cid,
-                "status": "fail",
+                "status": "blocked",
                 "app_id": app_id,
             })
             continue
@@ -236,13 +236,13 @@ def _run_case_list(
                 sn=sn,
                 provider_id=str(doc.get("provider_id") or ""),
             )
-            run_store.patch_case(run_id, cid, target_sn=sn, status="fail", summary=reason, error=reason, **_case_trace_fields(run_id, case))
+            run_store.patch_case(run_id, cid, target_sn=sn, status="blocked", execution_started="no", failure_stage="admission", summary=reason, error=reason, **_case_trace_fields(run_id, case))
             emit_testing_task({
                 "event": "case_finished",
                 "run_id": run_id,
                 "task_id": run_id,
                 "case_id": cid,
-                "status": "fail",
+                "status": "blocked",
                 "app_id": app_id,
             })
             continue
@@ -299,14 +299,14 @@ def _run_case_list(
                     reason_code=code,
                     reason_detail=detail or None,
                 )
-                run_store.patch_case(run_id, cid, target_sn=sn, status="fail", summary=reason, error=reason,
+                run_store.patch_case(run_id, cid, target_sn=sn, status="blocked", execution_started="no", failure_stage="admission", summary=reason, error=reason,
                     reason_code=code, reason_detail=detail or None, **_case_trace_fields(run_id, case))
                 emit_testing_task({
                     "event": "case_finished",
                     "run_id": run_id,
                     "task_id": run_id,
                     "case_id": cid,
-                    "status": "fail",
+                    "status": "blocked",
                     "app_id": str(doc.get("app_id") or ""),
                 })
                 continue
@@ -370,6 +370,7 @@ def _run_case_list(
                 error=result.get("summary") or "",
                 elapsed_ms=result.get("elapsed_ms") or 0,
                 engine_steps=result.get("steps") or [],
+                data_outputs=result.get("data_outputs") or {}, data_missing=result.get("data_missing") or [],
                 skill_id=result.get("skill_id") or "",
                 view_id=result.get("view_id") or "",
                 slots=result.get("slots") if isinstance(result.get("slots"), dict) else {},
@@ -377,6 +378,7 @@ def _run_case_list(
                 reason_code=str(result.get("reason_code") or ""),
                 failure_stage=str(result.get("failure_stage") or ""),
                 case_step=int(result.get("case_step") or 0),
+                **{key: result[key] for key in ("run_purpose", "test_report", "assertions", "source_coverage", "source_hash", "started_at", "finished_at", "sealed", "last_event_seq") if key in result},
                 **_case_trace_fields(run_id, case),
             )
             emit_testing_task({

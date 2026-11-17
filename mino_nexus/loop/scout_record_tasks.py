@@ -26,7 +26,8 @@ def project(row: dict[str, Any]) -> None:
             return
         fields = {key: summary[key] for key in (
             "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
-            "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report",
+            "started_at", "finished_at", "sealed", "last_event_seq", "run_purpose", "revision",
+            "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report", "data_outputs", "data_missing",
         ) if key in summary}
         resolution = row.get("context", {}).get("resource_resolution")
         if resolution:
@@ -35,7 +36,7 @@ def project(row: dict[str, Any]) -> None:
                       record_node_id=row["node_id"], record_source="scout",
                       detail_availability=summary.get("detail_availability", "pending"),
                       status_sync_at=row["updated_at"], summary_version=row["summary_version"],
-                      status="running" if row["status"] in {"queued", "running"} else row["status"])
+                      status=row["status"])
         if fields.get("resource_isolated"):
             with run_store._LOCK:
                 guarded = run_store.get(row["task_id"])
@@ -50,7 +51,7 @@ def project(row: dict[str, Any]) -> None:
             cases = latest.get("cases") or []
             if cases and all(case.get("status") in records.TERMINAL for case in cases):
                 status = "cancelled" if latest.get("cancel_requested") else (
-                    "done" if all(case.get("status") == "pass" for case in cases) else "failed")
+                    "done")
                 finished = run_store.finish(row["task_id"], status=status)
                 if not run_store.task_is_live(finished):
                     from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
@@ -106,7 +107,7 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
         owner_user_id=require_user_id(), case_id=str(case.get("case_id") or ""), sn=sn,
         platform=platform, repo_url=public_url(repo.get("url") or ""), branch=repo.get("branch") or "",
         revision=doc.get("revision") or "", script_path=case.get("script_path") or "",
-        execution_timeout_sec=budget))))
+        execution_timeout_sec=budget, inputs=case.get("inputs") or {}, source_context=doc.get("source_context") or {}))))
     from mino_nexus.resources.resource_claim_tx import _claim
     resource_request = dict(_claim.get() or {})
     row = records.register(node_id=node.node_id, payload=payload, context={

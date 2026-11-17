@@ -175,21 +175,31 @@ def _account(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, An
 def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
     from mino_nexus.loop.script_runtime import ScriptAbort
     from mino_nexus.resources.accounts.lease import lease_script_account
+    from mino_nexus.resources.account_data import validate_data_need, record_request
+
+    data_need = validate_data_need(params.get("data_need", ""))
+    from mino_nexus.resources.account_data_match import validate_data_requirements, rank_account_data
+    data_requirements = validate_data_requirements(params.get("data_requirements"))
 
     explicit = params.get("requirements")
     if explicit is not None and (not isinstance(explicit, dict) or any(
             not isinstance(explicit.get(bucket, []), list) for bucket in ("all", "prefer"))):
         raise ValueError("account_requirements_invalid")
     selected_case = dict(admission.case)
+    selected_case["data_requirements"] = data_requirements
     if explicit is not None:
         selected_case["account_requirements"] = explicit
     # The allocator validates a restored lease against the requested clauses.
     row = dict(getattr(admission.ctx, "picked_account", None) or {})
-    if explicit is not None or not str(row.get("id") or row.get("account_id") or "").strip():
+    if explicit is not None or data_requirements or not str(row.get("id") or row.get("account_id") or "").strip():
         leased, err = lease_script_account(admission.ctx, selected_case)
         row = dict(leased or {})
         if not str(row.get("id") or row.get("account_id") or "").strip():
             raise ScriptAbort(err or "这条用例没有租到账号", reason_code="resource_account_missing")
+    row = rank_account_data(admission.project_id, [row], data_requirements, app_id=admission.app_id)[0]
+    record_request(admission.project_id, str(row.get("id") or row.get("account_id") or ""),
+                   run_id=admission.run_id, session_id=admission.session_id, app_id=admission.app_id,
+                   case_id=admission.case_id, data_need=data_need)
     otp = str(row.get("otp") or row.get("sms_code") or "").strip()
     if not otp:
         # 账号行没有码时，按 Nexus 项目环境策略给固定码；邮箱收件箱也由 Nexus 策略下发给 Scout。
@@ -198,6 +208,9 @@ def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[st
         otp = str(resolve_otp(getattr(admission, "ctx", None))[0] or "").strip()
     return {
         "_summary": "已返回本次租到的账号",
+        "project_id": admission.project_id,
+        "data_matches": row.get("data_matches", []),
+        "data_match_count": row.get("data_match_count", 0),
         "id": str(row.get("id") or row.get("account_id") or ""),
         "email": str(row.get("email") or ""),
         "phone": str(row.get("phone") or ""),

@@ -1,4 +1,5 @@
 import { requireProjectOwner } from "./project_access";
+import { rankAccountData, validateDataRequirements } from "./account_data_match";
 /** Account pool and atomic leases. Business facets rank accounts; never prove prep. */
 import { requireOwnedProject } from "./script_repo";
 import { getProjectEnv, updateProjectEnv } from "./project_env";
@@ -30,6 +31,7 @@ function facets(row: Account): Record<string, unknown> {
 }
 function publicAccount(row: Account, secrets = false): Record<string, unknown> {
   const out: Record<string, unknown> = { ...row, account_id: row.id, facets: facets(row), locked: Boolean(row.locked),
+    state: row.locked ? "locked" : row.lease_run_id ? "occupied" : "free",
     account_ident: row.email || row.phone || row.username || row.display_name,
     lease: row.lease_run_id ? { run_id: row.lease_run_id, session_id: row.lease_session_id } : {} };
   for (const key of ["facets_json", "owner_user_id", "lease_run_id", "lease_session_id", "lease_id", "lease_expires_at_ms"]) delete out[key];
@@ -39,12 +41,14 @@ function publicAccount(row: Account, secrets = false): Record<string, unknown> {
 async function projectGate(db: D1Database, owner: string, project: string): Promise<void> {
   if (!await requireOwnedProject(db, project, owner)) throw new AccountError("project_not_found", "没有这个项目", 404);
 }
-export async function listAccounts(db: D1Database, owner: string, project: string, env = ""): Promise<Record<string, unknown>> {
+export async function listAccounts(db: D1Database, owner: string, project: string, env = "", dataRequirements: unknown = [], app = ""): Promise<Record<string, unknown>> {
   owner = await requireProjectOwner(db, project, owner);
   await projectGate(db, owner, project);
   const rows = await db.prepare("SELECT * FROM pool_accounts WHERE owner_user_id=? AND project_id=? AND (?='' OR env=?) ORDER BY created_at,id")
     .bind(owner, project, env, env).all<Account>();
-  const accounts = (rows.results || []).map(r => publicAccount(r));
+  let accounts: Record<string, unknown>[];
+  try { accounts = await rankAccountData(db, project, (rows.results || []).map(r => publicAccount(r)), dataRequirements, app); }
+  catch (error) { throw new AccountError("account_data_invalid", String((error as Error).message), 422); }
   const environments = [...new Set((rows.results || []).map(r => r.env))].map(key => ({ key, label: key }));
   return { accounts, environments, default_profile: String(((await getProjectEnv(db, owner, project)).env as Record<string, unknown>)?.default_profile || "test") };
 }
@@ -319,7 +323,7 @@ async function leaseRow(db: D1Database, scope: LeaseScope, row: Account, loginPo
   const result = await db.prepare("UPDATE pool_accounts SET lease_run_id=?,lease_session_id=?,lease_id=?,lease_expires_at_ms=?,updated_at=? WHERE id=? AND owner_user_id=? AND project_id=? AND env=? AND locked=0 AND facets_json=? AND (lease_run_id='' OR (lease_run_id=? AND lease_session_id=?))")
     .bind(scope.run, scope.session, leaseId, Date.now() + 120_000, Date.now(), row.id, scope.owner, scope.project, scope.env, row.facets_json, scope.run, scope.session).run();
   if (!result.meta.changes) return {};
-  return { ...publicAccount(row, true), id: row.id, login_policy: loginPolicy, lease_id: leaseId };
+  return { ...publicAccount(row, true), state: "occupied", id: row.id, login_policy: loginPolicy, lease_id: leaseId };
 }
 async function findStableAccount(db: D1Database, scope: LeaseScope, id: string): Promise<Account | null> {
   return db.prepare("SELECT * FROM pool_accounts WHERE id=? AND owner_user_id=? AND project_id=? AND env=?")
@@ -383,8 +387,13 @@ function planFacets(): Record<string, unknown> {
 
 export async function leaseAccount(db: D1Database, scope: LeaseScope, requirements: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   scope = { ...scope, owner: await requireProjectOwner(db, scope.project, scope.owner) };
-  const all = clauses(requirements.all), prefer = clauses(requirements.prefer);
-  if (!all.length) all.push({ facet: "health", op: "eq", value: "available" });
+  const required = clauses(requirements.all);
+  const strict = new Set(["id", "account_id", "phone", "email", "username", "env"]);
+  const all = required.filter(c => strict.has(c.facet));
+  const prefer = [...required.filter(c => !strict.has(c.facet)), ...clauses(requirements.prefer)];
+  let dataNeeds;
+  try { dataNeeds = validateDataRequirements(requirements.data_requirements); }
+  catch (error) { throw new AccountError("account_data_invalid", String((error as Error).message)); }
   if (requirements.env && requirements.env !== scope.env) throw new AccountError("account_env_mismatch", "账号环境必须与本次任务一致");
   const envDoc = ((await getProjectEnv(db, scope.owner, scope.project)).env || {}) as Record<string, unknown>;
   const secrets = effectiveLoginSecrets(envDoc, scope);
@@ -397,9 +406,13 @@ export async function leaseAccount(db: D1Database, scope: LeaseScope, requiremen
     const score = prefer.filter(c => matches(values[c.facet], c)).length;
     return { row, score: score + (row.lease_run_id === scope.run ? 1000 : 0), safe };
   }).filter(c => c.safe).sort((a, b) => b.score - a.score || a.row.id.localeCompare(b.row.id));
-  for (const { row } of candidates) {
+  const ranked = await rankAccountData(db, scope.project, candidates.map(c => c.row), dataNeeds, scope.app_id || "");
+  // Keep an existing lease stable; otherwise prefer remembered input objects.
+  ranked.sort((a, b) => Number(b.lease_run_id === scope.run) - Number(a.lease_run_id === scope.run));
+  for (const candidate of ranked) {
+    const row = candidate as Account;
     const leased = await leaseRow(db, scope, row, loginPolicy);
-    if (Object.keys(leased).length) return leased;
+    if (Object.keys(leased).length) return { ...leased, data_matches: candidate.data_matches || [], data_match_count: candidate.data_match_count || 0 };
   }
   const provisioned = await provisionAccount(db, scope, requirements, envDoc, all);
   if (provisioned) return provisioned;

@@ -13,8 +13,21 @@ from pydantic import BaseModel, Field
 from mino_nexus.api.deps import current_session, project_maintainer
 from mino_nexus.core.http_util import ok
 from mino_nexus.resources import resource_view
+from mino_nexus.resources import account_data
+from mino_nexus.resources.project_store import require_project
 
 router = APIRouter(prefix="/project/{project_id}/resources", tags=["Resources"])
+
+
+class SelectAccountBody(BaseModel):
+    env: str = ""
+    app_id: str = ""
+    data_requirements: list[dict] = Field(default_factory=list, max_length=20)
+
+
+@router.post("/accounts/select", dependencies=[Depends(project_maintainer)])
+def select_accounts(project_id: str, body: SelectAccountBody):
+    return ok(_account_data_call(project_id, resource_view.select_accounts, **body.model_dump()))
 
 
 class ReserveAccountBody(BaseModel):
@@ -27,6 +40,45 @@ class ReserveAccountBody(BaseModel):
 
 class ReleaseAccountBody(BaseModel):
     run_id: str = Field(..., min_length=1)
+
+
+class AccountDataBody(BaseModel):
+    data_id: str = Field(..., min_length=1, max_length=128)
+    app_id: str = Field(default="", max_length=128)
+    kind: str = Field(..., min_length=1, max_length=64)
+    object_ref: str = Field(..., min_length=1, max_length=2048)
+    title: str = Field(default="", max_length=300)
+    attributes: dict = Field(default_factory=dict)
+    source_task_id: str = Field(default="", max_length=128)
+
+
+def _account_data_call(project_id: str, fn, *args, **kwargs):
+    try:
+        require_project(project_id)
+        return fn(project_id, *args, **kwargs)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"reason_code": "account_not_found", "message": "项目或账号不存在"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": "account_data_invalid", "message": str(exc)}) from exc
+
+
+@router.get("/accounts/{account_id}/data", dependencies=[Depends(project_maintainer)])
+def resource_account_data_list(project_id: str, account_id: str, app_id: str = "", kind: str = "",
+                               limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0),
+                               request_limit: int = Query(default=20, ge=1, le=200), request_offset: int = Query(default=0, ge=0),
+                               _sess: dict = Depends(current_session)):
+    return ok(_account_data_call(project_id, account_data.list_data, account_id, app_id=app_id, kind=kind, limit=limit, offset=offset,
+                                 request_limit=request_limit, request_offset=request_offset))
+
+
+@router.put("/accounts/{account_id}/data", dependencies=[Depends(project_maintainer)])
+def resource_account_data_save(project_id: str, account_id: str, body: AccountDataBody, _sess: dict = Depends(current_session)):
+    return ok({"item": _account_data_call(project_id, account_data.save_data, account_id, body.model_dump())})
+
+
+@router.delete("/accounts/{account_id}/data/{data_id}", dependencies=[Depends(project_maintainer)])
+def resource_account_data_delete(project_id: str, account_id: str, data_id: str, _sess: dict = Depends(current_session)):
+    return ok({"deleted": _account_data_call(project_id, account_data.delete_data, account_id, data_id)})
 
 
 class AccountOtpBody(BaseModel):

@@ -1,0 +1,12 @@
+id: agent.workflow.resolve
+title: 记录原任务写入核对
+description: 追加同一原任务的核对证据，保留原未知写入历史，不改变测试结论或资源隔离。
+route: POST /assistant/workflows/{workflow_id}/resolve
+risk: write
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"task_id":{"type":"string","minLength":1,"maxLength":128},"evidence":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}}},"required":["workflow_id","attempt_id","task_id","evidence"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

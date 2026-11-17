@@ -8,7 +8,7 @@ def normalize_test_report(raw):
     if not isinstance(raw, dict) or type(raw.get("version")) is not int or raw.get("version") != 1:
         raise ValueError("record_report_invalid")
     purpose = raw.get("run_purpose")
-    if not isinstance(purpose, str) or purpose not in {"authoring", "verification", "regression"}:
+    if not isinstance(purpose, str) or purpose not in {"authoring", "verification", "regression", "preparation", "unclassified"}:
         raise ValueError("record_report_invalid")
     def counts(value, keys):
         if not isinstance(value, dict):
@@ -45,7 +45,48 @@ def normalize_test_report(raw):
     failure_index = {"failure": {"source_ref": str(failure.get("source_ref") or "")[:120],
                                   "title": str(failure.get("title") or "")[:300], "actual": str(failure.get("actual") or "")[:800],
                                   "event_seq": failure["event_seq"] if type(failure.get("event_seq")) is int and 0 <= failure["event_seq"] <= 9007199254740991 else 0}} if isinstance(failure, dict) else {}
-    return {"version": 1, "run_purpose": purpose, "items": result, "items_truncated": raw.get("items_truncated") is True,
+    optional = {}
+    if "context" in raw:
+        if not isinstance(raw["context"], dict):
+            raise ValueError("record_report_invalid")
+        optional["context"] = {key: str(raw["context"].get(key) or "")[:500] for key in ("task_id", "session_id", "attempt_id", "case_id", "node_id", "revision", "script_path", "source_hash")}
+    if "auxiliary_assertions" in raw:
+        auxiliary = counts(raw["auxiliary_assertions"], ("total", "pass", "fail", "unknown"))
+        if auxiliary["total"] != sum(auxiliary[key] for key in ("pass", "fail", "unknown")):
+            raise ValueError("record_report_invalid")
+        optional["auxiliary_assertions"] = auxiliary
+    refs = [item["source_ref"] for item in result]
+    if any(not ref for ref in refs) or len(set(refs)) != len(refs):
+        raise ValueError("record_report_invalid")
+    return {"version": 1, "run_purpose": purpose, **optional, "items": result, "items_truncated": raw.get("items_truncated") is True,
             "counts": business_counts,
             "attribution": attr(raw.get("attribution")),
             "reason_code": str(raw.get("reason_code") or "")[:120], "model_usage": model_usage, **failure_index}
+
+
+def validate_report_summary(summary, payload):
+    """Validate the report against this attempt, never a different execution."""
+    from mino_nexus.contract.execution_report import timestamp
+    for key in ("started_at", "finished_at"):
+        value = summary.get(key)
+        if value and timestamp(value) is None:
+            raise ValueError("record_timestamp_invalid")
+    start, end = timestamp(summary.get("started_at")), timestamp(summary.get("finished_at"))
+    if start is not None and end is not None and end < start:
+        raise ValueError("record_timestamp_invalid")
+    if summary.get("status") in {"queued", "running"} and end is not None:
+        raise ValueError("record_timestamp_invalid")
+    report = summary.get("test_report") or {}
+    for key, value in (report.get("context") or {}).items():
+        if value and value != str(summary.get(key) or ""):
+            raise ValueError("record_report_identity_mismatch")
+    if report and any(item.get("event_seq", 0) > summary.get("last_event_seq", 0) for item in report["items"]):
+        raise ValueError("record_report_evidence_mismatch")
+    expected_purpose = "preparation" if (payload.get("source_context") or {}).get("purpose") == "prepare" else summary.get("run_purpose")
+    if report and expected_purpose and expected_purpose != report.get("run_purpose"):
+        raise ValueError("record_report_purpose_mismatch")
+    assertions = summary.get("assertions")
+    if assertions is not None and (not isinstance(assertions, dict) or any(type(assertions.get(k)) is not int or assertions[k] < 0 for k in ("total", "pass", "fail", "unknown")) or assertions["total"] != sum(assertions[k] for k in ("pass", "fail", "unknown"))):
+        raise ValueError("record_assertions_invalid")
+    if summary.get("status") == "pass" and (not assertions or not assertions["total"] or assertions["total"] != assertions["pass"] or any((report.get("counts") or {}).get(k) for k in ("fail", "unknown", "not_run")) or (summary.get("source_coverage") or {}).get("missing")):
+        raise ValueError("record_pass_without_assertions")

@@ -12,6 +12,7 @@ import {
 } from "./mcp_tokens";
 import { listGrants, revokeGrant } from "./mcp_oauth";
 import { agentContract } from "./agent_contract";
+import { operateWorkflow, WorkflowError } from "./agent_workflow";
 
 async function getJson(
   db: D1Database,
@@ -81,6 +82,15 @@ export async function handleAssistant(
     } catch {
       body = {};
     }
+  }
+
+  const workflow = pathname.match(/^\/assistant\/workflows\/([^/]+)(?:\/(init|start|finish|resolve))?$/);
+  if (workflow) {
+    const operation = workflow[2] || "get";
+    if (method !== (operation === "get" ? "GET" : "POST")) return fail(405, "Method not allowed");
+    if (!body || typeof body !== "object" || Array.isArray(body)) return fail(422, "Invalid workflow body");
+    try { return envelope(await operateWorkflow(env.DB, userId, decodeURIComponent(workflow[1]), operation, body)); }
+    catch (error) { if (error instanceof WorkflowError) return fail(error.http, error.message); throw error; }
   }
 
   if (pathname === "/assistant/status" && method === "GET") {
