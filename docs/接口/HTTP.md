@@ -667,3 +667,8 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 `GET /project/{project_id}/members` 返回 `{members:[{user_id,email,role,added_at}],can_manage}`。
 `POST` 同一路径接收 `{email}`，仅支持已注册邮箱；`DELETE /project/{project_id}/members/{user_id}` 移除成员。只有所有者可管理成员，不能移除所有者。
 成员可查看和编辑项目需求、应用、仓库、环境及账号资源，通过 MCP 操作，并使用本人 Scout 执行共享脚本。节点绑定、执行任务身份仍属于发起账号；项目成员不因此获得其他人的节点管理权。任务及证据按当前项目成员关系可见，移除后不再允许读取或新建执行，已经开始的任务保留原执行身份。
+
+
+## Web 任务资源核验
+
+`POST /case-runner/tasks/{task_id}/resources/reconcile` 仅任务 owner 可调用，返回最新任务 JSON。必须已结束且为 Web 任务；每个已接受 attempt 的原 Scout 封存记录、当前停止及浏览器关闭证明通过后，按当前摘要版本和租约代次原子释放并保存 resource_resolution。结果未知、原节点离线、版本或代次变化返回明确失败，资源不变；实体设备返回 resource_baseline_required。重复恢复幂等，历史业务结果不改成通过。Cloudflare MCP `task_resource_reconcile({task_id})` 与此接口共用逻辑。

@@ -3,7 +3,7 @@ import { ProjectAccessError, canReadRun } from "./project_access";
 import type { Env } from "./env";
 import { AccountError, listAccounts, saveAccount, deleteAccount } from "./account_pool";
 import { getRun, listRuns, toTaskJson } from "./run_store";
-import { TaskError, cancelTask, deviceAvailability } from "./task_scheduler";
+import { TaskError, cancelTask, deviceAvailability, reconcileTaskResources } from "./task_scheduler";
 import { artifactChunk, artifactResponse, listSessions, readEvents, readRecord, screenshotMetadata } from "./record_proxy";
 
 function ok(data: unknown): Response { return Response.json({ code: 200, ok: true, data }); }
@@ -28,10 +28,11 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
       return ok({ total: Object.values(counts).reduce((a, b) => a + b, 0), running: (counts.running || 0) + (counts.queued || 0) + (counts.cancel_requested || 0), failed: counts.fail || 0, succeeded: counts.pass || 0 });
     }
     if (pathname === "/case-runner/devices" && method === "GET") return ok(await deviceAvailability(env, owner, { app_id: q.get("app_id") || "", only_online: false }));
-    const task = /^\/case-runner\/tasks\/([^/]+)(\/cancel)?$/.exec(pathname);
+    const task = /^\/case-runner\/tasks\/([^/]+)(\/cancel|\/resources\/reconcile)?$/.exec(pathname);
     if (task) {
       const id = decodeURIComponent(task[1]);
-      if (task[2] && method === "POST") return ok(toTaskJson(await cancelTask(env, owner, id)));
+      if (task[2] === "/cancel" && method === "POST") return ok(toTaskJson(await cancelTask(env, owner, id)));
+      if (task[2] === "/resources/reconcile" && method === "POST") return ok(toTaskJson(await reconcileTaskResources(env, owner, id)));
       if (!task[2] && method === "GET") {
         const run = await getRun(env.DB, id);
         if (!run || !await canReadRun(env.DB, owner, run)) throw new TaskError("task_not_found", "没有这个任务", 404);

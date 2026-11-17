@@ -75,5 +75,10 @@ def agent_guide() -> dict[str, Any]:
                 "tools": ["resource_overview", "resource_device_list", "resource_account_list", "resource_env_get", "resource_env_set"],
                 "then": "登录方式、验证码策略、Gmail 收件箱、手机号/Gmail 别名序号和自动补池策略由 Nexus 项目环境配置决定。号池为空或没有匹配账号时，租号会按该策略自动新增；不要把这些字段写进脚本仓 config.yaml。",
             },
+            {
+                "name": "恢复已结束 Web 任务的隔离资源",
+                "tools": ["task_get", "device_list", "task_resource_reconcile"],
+                "then": "正常任务结束后自动结算资源。用户要求恢复历史隔离时调用 task_resource_reconcile(task_id)，由原 Scout 核验进程及浏览器停止，再原子释放槽位和账号；证据不足保持隔离，原测试结论不变。无需登录 Workbench。",
+            },
         ],
     }

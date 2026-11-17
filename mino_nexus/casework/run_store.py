@@ -454,7 +454,9 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "env_profile": doc.get("env_profile") or "",
         "env_surface": doc.get("env_surface") or "",
         "action_scheme": normalize_action_scheme(doc.get("action_scheme")),
-        "resource_isolated": bool(unresolved(doc)),
+        "resource_isolated": bool(unresolved(doc) or doc.get("resource_isolated")
+                                  or any(case.get("resource_isolated") for case in doc.get("cases") or [])),
+        "resource_resolution": copy.deepcopy(doc.get("resource_resolution")),
         "package": doc.get("package") or "",
         "requirement_id": doc.get("requirement_id") or "",
         "release_id": doc.get("release_id") or "",

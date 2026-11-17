@@ -20,7 +20,7 @@ import { handlePluginRoutes } from "./plugin_routes";
 import { startRun } from "./case_runner";
 import { getRepoApps, saveRepoApps } from "./repo_apps";
 import { getRun, listRuns, toTaskJson } from "./run_store";
-import { cancelTask, deviceAvailability, TaskError } from "./task_scheduler";
+import { cancelTask, deviceAvailability, reconcileTaskResources, TaskError } from "./task_scheduler";
 import { artifactChunk, readEvents, readRecord, screenshotMetadata, listSessions } from "./record_proxy";
 import { listAccounts, saveAccount, deleteAccount, importAccounts, AccountError } from "./account_pool";
 import { getInstallStatus, issueInstallToken, unbindScout } from "./install";
@@ -540,6 +540,7 @@ const TOOLS = [
     { name: "project_member_remove", title: "移除项目成员", description: "所有者移除成员，撤销其项目访问权限。", properties: { project_id: { type: "string" }, user_id: { type: "string" } }, required: ["project_id", "user_id"] },
     { name: "task_list", title: "任务列表", description: "查询当前账号的持久任务摘要。", properties: { app_id: { type: "string" }, project_id: { type: "string" }, status: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 } }, required: [] },
     { name: "task_cancel", title: "取消任务", description: "持久保存取消意图；仅在 Scout 确认停止后任务才显示 cancelled。", properties: { task_id: { type: "string" } }, required: ["task_id"] },
+    { name: "task_resource_reconcile", title: "核验并释放任务资源", description: "对已结束的 Web 任务核验原 Scout 执行进程与浏览器停止证据，原子释放设备和账号租约。保留原测试结论；停止证据不足时继续隔离。", properties: { task_id: { type: "string" } }, required: ["task_id"] },
     { name: "session_list", title: "执行记录列表", description: "查询当前账号的记录索引；完整证据保存在 Scout。", properties: { run_id: { type: "string" }, app_id: { type: "string" }, case_id: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, required: [] },
     { name: "session_record", title: "执行记录摘要", description: "经已认证节点连接读取 Scout 上的实时记录摘要。", properties: { session_id: { type: "string" } }, required: ["session_id"] },
     { name: "session_events", title: "执行证据", description: "读取 Scout 本地事件。from_seq 是排他游标，下一页使用 next_seq；完整大节点通过 session_artifact 读取；节点离线明确返回证据暂不可用。", properties: { session_id: { type: "string" }, from_seq: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 200 }, max_bytes: { type: "integer", minimum: 1024, maximum: 196608, default: 196608 } }, required: ["session_id"] },
@@ -555,7 +556,7 @@ const TOOLS = [
   ].map(tool => ({ name: tool.name, title: tool.title, description: tool.description,
     inputSchema: { type: "object", additionalProperties: false, properties: tool.properties, required: tool.required },
     annotations: {
-      readOnlyHint: !["project_member_add", "project_member_remove", "task_cancel", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import"].includes(tool.name),
+      readOnlyHint: !["project_member_add", "project_member_remove", "task_cancel", "task_resource_reconcile", "resource_env_set", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import"].includes(tool.name),
       destructiveHint: ["resource_account_delete", "project_member_remove"].includes(tool.name),
       idempotentHint: !["task_cancel", "resource_account_create", "resource_account_delete", "resource_account_import"].includes(tool.name),
       openWorldHint: false,
@@ -683,6 +684,11 @@ function agentGuidePayload(): Record<string, unknown> {
       {
         name: "看资源够不够",
         tools: ["resource_overview", "resource_device_list", "resource_account_list"],
+      },
+      {
+        name: "恢复已结束 Web 任务的隔离资源",
+        tools: ["task_get", "device_list", "task_resource_reconcile"],
+        then: "正常任务结束后自动结算资源。用户要求恢复历史隔离时调用 task_resource_reconcile(task_id)，由原 Scout 核验进程及浏览器停止，再原子释放槽位和账号；证据不足保持隔离，原测试结论不变。无需登录 Workbench。",
       },
     ],
   };
@@ -1037,6 +1043,7 @@ async function callTool(
   try {
     if (name === "task_list") return pack(true, "", await listRuns(env.DB, userId, { app_id: String(args.app_id || ""), project_id: String(args.project_id || ""), status: String(args.status || ""), limit: Number(args.limit || 30), offset: Number(args.offset || 0) }));
     if (name === "task_cancel") return pack(true, "已记录取消请求", toTaskJson(await cancelTask(env, userId, String(args.task_id || ""))));
+    if (name === "task_resource_reconcile") return pack(true, "任务资源已核验", toTaskJson(await reconcileTaskResources(env, userId, String(args.task_id || ""))));
     if (name === "session_list") return pack(true, "", await listSessions(env, userId, { run_id: String(args.run_id || ""), app_id: String(args.app_id || ""), case_id: String(args.case_id || ""), limit: Number(args.limit || 30) }));
     if (name === "session_record") return pack(true, "", await readRecord(env, userId, String(args.session_id || ""), "record.status"));
     if (name === "session_events") return pack(true, "", await readEvents(env, userId, String(args.session_id || ""), Number(args.from_seq || 0), Number(args.limit || 100), Math.min(196608, Number(args.max_bytes || 196608))));

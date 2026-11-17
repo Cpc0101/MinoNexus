@@ -37,6 +37,7 @@ export type CaseRow = {
   source_coverage?: Record<string, unknown>;
   source_hash?: string;
   resource_isolated?: boolean;
+  resource_resolution?: Record<string, unknown>;
 };
 
 export type RunDoc = {
@@ -65,6 +66,7 @@ export type RunDoc = {
   report_url?: string;
   cancel_requested?: boolean;
   resource_isolated?: boolean;
+  resource_resolution?: Record<string, unknown>;
   lease_id?: string;
   lease_generation?: number;
   request_fingerprint?: string;
@@ -282,6 +284,7 @@ export function toTaskJson(doc: RunDoc, includeCases = true): Record<string, unk
     error: doc.error || "",
     reason_code: doc.reason_code || "",
     resource_isolated: Boolean(doc.resource_isolated),
+    ...(doc.resource_resolution ? { resource_resolution: doc.resource_resolution } : {}),
     cancel_requested: Boolean(doc.cancel_requested),
     report_url: doc.report_url || `https://workbench.minocc.top/testing/projects/${encodeURIComponent(doc.project_id)}/apps/${encodeURIComponent(doc.app_id)}/tasks/${encodeURIComponent(doc.run_id)}`,
     started_at: doc.started_at || "",

@@ -1,0 +1,22 @@
+id: task.resource_reconcile
+title: 核验并释放 Web 任务资源
+description: 对本人已结束的 Web 任务，经原 Scout 核验执行进程停止及浏览器关闭，再按当前记录版本和租约代次原子释放槽位与账号。证据不足保持隔离，原业务结论不变。仅在用户要求恢复该任务资源时调用。
+route: POST /case-runner/tasks/{task_id}/resources/reconcile
+risk: write
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    task_id:
+      type: string
+      minLength: 1
+  required:
+  - task_id
+param_resolvers: {}
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

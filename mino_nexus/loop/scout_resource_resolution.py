@@ -1,0 +1,175 @@
+"""Explicit Web lane retirement; original Scout verdicts remain immutable."""
+from __future__ import annotations
+
+from copy import deepcopy
+import time
+from datetime import datetime, timezone
+
+from mino_nexus.platform.identity import require_user_id
+from mino_nexus.resources import scout_record_store as records
+from mino_nexus.casework import run_store
+from mino_nexus.loop.scout_record_proxy import _request
+
+
+def reconcile_task_resources(task_id: str) -> dict:
+    actor = require_user_id()
+    doc = run_store.get(task_id)
+    if not doc or doc.get("owner_user_id") != actor:
+        raise ValueError("task_not_found")
+    if run_store.task_is_live(doc) or not doc.get("finished_at"):
+        raise ValueError("task_still_running")
+    if doc.get("resource_resolution"):
+        return run_store.to_task_json(doc)
+    rows = records.for_task(task_id)
+    if not rows:
+        raise ValueError("record_not_found")
+    if any(row["payload"].get("platform") != "web" for row in rows):
+        raise ValueError("resource_baseline_required")
+    proofs = []
+    for row in rows:
+        if row["status"] not in records.TERMINAL or row["summary"].get("sealed") is not True:
+            raise ValueError("stop_evidence_required")
+        if not row["summary_version"] and row["summary"].get("execution_started") == "no":
+            continue  # Persisted rejection before any Scout acceptance.
+        proof = _request(row, "record.resource_status", timeout=5)
+        stop = proof.get("resource_stop") or {}
+        if (any(proof.get(key) != row.get(key) for key in (
+                "task_id", "session_id", "attempt_id", "owner_user_id", "node_id", "sn"))
+                or proof.get("platform") != "web" or proof.get("sealed") is not True
+                or proof.get("summary_version") != row["summary_version"]
+                or proof.get("status") not in records.TERMINAL
+                or stop.get("contract") != "script_resource_stop.v1"
+                or stop.get("stop_confirmed") is not True or stop.get("worker_active") is not False
+                or stop.get("browser_closed") is not True or not stop.get("scout_process_generation")):
+            raise ValueError("stop_evidence_required")
+        proofs.append({"attempt_id": row["attempt_id"], "summary_version": row["summary_version"], "resource_stop": stop})
+    if not proofs:
+        raise ValueError("stop_evidence_required")
+    return _commit(task_id, actor, rows, proofs)
+
+
+def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict]) -> dict:
+    from sqlalchemy import text
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.models.run import AppRegressionRun
+    from mino_nexus.models.scout_record import ScoutRecord
+    from mino_nexus.models.execution_resource import ExecutionResource
+    from mino_nexus.records.write_state import unresolved
+
+    with run_store._LOCK:
+        with session_scope() as db:
+            db.execute(text("BEGIN IMMEDIATE"))
+            run = db.get(AppRegressionRun, task_id)
+            if run is None or run.owner_user_id != actor:
+                raise ValueError("task_not_found")
+            doc = deepcopy(run.payload or {})
+            if doc.get("resource_resolution"):
+                return run_store.to_task_json(doc)
+            if run_store.task_is_live(doc) or not run.finished_at:
+                raise ValueError("task_still_running")
+            indexed = db.query(ScoutRecord).filter_by(task_id=task_id, owner_user_id=actor).all()
+            snapshots = {row["attempt_id"]: row for row in rows}
+            if len(indexed) != len(snapshots):
+                raise ValueError("resource_resolution_conflict")
+            for record in indexed:
+                old = snapshots.get(record.attempt_id)
+                if (old is None or record.summary_version != old["summary_version"]
+                        or record.status not in records.TERMINAL or record.summary.get("sealed") is not True
+                        or record.node_id != old["node_id"] or record.context != old["context"]):
+                    raise ValueError("resource_resolution_conflict")
+            attempts = set(snapshots)
+            if any(action.get("attempt_id") not in attempts for action in unresolved(doc)):
+                raise ValueError("resource_baseline_required")
+            holdings = db.query(ExecutionResource).filter_by(run_id=task_id, owner_user_id=actor).all()
+            for resource in holdings:
+                if resource.state != "released" and not _owns_epoch(resource, indexed):
+                    raise ValueError("resource_resolution_conflict")
+            resolution = {"state": "released", "verification_kind": "web_lane_stop", "actor": actor,
+                          "resolved_at": datetime.now(timezone.utc).isoformat(),
+                          "business_result_unchanged": True, "proofs": deepcopy(proofs)}
+            for record in indexed:
+                record.context = {**record.context, "resource_resolution": resolution}
+            for resource in holdings:
+                if resource.state != "released":
+                    resource.epoch += 1
+                    resource.state, resource.expires_at = "released", 0
+            _release_auxiliary(db, task_id, doc, indexed)
+            for action in (doc.get("write_safety") or {}).values():
+                if action.get("attempt_id") in attempts:
+                    action.update(state="recovered", stop_confirmed=True, recovery=resolution)
+            for case in doc.get("cases") or []:
+                case.update(resource_isolated=False, resource_resolution=resolution)
+            doc.update(resource_isolated=False, reason_code="", resource_resolution=resolution)
+            run.payload = doc
+            db.flush()
+        run_store._LIVE.pop(task_id, None)
+    return run_store.to_task_json(doc)
+
+
+def _owns_epoch(resource, indexed) -> bool:
+    return any(resource.attempt_id == (record.context.get("resource_request") or {}).get("attempt_id")
+               and resource.epoch == ((record.context.get("resource_request") or {}).get("resource_epochs") or {}).get(resource.resource_key)
+               and resource.sn == record.sn and resource.owner_user_id == record.owner_user_id
+               for record in indexed)
+
+
+def _release_auxiliary(db, task_id, doc, indexed) -> None:
+    from mino_nexus.models.pool_account import PoolAccount
+    from mino_nexus.models.resource_ops import DeviceResourceLease
+    from mino_nexus.models.device_reservation import DeviceReservation
+    aliases = {task_id, *(record.session_id for record in indexed)}
+    projects = {str(record.context.get("project_id") or "") for record in indexed} - {""}
+    if doc.get("project_id"):
+        projects.add(str(doc["project_id"]))
+    for account in db.query(PoolAccount).filter(PoolAccount.project_id.in_(projects)).all():
+        if str((account.lease or {}).get("run_id") or "") in aliases:
+            account.lease, account.updated_at = {}, int(time.time())
+    db.query(DeviceResourceLease).filter(DeviceResourceLease.run_id.in_(aliases),
+        DeviceResourceLease.sn.in_({record.sn for record in indexed})).delete(synchronize_session=False)
+    db.query(DeviceReservation).filter_by(run_id=task_id).delete(synchronize_session=False)
+
+
+def settle_terminal_task(task_id: str, owner: str) -> None:
+    """Atomic compensation including legacy leases left after a terminal projection."""
+    from sqlalchemy import text
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.models.run import AppRegressionRun
+    from mino_nexus.models.scout_record import ScoutRecord
+    from mino_nexus.models.execution_resource import ExecutionResource
+    from mino_nexus.records.write_state import unresolved
+    with session_scope() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        run = db.get(AppRegressionRun, task_id)
+        if run is None or run.owner_user_id != owner or not run.finished_at:
+            return
+        doc = run.payload or {}
+        indexed = db.query(ScoutRecord).filter_by(task_id=task_id, owner_user_id=owner).all()
+        if not indexed or unresolved(doc):
+            return
+        for record in indexed:
+            summary = record.summary or {}
+            resolved = (record.context.get("resource_resolution") or {}).get("state") == "released"
+            if record.status not in records.TERMINAL or summary.get("sealed") is not True:
+                return
+            if not resolved and (summary.get("resource_isolated") is True
+                    or summary.get("execution_started") == "unknown" or summary.get("state") == "interrupted"
+                    or summary.get("reason_code") == "write_outcome_unknown"
+                    or summary.get("execution_stopped") is False or summary.get("browser_closed") is False):
+                return
+        holdings = db.query(ExecutionResource).filter_by(run_id=task_id, owner_user_id=owner).all()
+        if any(resource.state != "released" and not _owns_epoch(resource, indexed) for resource in holdings):
+            return
+        for resource in holdings:
+            if resource.state != "released":
+                resource.state, resource.expires_at = "released", 0
+        _release_auxiliary(db, task_id, doc, indexed)
+
+
+def repair_terminal_resources() -> None:
+    """No device execution: settle only persisted, sealed results at their exact epochs."""
+    from mino_nexus.platform.identity import execution_user
+    from mino_nexus.loop.scout_record_tasks import project
+    for row in records.terminal_records_for_settlement():
+        with execution_user(row["owner_user_id"]):
+            project(row)
+            settle_terminal_task(row["task_id"], row["owner_user_id"])

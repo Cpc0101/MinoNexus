@@ -16,13 +16,21 @@ def project(row: dict[str, Any]) -> None:
     from mino_nexus.casework import run_store
     summary = row.get("summary") or {}
     with execution_user(row["owner_user_id"]):
+        if row["status"] in records.TERMINAL:
+            records.settle_resources(row)
         doc = run_store.get(row["task_id"])
         if not doc or not run_store.task_is_live(doc):
+            if doc and doc.get("finished_at"):
+                from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
+                settle_terminal_task(row["task_id"], row["owner_user_id"])
             return
         fields = {key: summary[key] for key in (
             "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
-            "assertions", "source_coverage", "source_hash", "resource_isolated",
+            "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report",
         ) if key in summary}
+        resolution = row.get("context", {}).get("resource_resolution")
+        if resolution:
+            fields.update(resource_isolated=False, resource_resolution=resolution)
         fields.update(session_id=row["session_id"], attempt_id=row["attempt_id"],
                       record_node_id=row["node_id"], record_source="scout",
                       detail_availability=summary.get("detail_availability", "pending"),
@@ -45,6 +53,8 @@ def project(row: dict[str, Any]) -> None:
                     "done" if all(case.get("status") == "pass" for case in cases) else "failed")
                 finished = run_store.finish(row["task_id"], status=status)
                 if not run_store.task_is_live(finished):
+                    from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
+                    settle_terminal_task(row["task_id"], row["owner_user_id"])
                     from mino_nexus.loop.observe.agent_stream import emit_testing_task
                     from mino_nexus.loop.observe.persist_run_finish import persist_run_finish
                     persist_run_finish(finished)

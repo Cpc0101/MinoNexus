@@ -437,6 +437,20 @@ def task_write_safety(task_id: str, _sess: dict = Depends(current_session)):
         raise HTTPException(status_code=404, detail="任务不存在") from exc
 
 
+@router.post("/tasks/{task_id}/resources/reconcile")
+def reconcile_task_resources(task_id: str, _sess: dict = Depends(current_session)):
+    from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources as reconcile
+    from mino_nexus.loop.scout_record_proxy import RecordReadError
+    try:
+        return ok(reconcile(task_id), msg="任务资源已核验")
+    except RecordReadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except ValueError as exc:
+        code = str(exc)
+        raise HTTPException(status_code=404 if code in {"task_not_found", "record_not_found"} else 409,
+                            detail={"reason_code": code}) from exc
+
+
 @router.get("/baseline/{case_id}")
 def get_baseline(case_id: str, _sess: dict = Depends(current_session)):
     return ok({"case_id": case_id, "baseline": None, "prompt_block": "", "note": "基线库尚未搬迁"})

@@ -130,9 +130,11 @@ async def lifespan(app: FastAPI):
                 daemon=True, name="recovered-" + rid).start()
     async def execution_policy_worker():
         from mino_nexus.casework.execution_policy import expire_runs
+        from mino_nexus.loop.scout_resource_resolution import repair_terminal_resources
         while True:
             try:
                 await asyncio.to_thread(expire_runs)
+                await asyncio.to_thread(repair_terminal_resources)
             except Exception as exc:
                 SLog.w(TAG, f"execution policy tick: {type(exc).__name__}")
             await asyncio.sleep(2)

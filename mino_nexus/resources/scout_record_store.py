@@ -16,7 +16,8 @@ _SUMMARY_FIELDS = frozenset({
     "task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform",
     "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "elapsed_ms",
     "execution_started", "started_at", "finished_at", "summary_version", "last_event_seq", "sealed",
-    "detail_availability", "assertions", "source_coverage", "source_hash", "resource_isolated",
+    "detail_availability", "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report",
+    "execution_stopped", "browser_closed", "scout_process_generation",
 })
 
 
@@ -115,7 +116,14 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
             return _view(row)
         if row.status in TERMINAL and status != row.status:
             raise ValueError("record_terminal_conflict")
+        if row.status in TERMINAL and any(key in row.summary and row.summary[key] != incoming.get(key)
+                                         for key in ("state", "reason_code", "execution_started", "resource_isolated",
+                                                     "execution_stopped", "browser_closed", "scout_process_generation")):
+            raise ValueError("record_terminal_conflict")
         summary = {key: deepcopy(value) for key, value in incoming.items() if key in _SUMMARY_FIELDS}
+        if "test_report" in summary:
+            from mino_nexus.contract.business_report import normalize_test_report
+            summary["test_report"] = normalize_test_report(summary["test_report"])
         for key in ("summary", "reason_code", "failure_stage"):
             summary[key] = str(summary.get(key) or "")[:1000 if key == "summary" else 120]
         for key in ("started_at", "finished_at"):
@@ -182,20 +190,56 @@ def settle_resources(record: dict[str, Any]) -> None:
     """A sealed worker result can release its exact resource epoch after server downtime."""
     if record["status"] not in TERMINAL or not record["summary"].get("sealed"):
         return
-    request = record["context"].get("resource_request") or {}
-    if not request:
-        return
     from mino_nexus.models.execution_resource import ExecutionResource
-    from mino_nexus.records.write_state import protected
+    from mino_nexus.models.run import AppRegressionRun
+    from mino_nexus.records.write_state import unresolved
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
-        isolated = bool(record["summary"].get("resource_isolated")) or protected(record["task_id"], db=db, sn=record["sn"])
+        latest = db.get(ScoutRecord, record["session_id"])
+        if latest is None or latest.owner_user_id != record["owner_user_id"] or latest.status not in TERMINAL:
+            return
+        request = latest.context.get("resource_request") or {}
+        if not request or not latest.summary.get("sealed"):
+            return
+        run = db.get(AppRegressionRun, latest.task_id)
+        summary = latest.summary
+        resolved = latest.context.get("resource_resolution", {}).get("state") == "released"
+        isolated = (not resolved and (summary.get("resource_isolated") is True
+                    or summary.get("execution_started") == "unknown" or summary.get("state") == "interrupted"
+                    or summary.get("reason_code") == "write_outcome_unknown"
+                    or summary.get("execution_stopped") is False or summary.get("browser_closed") is False))
+        # Expiry alone is not an unknown write when this exact attempt has a
+        # sealed, safe result. Actual pending/isolated write intents still win.
+        isolated = isolated or bool(unresolved(run.payload if run else {}, record["sn"]))
         for key, epoch in (request.get("resource_epochs") or {}).items():
             row = db.get(ExecutionResource, key)
             if (row is None or row.epoch != epoch or row.attempt_id != request.get("attempt_id")
                     or row.run_id != record["task_id"] or row.owner_user_id != record["owner_user_id"]):
                 continue
             row.state = "isolated" if isolated else "released"
+            if not isolated:
+                row.expires_at = 0
+
+
+def terminal_records_for_settlement(limit: int = 32) -> list[dict[str, Any]]:
+    """Bounded recovery of committed terminal results whose release was interrupted."""
+    with session_scope() as db:
+        rows = (db.query(ScoutRecord).filter(ScoutRecord.status.in_(TERMINAL), text("""
+          (COALESCE(json_extract(scout_record_index.summary,'$.resource_isolated'),0)!=1
+            AND COALESCE(json_extract(scout_record_index.summary,'$.execution_started'),'')!='unknown'
+            AND COALESCE(json_extract(scout_record_index.summary,'$.state'),'')!='interrupted'
+            AND COALESCE(json_extract(scout_record_index.summary,'$.reason_code'),'')!='write_outcome_unknown'
+            AND COALESCE(json_extract(scout_record_index.summary,'$.execution_stopped'),1)!=0
+            AND COALESCE(json_extract(scout_record_index.summary,'$.browser_closed'),1)!=0
+            OR json_extract(scout_record_index.context,'$.resource_resolution.state')='released')
+          AND (EXISTS (SELECT 1 FROM execution_resources e WHERE e.run_id=scout_record_index.task_id AND e.state!='released')
+            OR EXISTS (SELECT 1 FROM pool_accounts a WHERE json_extract(a.lease,'$.run_id') IN
+              (scout_record_index.task_id,scout_record_index.session_id))
+            OR EXISTS (SELECT 1 FROM device_resource_leases l WHERE l.run_id IN (scout_record_index.task_id,scout_record_index.session_id))
+            OR EXISTS (SELECT 1 FROM device_reservations v WHERE v.run_id=scout_record_index.task_id))
+        """))
+                .order_by(ScoutRecord.updated_at).distinct().limit(limit).all())
+        return [_view(row) for row in rows]
 
 
 def save_resources(session_id: str, request: dict[str, Any]) -> None:
