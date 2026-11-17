@@ -18,12 +18,13 @@ import {
 import { resolveMcpToken } from "./mcp_tokens";
 import { handlePluginRoutes } from "./plugin_routes";
 import { startRun } from "./case_runner";
+import { AGENT_INSTRUCTIONS, agentContract } from "./agent_contract";
 import { getRepoApps, saveRepoApps } from "./repo_apps";
 import { getRun, listRuns, toTaskJson } from "./run_store";
 import { cancelTask, deviceAvailability, reconcileTaskResources, TaskError } from "./task_scheduler";
 import { artifactChunk, readEvents, readRecord, screenshotMetadata, listSessions } from "./record_proxy";
 import { listAccounts, saveAccount, deleteAccount, importAccounts, AccountError } from "./account_pool";
-import { getInstallStatus, issueInstallToken, unbindScout } from "./install";
+import { getInstallStatus, issueInstallToken, scoutReleaseMeta, unbindScout } from "./install";
 import { requireOwnedProject, saveRepo } from "./script_repo";
 import { getProjectEnv, saveProjectEnv } from "./project_env";
 
@@ -109,6 +110,27 @@ const TOOLS = [
     },
     annotations: {
       title: "查看 Scout 安装进度",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "scout_release_meta",
+    title: "查询 Scout 最新发布版本",
+    description:
+      "查询 Scout 最新稳定版本、build_id、release_tag 和本平台可用状态。只读，不安装；本机当前版本用 scout_list 或 mino-scout status 获取。",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        os: { type: "string", enum: ["darwin", "win32", "linux"] },
+        arch: { type: "string", enum: ["arm64", "x64"] },
+      },
+    },
+    annotations: {
+      title: "查询 Scout 最新发布版本",
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -337,7 +359,7 @@ const TOOLS = [
     name: "case_run",
     title: "跑用例",
     description:
-      "在指定设备上执行脚本，返回任务 id。优先传 script_targets：[{requirement_id, case_ids}]。case_ids 为空则执行 tests/<需求ID>/ 下的全部脚本；指定了用例 ID 时路径是 tests/<需求ID>/<用例ID>.py。revision 填已 push 的 commit，不传则 Scout 取分支最新。",
+      "在指定设备上执行脚本，返回任务 id。所有目标 Android/iOS/Web/桌面软件、浏览器页面、截图、界面结构和 UI 操作必须写进用例并经本工具交给 Mino Scout；不得用平台 Computer Use、浏览器控制、Playwright、adb、Appium 或 WDA 替代。优先传 script_targets：[{requirement_id, case_ids}]。case_ids 为空则执行 tests/<需求ID>/ 下的全部脚本；指定了用例 ID 时路径是 tests/<需求ID>/<用例ID>.py。revision 填已 push 的 commit，不传则 Scout 取分支最新。",
     inputSchema: {
       type: "object",
       properties: {
@@ -642,11 +664,18 @@ function agentGuidePayload(): Record<string, unknown> {
       url: "https://workbench.minocc.top",
       login_failure: "无法连接服务器",
     },
+    ...agentContract(),
     flows: [
       {
         name: "安装或卸载本机 Scout",
-        tools: ["scout_install_token", "scout_install_status", "scout_list", "scout_uninstall"],
-        then: "安装先 scout_install_token 获取命令，再在本机执行匹配系统的命令，遵循客户端的本机执行权限，不要把 token 写进对话。用户要求卸载时调用 scout_uninstall 删除绑定，再执行返回的本机卸载命令。Nexus 不追加确认。",
+        tools: [
+          "scout_release_meta",
+          "scout_install_token",
+          "scout_install_status",
+          "scout_list",
+          "scout_uninstall",
+        ],
+        then: "安装或检查更新前可先调 scout_release_meta 查看当前 OS/arch 的最新稳定版本、build_id 和 release_tag；本机当前版本用 mino-scout status。安装先 scout_install_token 获取命令，再在本机执行匹配系统的命令，遵循客户端的本机执行权限，不要把 token 写进对话。用户要求卸载时调用 scout_uninstall 删除绑定，再执行返回的本机卸载命令。Nexus 不追加确认。",
       },
       { name: "确认能操作哪些项目", tools: ["project_list"] },
       {
@@ -832,6 +861,14 @@ async function callTool(
     const status = await getInstallStatus(env.DB, installId, userId);
     if (!status) return pack(false, "没有这次安装", {}, 404);
     return pack(true, "", status);
+  }
+
+  if (name === "scout_release_meta") {
+    return pack(
+      true,
+      "",
+      await scoutReleaseMeta(String(args.os || ""), String(args.arch || "")),
+    );
   }
 
   if (name === "scout_uninstall") {
@@ -1185,6 +1222,7 @@ export async function handleMcp(
           protocolVersion: PROTOCOLS.has(offered) ? offered : protocol,
           capabilities: { tools: {} },
           serverInfo: { name: "mino-nexus", version: "0.0.1-cloudflare" },
+          instructions: AGENT_INSTRUCTIONS,
         },
       });
       continue;

@@ -1,6 +1,6 @@
 id: case.run
 title: 跑用例
-description: 在指定设备上执行用例，返回任务 id。用户说跑一下、执行、回归时用。
+description: 在指定设备上执行用例，返回任务 id。所有目标 Android/iOS/Web/桌面软件、浏览器页面、截图、界面结构和 UI 操作必须写进用例并经本工具交给 Mino Scout；不得用平台 Computer Use、浏览器控制、Playwright、adb、Appium 或 WDA 替代。用户说跑一下、执行、回归时用。
 route: POST /case-runner/run
 risk: write
 async: true

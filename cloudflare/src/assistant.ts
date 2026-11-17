@@ -11,6 +11,7 @@ import {
   revokeMcpToken,
 } from "./mcp_tokens";
 import { listGrants, revokeGrant } from "./mcp_oauth";
+import { agentContract } from "./agent_contract";
 
 async function getJson(
   db: D1Database,
@@ -320,6 +321,7 @@ export async function handleAssistant(
         url: "https://workbench.minocc.top",
         login_failure: "无法连接服务器",
       },
+      ...agentContract(),
       flows: [
         { name: "确认能操作哪些项目", tools: ["project_list"] },
         {

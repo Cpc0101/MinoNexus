@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mino_nexus.assistant.agent_contract import agent_contract
+
 
 def _workbench() -> dict[str, str]:
     url = ""
@@ -22,7 +24,7 @@ def _workbench() -> dict[str, str]:
 
 
 def agent_guide() -> dict[str, Any]:
-    return {
+    guide = {
         "channel": "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
         "first_call": "agent_guide",
         "boundaries": [
@@ -34,8 +36,8 @@ def agent_guide() -> dict[str, Any]:
         "flows": [
             {
                 "name": "安装或卸载本机 Scout",
-                "tools": ["scout_install_token", "scout_install_status", "scout_list", "scout_uninstall"],
-                "then": "安装先 scout_install_token 获取命令，再在本机执行匹配系统的命令，遵循客户端的本机执行权限，不要把 token 写进对话。用户要求卸载时调用 scout_uninstall 删除绑定，再执行返回的本机卸载命令。Nexus 不追加确认。",
+                "tools": ["scout_release_meta", "scout_install_token", "scout_install_status", "scout_list", "scout_uninstall"],
+                "then": "安装或检查更新前可先调 scout_release_meta 查看当前 OS/arch 的最新稳定版本、build_id 和 release_tag；本机当前版本用 mino-scout status。安装先 scout_install_token 获取命令，再在本机执行匹配系统的命令，遵循客户端的本机执行权限，不要把 token 写进对话。用户要求卸载时调用 scout_uninstall 删除绑定，再执行返回的本机卸载命令。Nexus 不追加确认。",
             },
             {
                 "name": "确认能操作哪些项目",
@@ -82,3 +84,5 @@ def agent_guide() -> dict[str, Any]:
             },
         ],
     }
+    guide.update(agent_contract())
+    return guide

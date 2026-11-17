@@ -1,0 +1,23 @@
+id: scout.release_meta
+title: 查询 Scout 最新发布版本
+description: 查询 Scout 最新稳定版本、build_id、release_tag 和本平台可用状态。只读，不安装；本机当前版本用 scout_list 或 mino-scout status 获取。
+route: GET /releases/scout/meta
+risk: read
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    os:
+      type: string
+      enum: [darwin, win32, linux]
+    arch:
+      type: string
+      enum: [arm64, x64]
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true
+version: 1

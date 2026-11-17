@@ -210,10 +210,13 @@ def _handle(uid: str, msg: dict[str, Any]) -> dict[str, Any] | None:
     if rid is None:
         return _rpc_error(None, -32600, "工具请求必须包含稳定的 id")
     if method == "initialize":
+        from mino_nexus.assistant.agent_contract import AGENT_INSTRUCTIONS
+
         return {"jsonrpc": "2.0", "id": rid, "result": {
             "protocolVersion": PROTOCOL,
             "capabilities": {"tools": {"listChanged": os.environ.get("MINO_PROMPTS_RELOAD") == "1"}},
             "serverInfo": {"name": "mino-nexus", "version": "1"},
+            "instructions": AGENT_INSTRUCTIONS,
         }}
     if method == "ping":
         return {"jsonrpc": "2.0", "id": rid, "result": {}}
