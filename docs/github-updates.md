@@ -8,7 +8,7 @@ Workbench 构建时用 `VITE_NEXUS_URL` 指向 Nexus。跨域部署时，Nexus �
 
 - Nexus 的 main push、PR 和手动 CI：只运行 Nexus 自身的检查与 wheel 构建，不 checkout Workbench，也不需要读取 Workbench 私有仓库的令牌。
 - Nexus 的 `v*` tag：先校验 tag 与 `mino_nexus/VERSION` 一致，再构建 wheel/sdist 并发布 Release；同一 wheel 再打成 AMD64/ARM64 Docker 镜像，发布 GHCR 多架构标签及分架构离线镜像包。
-- Workbench 的 main push、PR 和手动运行：在 Workbench 仓库执行前端检查、构建和 Cloudflare Pages 部署；v* tag 独立发布静态压缩包。
+- Workbench 的 main push、PR 和手动运行：在 Workbench 仓库执行前端检查、构建，并按腾讯云部署流程发布；v* tag 独立发布静态压缩包。
 - Nexus 的 `BUILD.json` 只记录 Nexus 版本、源码 commit 与 dirty 状态，不记录 Workbench build ID。两端发布版本可独立演进，不要求 tag 同步。
 
 普通 push 不发布 Nexus Release。修改工作流必须提交并推送后才在 GitHub 生效。

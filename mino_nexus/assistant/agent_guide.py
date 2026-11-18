@@ -30,7 +30,7 @@ def agent_guide() -> dict[str, Any]:
         "agent_workflow": {
             "owner": "agent",
             "tools": ["agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get"],
-            "storage": "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；Python SQLite / Cloudflare D1，不使用 Agent 本地数据库",
+            "storage": "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；使用 Python SQLite，不使用 Agent 本地数据库",
             "stages": ["analysis", "authoring", "preparation", "verification"],
             "contract": "每轮调查 start 占用预算、finish 保存事实，allowed=false 按原因改变方案或交付阶段。重复阻塞须有新事实或明确不同方案；写结果未知先核对原任务并 resolve。普通状态轮询不算新调查。进度不是测试判定。",
         },

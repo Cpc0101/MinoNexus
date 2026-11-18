@@ -659,7 +659,7 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 
 ## Scout 本地执行记录
 
-支持 `record_api_version=1` 的 Scout 接收 `script.submit` 后立即返回已接单。`/case-runner/run` 和任务接口返回 `report_url`；Python 使用 `MINO_WORKBENCH_PUBLIC_URL`（未设时为本实例地址），Cloudflare 使用配置的 Workbench 公网地址。路径固定为 `/testing/projects/{project_id}/apps/{app_id}/tasks/{task_id}`。接单不代表用例通过。
+支持 `record_api_version=1` 的 Scout 接收 `script.submit` 后立即返回已接单。`/case-runner/run` 和任务接口返回 `report_url`；Python 使用 `MINO_WORKBENCH_PUBLIC_URL`（未设时为本实例地址）。路径固定为 `/testing/projects/{project_id}/apps/{app_id}/tasks/{task_id}`。接单不代表用例通过。
 
 任务定义、归属、资源占用及最后确认的用例摘要保存在 Nexus。完整事件、界面节点、原图、原文快照、断言及文件哈希保存在实际执行的 Scout。WorkBench 和 Agent 仍只访问 Nexus，由 Nexus 按持久索引中的原节点、原账号代理；设备后来换节点不会改变历史记录来源。
 
@@ -682,18 +682,18 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 
 ## Web 任务资源核验
 
-`POST /case-runner/tasks/{task_id}/resources/reconcile` 仅任务 owner 可调用，返回最新任务 JSON。必须已结束且为 Web 任务；每个已接受 attempt 的原 Scout 封存记录、当前停止及浏览器关闭证明通过后，按当前摘要版本和租约代次原子释放并保存 resource_resolution。结果未知、原节点离线、版本或代次变化返回明确失败，资源不变；实体设备返回 resource_baseline_required。重复恢复幂等，历史业务结果不改成通过。Cloudflare MCP `task_resource_reconcile({task_id})` 与此接口共用逻辑。
+`POST /case-runner/tasks/{task_id}/resources/reconcile` 仅任务 owner 可调用，返回最新任务 JSON。必须已结束且为 Web 任务；每个已接受 attempt 的原 Scout 封存记录、当前停止及浏览器关闭证明通过后，按当前摘要版本和租约代次原子释放并保存 resource_resolution。结果未知、原节点离线、版本或代次变化返回明确失败，资源不变；实体设备返回 resource_baseline_required。重复恢复幂等，历史业务结果不改成通过。MCP `task_resource_reconcile({task_id})` 与此接口共用逻辑。
 
 ## 账号数据记录
 
-两种部署均提供 `GET /project/{project_id}/resources/accounts/{account_id}/data`（app_id/kind/limit/offset 过滤，默认 50、上限 200），返回 `{items, total, requests, requests_total, advisory:true}`。申请需求使用独立的 request_limit/request_offset 分页（默认 20、上限 200），按 app_id 过滤，不受资产 kind 筛选影响。两个列表按 updated_at 倒序及稳定主键排序。空列表只说明未记录，不阻塞选号。Workbench 账号管理提供台账查看、新增、编辑、删除及申请需求历史，来源任务链接使用已记录的 app_id/run_id。
+Nexus 提供 `GET /project/{project_id}/resources/accounts/{account_id}/data`（app_id/kind/limit/offset 过滤，默认 50、上限 200），返回 `{items, total, requests, requests_total, advisory:true}`。申请需求使用独立的 request_limit/request_offset 分页（默认 20、上限 200），按 app_id 过滤，不受资产 kind 筛选影响。两个列表按 updated_at 倒序及稳定主键排序。空列表只说明未记录，不阻塞选号。Workbench 账号管理提供台账查看、新增、编辑、删除及申请需求历史，来源任务链接使用已记录的 app_id/run_id。
 
 `PUT .../data` 接收 data_id（账号内稳定标识）、kind、object_ref，及可选 app_id、title、attributes、source_task_id。整条 upsert，未传可选字段使用空值；返回 `{item}`。attributes 最多 8192 UTF-8 字节。`DELETE .../data/{data_id}` 返回 `{deleted}`，仅删除记忆。项目访问、账号归属和 app_id 的项目归属由服务端校验；账号持有租约不阻止更新记忆。密码、OTP、令牌及签名下载凭据不得作为对象数据写入。
 
 MCP 对应 `resource_account_data_list/save/delete`。业务标签仅在脚本选号路径中作为偏好，身份/环境/项目和租约仍约束分配。申请 `data_need` 是数据描述，实际缺口由 Agent 选择准备路径。
 
 
-运行时数据：POST `/case-runner/run` 新增 `case_inputs`（按用例 ID/脚本路径传业务字典）及 `source_context`（parent_task_id、purpose=prepare/resume、data_need）。GET 任务返回 source_context、每例 data_outputs/data_missing。POST `/project/{project_id}/resources/accounts/select` 接受 env/app_id/data_requirements，返回按独立资产记忆排序的空闲 accounts，无记忆匹配不会排除候选，也不预约账号。两种部署接口一致。
+运行时数据：POST `/case-runner/run` 新增 `case_inputs`（按用例 ID/脚本路径传业务字典）及 `source_context`（parent_task_id、purpose=prepare/resume、data_need）。GET 任务返回 source_context、每例 data_outputs/data_missing。POST `/project/{project_id}/resources/accounts/select` 接受 env/app_id/data_requirements，返回按独立资产记忆排序的空闲 accounts，无记忆匹配不会排除候选，也不预约账号。
 
 
 ## 任务统计与报告

@@ -22,7 +22,7 @@ STARTUP
 
 
 def agent_contract() -> dict[str, Any]:
-    """与 cloudflare/src/agent_contract.ts 保持逐字段一致。"""
+    """Agent 工具契约的单一字段定义。"""
     return {
         "usage_contract": {
             "version": 1,
