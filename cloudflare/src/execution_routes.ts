@@ -1,5 +1,4 @@
 import { debugCase } from "./debug_cases";
-import { taskReport } from "./execution_report";
 import { ProjectAccessError, canReadRun, ACCESS_SQL } from "./project_access";
 /** Shared HTTP business routes for persistent tasks, records and account pools. */
 import type { Env } from "./env";
@@ -45,22 +44,34 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
     }
     if (pathname === "/case-runner/tasks" && method === "GET") return ok(await listRuns(env.DB, owner, { app_id: q.get("app_id") || "", project_id: q.get("project_id") || "", status: q.get("status") || "", limit: number(q.get("limit"), 30), offset: number(q.get("offset"), 0) }));
     if (pathname === "/case-runner/tasks/summary" && method === "GET") {
-      const rows = await env.DB.prepare(`SELECT r.payload_json FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${ACCESS_SQL} ORDER BY r.created_at_ms DESC,r.run_id DESC`).bind(owner, owner).all<{ payload_json: string }>();
-      const requested = new Set((q.get("app_ids") || "").split(",").filter(Boolean));
-      const runs = (rows.results || []).map(row => JSON.parse(row.payload_json)).filter(doc => !requested.size || requested.has(doc.app_id));
-      const apps = [...new Set(runs.map(doc => String(doc.app_id)))];
-      const items = apps.map(app_id => {
-        const docs = runs.filter(doc => doc.app_id === app_id), latest = toTaskJson(docs[0], false);
-        return { app_id, running_count: docs.filter(doc => !doc.finished_at && ['running', 'queued', 'cancel_requested', 'unknown'].includes(doc.status)).length,
-          total_count: docs.length, latest_task_id: latest.task_id, last_task_id: latest.task_id,
+      const appIds = [...new Set((q.get("app_ids") || "").split(",").map(value => value.trim()).filter(Boolean))].slice(0, 100);
+      const appFilter = appIds.length ? " AND s.app_id IN (SELECT value FROM json_each(?))" : "";
+      const rows = await env.DB.prepare(`SELECT s.app_id,s.total_count,s.running_count,s.failed_count,s.succeeded_count,
+          s.latest_created_at_ms,s.latest_run_id,r.payload_json
+        FROM app_regression_run_stats s
+        JOIN projects p ON p.project_id=s.project_id
+        JOIN app_regression_runs r ON r.run_id=s.latest_run_id
+        WHERE ${ACCESS_SQL}${appFilter}
+        ORDER BY s.latest_created_at_ms DESC,s.latest_run_id DESC LIMIT 101`).bind(owner, owner, ...(appIds.length ? [JSON.stringify(appIds)] : [])).all<{
+          app_id: string; total_count: number; running_count: number; failed_count: number;
+          succeeded_count: number; latest_run_id: string; payload_json: string;
+        }>();
+      const seen = new Set<string>();
+      const items: Record<string, unknown>[] = [];
+      let total = 0, running = 0, failed = 0, succeeded = 0;
+      for (const row of rows.results || []) {
+        if (seen.size >= 100) break;
+        seen.add(row.app_id);
+        total += Number(row.total_count || 0); running += Number(row.running_count || 0);
+        failed += Number(row.failed_count || 0); succeeded += Number(row.succeeded_count || 0);
+        const latest = toTaskJson(JSON.parse(row.payload_json), false);
+        items.push({ app_id: row.app_id, running_count: Number(row.running_count || 0), total_count: Number(row.total_count || 0),
+          latest_task_id: latest.task_id, last_task_id: latest.task_id,
           status: latest.status, last_status: latest.status, completed: latest.completed, total: latest.total,
           started_at: latest.started_at, last_started_at: latest.started_at, pass_rate: latest.pass_rate, last_pass_rate: latest.pass_rate,
-          statistics: latest.statistics, result_status: latest.result_status };
-      });
-      const outcomes = runs.map(doc => taskReport(doc));
-      return ok({ items, total: runs.length, running: runs.filter(doc => !doc.finished_at && ['running', 'queued', 'cancel_requested', 'unknown'].includes(doc.status)).length,
-        failed: outcomes.filter(report => report.formal.total > 0 && report.result_status === 'fail').length,
-        succeeded: outcomes.filter(report => report.formal.total > 0 && report.result_status === 'pass').length });
+          statistics: latest.statistics, result_status: latest.result_status });
+      }
+      return ok({ items, total, running, failed, succeeded, truncated: (rows.results || []).length > 100 });
     }
     if (pathname === "/case-runner/devices" && method === "GET") return ok(await deviceAvailability(env, owner, { app_id: q.get("app_id") || "", only_online: false }));
     const task = /^\/case-runner\/tasks\/([^/]+)(\/cancel|\/resources\/reconcile)?$/.exec(pathname);

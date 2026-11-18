@@ -78,8 +78,8 @@ export async function enqueueRun(env: Env, doc: RunDoc, hint: Record<string, unk
         .bind(row.attempt_id, doc.run_id, row.case_id, row.session_id, doc.scout_id, doc.owner_user_id, JSON.stringify(params),
           JSON.stringify({ ...hint, lease_id: lease.lease_id, lease_generation: lease.generation }), now, now + index));
     }
-    statements.push(db.prepare("INSERT INTO app_regression_runs(run_id,owner_user_id,project_id,app_id,status,payload_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?)")
-      .bind(doc.run_id, doc.owner_user_id, doc.project_id, doc.app_id, doc.status, JSON.stringify(doc), now, now));
+    statements.push(db.prepare("INSERT INTO app_regression_runs(run_id,owner_user_id,project_id,app_id,status,debug_origin_session_id,payload_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?)")
+      .bind(doc.run_id, doc.owner_user_id, doc.project_id, doc.app_id, doc.status, String(doc.debug_origin?.session_id || ""), JSON.stringify(doc), now, now));
     await db.batch(statements);
   } catch (error) {
     await releaseDevice(db, doc.run_id);
@@ -242,23 +242,31 @@ export async function settleRunResources(db: D1Database, runId: string): Promise
 async function repairSettlements(env: Env): Promise<void> {
   // A crash may have persisted the terminal dispatch but not its run projection.
   // Restore from the durable summary even when Scout is currently offline.
-  const summaries = await env.DB.prepare(`SELECT d.* FROM script_dispatches d
-    JOIN app_regression_runs r ON r.run_id=d.run_id
-    WHERE d.state='terminal' AND d.sync_version>0
-    AND (EXISTS (SELECT 1 FROM script_device_leases l WHERE l.run_id=d.run_id)
-      OR EXISTS (SELECT 1 FROM pool_accounts a WHERE a.lease_run_id=d.run_id))
+  const activeRuns = `WITH active_runs AS (
+      SELECT run_id FROM script_device_leases WHERE state!='released' AND run_id!=''
+      UNION
+      SELECT lease_run_id AS run_id FROM pool_accounts WHERE lease_run_id!=''
+      UNION
+      SELECT run_id FROM script_admissions WHERE live=1
+    )`;
+  const summaries = await env.DB.prepare(`${activeRuns}
+    SELECT d.* FROM active_runs a
+    CROSS JOIN app_regression_runs r
+    CROSS JOIN script_dispatches d INDEXED BY script_dispatches_terminal_sync_by_run
+    WHERE r.run_id=a.run_id AND d.run_id=a.run_id
+    AND d.state='terminal' AND d.sync_version>0
     AND EXISTS (SELECT 1 FROM json_each(r.payload_json,'$.cases') c
       WHERE json_extract(c.value,'$.session_id')=d.session_id
       AND COALESCE(json_extract(c.value,'$.summary_version'),0)<d.sync_version)
     ORDER BY d.updated_at_ms LIMIT 16`).all<Dispatch>();
   for (const job of summaries.results || []) await materializeSummary(env, job, JSON.parse(job.result_json));
-  const rows = await env.DB.prepare(`SELECT r.run_id FROM app_regression_runs r
-    WHERE json_extract(r.payload_json,'$.finished_at') IS NOT NULL
+  const rows = await env.DB.prepare(`${activeRuns}
+    SELECT r.run_id FROM active_runs a
+    CROSS JOIN app_regression_runs r
+    WHERE r.run_id=a.run_id
+    AND json_extract(r.payload_json,'$.finished_at') IS NOT NULL
     AND COALESCE(json_extract(r.payload_json,'$.resource_isolated'),0)!=1
     AND NOT EXISTS (SELECT 1 FROM script_dispatches d WHERE d.run_id=r.run_id AND d.state!='terminal')
-    AND (EXISTS (SELECT 1 FROM script_device_leases l WHERE l.run_id=r.run_id)
-      OR EXISTS (SELECT 1 FROM pool_accounts a WHERE a.lease_run_id=r.run_id)
-      OR EXISTS (SELECT 1 FROM script_admissions a WHERE a.run_id=r.run_id AND a.live=1))
     ORDER BY r.updated_at_ms LIMIT 16`).all<{ run_id: string }>();
   for (const row of rows.results || []) await settleRunResources(env.DB, row.run_id);
 }
@@ -343,14 +351,14 @@ async function markUnknown(env: Env, job: Dispatch, reason: string): Promise<voi
     row.resource_isolated = true;
   } });
 }
-export async function pumpDispatches(env: Env, rpc: Rpc = args => scoutExecute(env, args)): Promise<void> {
-  await repairSettlements(env);
-  const due = await env.DB.prepare("SELECT d.* FROM script_dispatches d WHERE d.state!='terminal' AND d.next_attempt_ms<=? AND NOT EXISTS (SELECT 1 FROM script_dispatches p WHERE p.run_id=d.run_id AND p.created_at_ms<d.created_at_ms AND p.state!='terminal') ORDER BY d.next_attempt_ms,d.created_at_ms LIMIT 4").bind(Date.now()).all<Dispatch>();
+export async function pumpDispatches(env: Env, rpc: Rpc = args => scoutExecute(env, args), options: { repairSettlements?: boolean } = {}): Promise<void> {
+  if (options.repairSettlements !== false) await repairSettlements(env);
+  const due = await env.DB.prepare("SELECT d.* FROM script_dispatches d INDEXED BY script_dispatches_pending_due WHERE d.state!='terminal' AND d.next_attempt_ms<=? AND NOT EXISTS (SELECT 1 FROM script_dispatches p WHERE p.run_id=d.run_id AND p.created_at_ms<d.created_at_ms AND p.state!='terminal') ORDER BY d.next_attempt_ms,d.created_at_ms LIMIT 4").bind(Date.now()).all<Dispatch>();
   const seen = new Set<string>();
   for (const job of due.results || []) {
     if (seen.has(job.run_id)) continue;
     seen.add(job.run_id);
-    const earlier = await env.DB.prepare("SELECT attempt_id FROM script_dispatches WHERE run_id=? AND created_at_ms<? AND state!='terminal' LIMIT 1").bind(job.run_id, job.created_at_ms).first();
+    const earlier = await env.DB.prepare("SELECT attempt_id FROM script_dispatches INDEXED BY script_dispatches_open_by_run WHERE run_id=? AND created_at_ms<? AND state!='terminal' LIMIT 1").bind(job.run_id, job.created_at_ms).first();
     if (earlier) continue;
     const claimed = await env.DB.prepare("UPDATE script_dispatches SET next_attempt_ms=?,attempts=attempts+1 WHERE attempt_id=? AND next_attempt_ms<=? AND state!='terminal'")
       .bind(Date.now() + 20_000, job.attempt_id, Date.now()).run();

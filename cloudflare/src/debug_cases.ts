@@ -34,8 +34,8 @@ export async function debugCase(env: Env, owner: string, operation: string, args
     return { task_id: job.run_id, session_id: job.session_id, state: "starting", status: "queued" };
   if (reply.http !== 200 || reply.status !== "pass") throw new TaskError(String(data.reason_code || "debug_node_unavailable"), reply.summary || "调试节点暂不可用", 409);
   if (operation === "status") {
-    const rows = await env.DB.prepare("SELECT payload_json FROM app_regression_runs WHERE owner_user_id=? AND json_extract(payload_json, '$.debug_origin.session_id')=? ORDER BY created_at_ms DESC LIMIT 200").bind(owner, job.session_id).all<{payload_json: string}>();
-    const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM app_regression_runs WHERE owner_user_id=? AND json_extract(payload_json, '$.debug_origin.session_id')=?").bind(owner, job.session_id).first<{total: number}>();
+    const rows = await env.DB.prepare("SELECT payload_json FROM app_regression_runs WHERE debug_origin_session_id=? AND owner_user_id=? ORDER BY created_at_ms DESC LIMIT 200").bind(job.session_id, owner).all<{payload_json: string}>();
+    const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM app_regression_runs WHERE debug_origin_session_id=? AND owner_user_id=?").bind(job.session_id, owner).first<{total: number}>();
     data.formal_runs = {total: count?.total || 0, truncated: (count?.total || 0) > (rows.results || []).length, items: (rows.results || []).map(row => toTaskJson(JSON.parse(row.payload_json) as RunDoc))};
   }
   return { ...data, task_id: job.run_id, session_id: job.session_id };

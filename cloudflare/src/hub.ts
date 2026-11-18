@@ -72,13 +72,17 @@ export class NexusHub extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     try {
+      const now = Date.now();
+      const lastRepair = Number(await this.ctx.storage.get<number>("last_repair_at") || 0);
+      const repairSettlements = now - lastRepair >= 60_000;
       await pumpDispatches(this.env, async args => {
         const response = await this.onRpc(new Request("https://hub/rpc", { method: "POST", body: JSON.stringify(args) }));
         const data = await response.json() as Record<string, unknown>;
         return { http: response.status, ok: response.ok && Boolean(data.ok), status: String(data.status || ""),
           error: String(data.error || ""), summary: String(data.summary || ""),
           data: (data.data || {}) as Record<string, unknown>, extra: (data.extra || {}) as Record<string, unknown> } satisfies ScoutRpcResult;
-      });
+      }, { repairSettlements });
+      if (repairSettlements) await this.ctx.storage.put("last_repair_at", now);
     } finally {
       await this.ctx.storage.setAlarm(Date.now() + 10_000);
     }

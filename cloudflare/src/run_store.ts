@@ -127,13 +127,17 @@ export function appendCaseEvent(row: CaseRow, event: CaseEvent): void {
 
 export async function putRun(db: D1Database, doc: RunDoc): Promise<void> {
   const now = Date.now();
+  const debugOriginSessionId = String(doc.debug_origin?.session_id || "");
   await db
     .prepare(
       `INSERT INTO app_regression_runs
-         (run_id, owner_user_id, project_id, app_id, status, payload_json, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (run_id, owner_user_id, project_id, app_id, status, debug_origin_session_id, payload_json, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(run_id) DO UPDATE SET
+         project_id=excluded.project_id,
+         app_id=excluded.app_id,
          status=excluded.status,
+         debug_origin_session_id=excluded.debug_origin_session_id,
          payload_json=excluded.payload_json,
          updated_at_ms=excluded.updated_at_ms`,
     )
@@ -143,6 +147,7 @@ export async function putRun(db: D1Database, doc: RunDoc): Promise<void> {
       doc.project_id,
       doc.app_id,
       doc.status,
+      debugOriginSessionId,
       JSON.stringify(doc),
       now,
       now,
@@ -174,9 +179,10 @@ export async function findRunByRequest(
   if (!rid) return null;
   const row = await db
     .prepare(
-      `SELECT payload_json FROM app_regression_runs
-       WHERE owner_user_id = ? AND json_extract(payload_json, '$.client_request_id') = ?
-       ORDER BY created_at_ms DESC LIMIT 1`,
+      `SELECT r.payload_json FROM script_request_keys k
+       JOIN app_regression_runs r ON r.run_id = k.run_id
+       WHERE k.owner_user_id = ? AND k.request_id = ?
+       LIMIT 1`,
     )
     .bind(ownerUserId, rid)
     .first<{ payload_json: string }>();
@@ -201,8 +207,8 @@ export async function patchRun(
     if (!row) return null;
     const doc = JSON.parse(row.payload_json) as RunDoc;
     mutate(doc);
-    const changed = await db.prepare("UPDATE app_regression_runs SET status=?,payload_json=?,updated_at_ms=? WHERE run_id=? AND payload_json=?")
-      .bind(doc.status, JSON.stringify(doc), Date.now(), runId, row.payload_json).run();
+    const changed = await db.prepare("UPDATE app_regression_runs SET status=?,debug_origin_session_id=?,payload_json=?,updated_at_ms=? WHERE run_id=? AND payload_json=?")
+      .bind(doc.status, String(doc.debug_origin?.session_id || ""), JSON.stringify(doc), Date.now(), runId, row.payload_json).run();
     if (changed.meta.changes) return doc;
   }
   throw new Error("task_index_conflict");
@@ -368,11 +374,19 @@ export async function clearAdmission(db: D1Database, runId: string): Promise<voi
 
 export async function listRuns(db: D1Database, owner: string, args: { app_id?: string; project_id?: string; status?: string; limit?: number; offset?: number } = {}): Promise<Record<string, unknown>> {
   const limit = Math.max(1, Math.min(100, Number(args.limit || 30))), offset = Math.max(0, Number(args.offset || 0));
-  const where = `${ACCESS_SQL} AND (?='' OR r.app_id=?) AND (?='' OR r.project_id=?) AND (?='' OR r.status=?)`;
-  const values = [owner, owner, args.app_id || "", args.app_id || "", args.project_id || "", args.project_id || "", args.status || "", args.status || ""];
+  const values: string[] = [owner, owner];
+  let where = ACCESS_SQL;
+  if (args.app_id) { where += " AND r.app_id=?"; values.push(args.app_id); }
+  if (args.project_id) { where += " AND r.project_id=?"; values.push(args.project_id); }
+  if (args.status) { where += " AND r.status=?"; values.push(args.status); }
+  let statsWhere = ACCESS_SQL;
+  if (args.app_id) statsWhere += " AND s.app_id=?";
+  if (args.project_id) statsWhere += " AND s.project_id=?";
   const [page, count] = await Promise.all([
     db.prepare(`SELECT r.payload_json FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${where} ORDER BY r.created_at_ms DESC,r.run_id DESC LIMIT ? OFFSET ?`).bind(...values, limit, offset).all<{ payload_json: string }>(),
-    db.prepare(`SELECT COUNT(*) AS total FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${where}`).bind(...values).first<{ total: number }>(),
+    args.status
+      ? db.prepare(`SELECT COUNT(*) AS total FROM app_regression_runs r JOIN projects p ON p.project_id=r.project_id WHERE ${where}`).bind(...values).first<{ total: number }>()
+      : db.prepare(`SELECT COALESCE(SUM(s.total_count),0) AS total FROM app_regression_run_stats s JOIN projects p ON p.project_id=s.project_id WHERE ${statsWhere}`).bind(owner, owner, ...values.slice(2)).first<{ total: number }>(),
   ]);
   const items = (page.results || []).map(row => toTaskJson(JSON.parse(row.payload_json) as RunDoc));
   return { items, tasks: items, total: Number(count?.total || 0), limit, offset };

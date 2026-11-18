@@ -277,6 +277,7 @@ export async function deleteProject(
     .all<{ app_id: string; name: string }>();
   await db.batch([
     db.prepare(`DELETE FROM script_admissions WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
+    db.prepare(`DELETE FROM app_regression_run_stats WHERE project_id = ?`).bind(project_id),
     db.prepare(`DELETE FROM app_regression_runs WHERE project_id = ? AND owner_user_id = ?`).bind(project_id, owner_user_id),
     db.prepare(`DELETE FROM project_requirements WHERE project_id = ?`).bind(project_id),
     db.prepare(`DELETE FROM project_repo_apps WHERE project_id = ?`).bind(project_id),
