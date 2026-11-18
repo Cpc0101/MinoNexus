@@ -102,7 +102,14 @@ def privileged(argv: list[str], prefix: list[str]) -> None:
 def extract_archive(archive: Path) -> Path:
     target = Path(tempfile.mkdtemp(prefix="mino-workbench-stage-"))
     with tarfile.open(archive, "r:gz") as bundle:
-        bundle.extractall(target, filter="data")
+        root = target.resolve()
+        for member in bundle.getmembers():
+            destination = (target / member.name).resolve()
+            if destination != root and root not in destination.parents:
+                raise RuntimeError(f"Unsafe archive member: {member.name}")
+            if not member.isfile() and not member.isdir():
+                raise RuntimeError(f"Unsupported archive member type: {member.name}")
+        bundle.extractall(target)
     index = target / "index.html"
     if not index.is_file():
         raise RuntimeError("Archive does not contain index.html")

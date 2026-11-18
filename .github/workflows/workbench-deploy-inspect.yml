@@ -45,7 +45,7 @@ jobs:
       - name: Deploy and verify
         run: |
           set -euo pipefail
-          expected_asset=$(tar -xOf .deploy/workbench-web-0.0.61.tar.gz index.html | sed -n 's#.*src="/assets/\([^"]*\)".*#\1#p' | head -n 1)
+          expected_asset=$(tar -xOf .deploy/workbench-web-0.0.61.tar.gz ./index.html | sed -n 's#.*src="/assets/\([^"]*\)".*#\1#p' | head -n 1)
           test -n "$expected_asset"
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "python3 /tmp/deploy-workbench-remote.py /tmp/workbench-web-0.0.61.tar.gz '$expected_asset'"
