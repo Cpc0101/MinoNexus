@@ -1,0 +1,28 @@
+id: resource.account.delete
+title: 删除测试账号
+description: 删除 Nexus 测试账号池中的空闲账号；被任务租用的账号不能删除。参数齐全且用户已要求该操作时直接调用，无需再次确认。
+route: DELETE /project/{project_id}/accounts/{account_id}
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+    account_id:
+      type: string
+      minLength: 1
+  required:
+  - project_id
+  - account_id
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

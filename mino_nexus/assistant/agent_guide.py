@@ -59,6 +59,11 @@ def agent_guide() -> dict[str, Any]:
                 "then": "参数齐全且用户已要求该操作时直接调用工具。Nexus 不追加确认；参数缺失时补齐参数，删除须对应用户明确要求的对象。",
             },
             {
+                "name": "配置项目脚本仓库",
+                "tools": ["project_list", "project_script_repo_set", "repo_apps_sync"],
+                "then": "先用 project_script_repo_set 保存项目脚本仓库 URL 和分支；仓库地址不要带令牌，Nexus 不拉仓库也不保存 Git 凭据。修改 config.yaml 的 apps 并 push 后，调用 repo_apps_sync 同步新增、修改或删除的应用 key，revision 使用 push 后的 commit。",
+            },
+            {
                 "name": "编写或修改用例脚本",
                 "tools": ["project_list", "device_list", "debug_case", "debug_case_execute", "debug_case_status", "debug_case_cancel", "debug_case_reset", "debug_case_checkpoint", "debug_case_close", "session_events", "session_screenshot", "case_run"],
                 "then": "先用本机 mino-scout status 和 device_list 核对节点/设备。debug_case 绑定本机编写工作区，不拉仓、不要求 commit；debug_case_execute 提交 code 或 script_path，保留设备和应用现场，刷新 pages/flows。先观察 nodes、验证定位及公共路径，再扩展完整用例。debug_case_status 查询请求，session_events/screenshot/artifact 读取同一证据；取消片段、重置和结束使用对应 debug_case 工具。写结果未知只读核验，不盲目重试。用 debug_case_checkpoint 记录草稿、完整实现、路径验证，后者绑定同版本执行证据。结束并确认停止后，固定完整 commit，case_run 带 debug_origin 引用检查点，从独立初始状态正式验证；远端节点只用于正式执行。",
@@ -89,13 +94,13 @@ def agent_guide() -> dict[str, Any]:
             },
             {
                 "name": "记录账号业务数据并准备输入",
-                "tools": ["resource_account_select", "resource_account_list", "resource_account_data_list", "resource_account_data_save", "resource_account_data_delete", "case_run", "task_get"],
-                "then": "Agent 先用 resource_account_select(data_requirements=[{kind, attributes}], env, app_id) 取得按资产记忆排序的空闲候选；无匹配仍选择符合登录身份和环境的账号。用 case_inputs 按用例 ID 或脚本路径传入 account_id 和业务对象。脚本 case.data.require 返回 data_missing 时，Agent 读取 task_get 的 cases[].data_missing 和本次证据，在已有授权范围内选择明确的准备脚本，通过 case_run(source_context={parent_task_id, purpose:\"prepare\", data_need}, case_inputs) 单独执行。准备脚本显式操作并 case.data.bind 输出对象和 account_id；Agent 核对 cases[].data_outputs、写入 resource_account_data_save，再用新的 client_request_id 和 purpose:\"resume\" 创建原用例的新任务，传回相同 account_id 与对象。Nexus 只保存关系和调度，脚本仓不含自动造数、换号或重试策略；写入结果未知先查询同一次 attempt，不能重复创建。",
+                "tools": ["resource_account_select", "resource_account_list", "resource_account_create", "resource_account_update", "resource_account_import", "resource_account_data_list", "resource_account_data_save", "resource_account_data_delete", "case_run", "task_get"],
+                "then": "Agent 先用 resource_account_select(data_requirements=[{kind, attributes}], env, app_id) 取得按资产记忆排序的空闲候选；明确需要补号时用 resource_account_create 或 resource_account_import，修改已有账号用 resource_account_update，批量导入先传 preview=true 核对再 commit。用 case_inputs 按用例 ID 或脚本路径传入 account_id 和业务对象。脚本 case.data.require 返回 data_missing 时，Agent 读取 task_get 的 cases[].data_missing 和本次证据，在已有授权范围内选择明确的准备脚本，通过 case_run(source_context={parent_task_id, purpose:\"prepare\", data_need}, case_inputs) 单独执行。准备脚本显式操作并 case.data.bind 输出对象和 account_id；Agent 核对 cases[].data_outputs、写入 resource_account_data_save，再用新的 client_request_id 和 purpose:\"resume\" 创建原用例的新任务，传回相同 account_id 与对象。Nexus 只保存关系和调度，脚本仓不含自动造数、换号或重试策略；写入结果未知先查询同一次 attempt，不能重复创建。",
             },
             {
                 "name": "看资源或配置账号自动补池",
-                "tools": ["resource_overview", "resource_device_list", "resource_account_list", "resource_env_get", "resource_env_set"],
-                "then": "登录方式、验证码策略、Gmail 收件箱、手机号/Gmail 别名序号和自动补池策略由 Nexus 项目环境配置决定。号池为空或没有匹配账号时，租号会按该策略自动新增；不要把这些字段写进脚本仓 config.yaml。",
+                "tools": ["resource_overview", "resource_device_list", "resource_account_list", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import", "resource_env_get", "resource_env_set"],
+                "then": "登录方式、验证码策略、Gmail 收件箱、手机号/Gmail 别名序号和自动补池策略由 Nexus 项目环境配置决定。号池为空或没有匹配账号时，租号会按该策略自动新增；不要把这些字段写进脚本仓 config.yaml。账号新增/修改/批量导入后回读 resource_account_list 核对；删除只用于用户明确要求删除的空闲账号。",
             },
             {
                 "name": "恢复已结束 Web 任务的隔离资源",

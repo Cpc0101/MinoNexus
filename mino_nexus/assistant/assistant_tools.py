@@ -39,6 +39,20 @@ def assert_no_delete(spec: dict[str, Any]) -> None:
     raise ValueError(f"删除类接口不能进助手工具表：{route}")
 
 
+def _tool_routes(spec: dict[str, Any]) -> list[tuple[str, str]]:
+    """工具可以实际访问的全部路由。
+
+    少量工具会根据参数选择后端路由；授权与写白名单必须按同一份路由表判断，
+    不能只登记默认路由，否则合法调用会被助手 token 拦截。
+    """
+    route = str(spec.get("route") or "")
+    method, _, path = route.partition(" ")
+    routes = [(method.upper(), path)]
+    if spec.get("id") == "resource.account.import":
+        routes.append(("POST", "/project/{project_id}/accounts/import/preview"))
+    return routes
+
+
 def all_tools() -> list[dict[str, Any]]:
     rows = []
     for spec in list_assistant_tools():
@@ -133,13 +147,12 @@ def route_allowed(method: str, path: str) -> bool:
     if path in _FORWARD_PATHS:
         return True
     for spec in all_tools():
-        route = str(spec.get("route") or "")
-        rmethod, _, rpath = route.partition(" ")
-        if rmethod.upper() != method:
-            continue
-        pattern = "^" + _PARAM.sub(r"[^/]+", rpath) + "$"
-        if re.match(pattern, path):
-            return True
+        for rmethod, rpath in _tool_routes(spec):
+            if rmethod != method:
+                continue
+            pattern = "^" + _PARAM.sub(r"[^/]+", rpath) + "$"
+            if re.match(pattern, path):
+                return True
     return False
 
 
@@ -149,13 +162,12 @@ def write_allowed(method: str, path: str) -> bool:
     if method in ("GET", "HEAD", "OPTIONS"):
         return True
     for spec in all_tools():
-        route = str(spec.get("route") or "")
-        rmethod, _, rpath = route.partition(" ")
-        if rmethod.upper() != method:
-            continue
-        pattern = "^" + _PARAM.sub(r"[^/]+", rpath) + "$"
-        if re.match(pattern, path):
-            return True
+        for rmethod, rpath in _tool_routes(spec):
+            if rmethod != method:
+                continue
+            pattern = "^" + _PARAM.sub(r"[^/]+", rpath) + "$"
+            if re.match(pattern, path):
+                return True
     return False
 
 
@@ -418,6 +430,8 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
     assert_no_delete(spec)
     props = (spec.get("params_schema") or {}).get("properties") or {}
     args = dict(args or {})
+    if spec.get("id") == "resource.account.import" and args.get("preview") is True:
+        path = "/project/{project_id}/accounts/import/preview"
     if spec.get("id") == "plugin.install" and surface != "mcp":
         return ToolOutcome(ok=False, summary="插件安装/更新仅支持 MCP 入口；请在 Workbench 下载中心操作。", tool_id=str(spec.get("id") or ""))
     if spec.get("id") == "cli.execute":
@@ -571,6 +585,13 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
     if spec.get("id") == "device.list":
         rest.setdefault("only_online", False)
         rest["compatible_only"] = bool(args.get("app_id"))
+    if spec.get("id") == "resource.env.set":
+        env = args.get("env")
+        if not isinstance(env, dict):
+            return ToolOutcome(ok=False, status=422, summary="env 必须是对象", tool_id=str(spec.get("id") or ""), args=args)
+        rest = dict(env)
+    if spec.get("id") == "resource.account.import":
+        rest.pop("preview", None)
     token = ensure_assistant_token(user_id)
     started = time.time()
     headers = {"Authorization": f"Bearer {token}", "X-Mino-Client": "assistant"}

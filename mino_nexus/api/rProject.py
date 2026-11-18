@@ -67,6 +67,8 @@ class TestAccountPatchBody(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     otp: Optional[str] = None
+    kind: Optional[str] = None
+    profile_id: Optional[str] = None
     note: Optional[str] = None
     locked: Optional[bool] = None
     facets: Optional[dict[str, Any]] = None

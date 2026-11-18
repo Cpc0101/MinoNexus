@@ -1,0 +1,31 @@
+id: project.script_repo.set
+title: 设置项目脚本仓库
+description: 保存项目的脚本仓库地址和分支。Nexus 只记地址，不拉取仓库，不保存 Git 令牌；Scout 在本机用自己的 git 凭据拉取。参数齐全且用户已要求该操作时直接调用，无需再次确认。
+route: PUT /project/{project_id}/script-repo
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+    url:
+      type: string
+      minLength: 1
+      description: http/https/ssh/git 地址；不要带令牌
+    branch:
+      type: string
+  required:
+  - project_id
+  - url
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

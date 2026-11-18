@@ -1,0 +1,40 @@
+id: resource.account.import
+title: 批量导入测试账号
+description: 批量导入 Nexus 测试账号。preview=true 时只返回匹配与变更预览，不写入。
+route: POST /project/{project_id}/accounts/import/commit
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+    rows:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+    default_env:
+      type: string
+    on_duplicate:
+      type: string
+      enum:
+      - skip
+      - merge
+      - overwrite_credentials
+    preview:
+      type: boolean
+  required:
+  - project_id
+  - rows
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true
