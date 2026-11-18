@@ -34,3 +34,32 @@ def readiness(case):
             for key in ("nexus_version", "compiler_contract", "resource_catalog_version")):
         return "compile_contract_changed"
     return None
+
+
+def step_bundle(case: dict | None, case_step: int) -> dict:
+    """Read a captured step without importing the retired compiler."""
+    if not isinstance(case, dict) or case_step <= 0:
+        return {}
+    meta = case.get("meta") if isinstance(case.get("meta"), dict) else {}
+    plans = meta.get("step_program_keys")
+    bundle = plans.get(str(case_step)) if isinstance(plans, dict) else None
+    return copy.deepcopy(bundle) if isinstance(bundle, dict) else {}
+
+
+def stored_step_summary(case: dict | None) -> dict:
+    """Historical plans are readable, but do not prove Scout script readiness."""
+    meta = case.get("meta") if isinstance(case, dict) else None
+    meta = meta if isinstance(meta, dict) else {}
+    warnings = meta.get("key_compile_warnings")
+    warnings = warnings if isinstance(warnings, list) else []
+    plans = meta.get("step_program_keys")
+    plans = plans if isinstance(plans, dict) else {}
+    return {
+        "telemetry": "muted", "status": "unknown", "runnable_now": False,
+        "reason_code": "case_compilation_removed",
+        "reasons": ["历史编译记录不代表脚本可执行，请使用 Scout 检查和验证当前版本"],
+        "warning_count": len(warnings),
+        "fallback_count": sum(1 for item in warnings if isinstance(item, dict) and item.get("fallback")),
+        "warnings_preview": copy.deepcopy(warnings[:12]),
+        "steps": copy.deepcopy(plans),
+    }

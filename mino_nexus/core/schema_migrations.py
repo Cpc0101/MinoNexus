@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 NAV_ENTRY_TABLES = (
     "nav_page_entries",
@@ -52,8 +52,37 @@ def _user_version(conn) -> int:
     return int(conn.exec_driver_sql("PRAGMA user_version").scalar() or 0)
 
 
+def _backup_before_account_scope(engine: Engine) -> None:
+    """追加账号字段前生成 SQLite 一致备份，不覆盖历史备份。"""
+    database = engine.url.database
+    if not database or database == ":memory:":
+        return
+    from pathlib import Path
+    import sqlite3
+    import tempfile
+
+    with engine.connect() as conn:
+        if _user_version(conn) >= SCHEMA_VERSION or "pool_accounts" not in inspect(conn).get_table_names():
+            return
+        if "app_ids" in {column["name"] for column in inspect(conn).get_columns("pool_accounts")}:
+            return
+        path = Path(database)
+        with tempfile.NamedTemporaryFile(prefix=f"{path.name}.pre-schema-{SCHEMA_VERSION}-", suffix=".backup", dir=path.parent, delete=False) as file:
+            backup_path = Path(file.name)
+        try:
+            destination = sqlite3.connect(backup_path)
+            try:
+                conn.connection.driver_connection.backup(destination)
+            finally:
+                destination.close()
+        except BaseException:
+            backup_path.unlink(missing_ok=True)
+            raise
+
+
 def apply_additive_migrations(engine: Engine, metadata) -> None:
     """把旧库补到当前版本。新表只创建；已下线表直接删除。"""
+    _backup_before_account_scope(engine)
     with engine.begin() as conn:
         version = _user_version(conn)
         if version > SCHEMA_VERSION:
@@ -66,6 +95,10 @@ def apply_additive_migrations(engine: Engine, metadata) -> None:
             if name in present:
                 conn.exec_driver_sql(f'DROP TABLE "{name}"')
         if version < SCHEMA_VERSION:
+            if "pool_accounts" in present:
+                columns = {column["name"] for column in inspect(conn).get_columns("pool_accounts")}
+                if "app_ids" not in columns:
+                    conn.exec_driver_sql("ALTER TABLE pool_accounts ADD COLUMN app_ids JSON NOT NULL DEFAULT '[]'")
             for name in ADDITIVE_TABLES:
                 if name in present:
                     continue

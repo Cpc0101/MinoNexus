@@ -31,6 +31,7 @@ def select_accounts(project_id: str, body: SelectAccountBody):
 
 
 class ReserveAccountBody(BaseModel):
+    app_id: str = ""
     account_id: str = ""
     env: str = ""
     lifecycle: str = ""
@@ -155,6 +156,7 @@ def resource_account_reserve(
         account, error, run_id = resource_view.reserve_account(
             project_id,
             account_id=body.account_id,
+            app_id=body.app_id,
             env=body.env,
             lifecycle=body.lifecycle,
             run_id=body.run_id,

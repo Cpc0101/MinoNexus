@@ -50,6 +50,7 @@ def run_resource_trial(
     rows = list_test_accounts(env_doc, project_id=pid)
     ranked = pick_test_accounts(
         rows,
+        app_id=app_id,
         prompt=str(prompt or ""),
         env=str(env or "test"),
         surface="",

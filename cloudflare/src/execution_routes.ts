@@ -22,7 +22,7 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
     const select = /^\/project\/([^/]+)\/resources\/accounts\/select$/.exec(pathname);
     if (select && method === "POST") {
       const body = await request.json() as Record<string, unknown>;
-      const result = await listAccounts(env.DB, owner, decodeURIComponent(select[1]), String(body.env || ""), body.data_requirements, String(body.app_id || ""));
+      const result = await listAccounts(env.DB, owner, decodeURIComponent(select[1]), String(body.env || ""), body.data_requirements, String(body.app_id || ""), true);
       return ok({...result, accounts: (result.accounts as Record<string, unknown>[]).filter(row => row.state === "free")});
     }
     const accountData = /^\/project\/([^/]+)\/resources\/accounts\/([^/]+)\/data(?:\/([^/]+))?$/.exec(pathname);
@@ -36,7 +36,7 @@ export async function executionRoutes(request: Request, env: Env, owner: string,
     const accounts = /^\/project\/([^/]+)\/accounts(?:\/([^/]+))?$/.exec(pathname);
     if (accounts) {
       const project = decodeURIComponent(accounts[1]), id = accounts[2] ? decodeURIComponent(accounts[2]) : "";
-      if (method === "GET" && !id) return ok(await listAccounts(env.DB, owner, project, q.get("env") || ""));
+      if (method === "GET" && !id) return ok(await listAccounts(env.DB, owner, project, q.get("env") || "", [], q.get("app_id") || ""));
       if ((method === "POST" && !id) || (["PUT", "PATCH"].includes(method) && id)) {
         const body = await request.json() as Record<string, unknown>;
         return ok({ account: await saveAccount(env.DB, owner, project, body, id) });

@@ -77,7 +77,7 @@ def impact(project_id: str, app_id: str, state_id: str, version: str = Query(def
 
 @router.post('/pages/{state_id}/revalidate', dependencies=[Depends(project_maintainer)])
 def revalidate(project_id: str, app_id: str, state_id: str, body: Revalidation):
-    return call(svc.revalidate, project_id, app_id, state_id, body)
+    raise HTTPException(status_code=410, detail="用例复检与编译已移除；请在 Scout 调试并提交固定版本执行")
 
 # Project resources use a separate prefix; application scope cannot confer ownership.
 resource_router = APIRouter(prefix='/project/{project_id}/account-facts', dependencies=[Depends(current_session)])
@@ -103,8 +103,7 @@ def account_fact_decide(project_id: str, candidate_id: str, body: FactDecision):
 
 @router.get("/compile-metrics")
 def compile_metrics(project_id: str, app_id: str, platform: str = Query(default="", max_length=40), days: int = Query(default=30, ge=1, le=90)):
-    from mino_nexus.casework.compile_metrics import summary
-    return call(summary, project_id, app_id, platform=platform, days=days)
+    raise HTTPException(status_code=410, detail="用例编译已移除；请使用 Scout 脚本和执行记录")
 
 
 @router.get("/coverage")

@@ -165,21 +165,12 @@ def list_nav_fsm(_sess: dict = Depends(current_session)):
 
 @router.get("/{app_id}/screen-key-refs")
 def get_screen_key_refs(app_id: str, _sess: dict = Depends(current_session)):
-    from mino_nexus.casework.screen_key_refs import list_screen_rows
-
-    return ok({"app_id": app_id, "items": list_screen_rows(app_id)})
+    raise HTTPException(status_code=410, detail="页面步骤键绑定已移除；定位定义在脚本仓 pages 中")
 
 
 @router.put("/{app_id}/screen-key-refs", dependencies=[Depends(app_maintainer)])
 def put_screen_key_refs(app_id: str, body: ScreenKeyRefsBody, sess: dict = Depends(current_session)):
-    from mino_nexus.casework.screen_key_refs import patch_screen_key_refs
-
-    saved = patch_screen_key_refs(
-        app_id,
-        [r.model_dump() for r in (body.items or [])],
-        updated_by=str(sess.get("username") or sess.get("user_id") or ""),
-    )
-    return ok({"app_id": app_id, "items": saved})
+    raise HTTPException(status_code=410, detail="页面步骤键绑定已移除；定位定义在脚本仓 pages 中")
 
 
 @router.get("/{app_id}")

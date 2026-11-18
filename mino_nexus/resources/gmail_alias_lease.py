@@ -398,6 +398,7 @@ def provision_gmail_alias_account(
         row = {
             "id": aid,
             "account_id": aid,
+            "app_ids": [str(getattr(ctx, "app_id", ""))] if getattr(ctx, "app_id", "") else [],
             "display_name": display,
             "email": email,
             "env": env_profile,

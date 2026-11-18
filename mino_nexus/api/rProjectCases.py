@@ -451,9 +451,7 @@ def import_preview_retry(
     _sess: dict = Depends(current_session),
 ):
     _project(project_id)
-    if not cim.retry_preview_row(token, body.row_index, project_id):
-        raise HTTPException(status_code=400, detail="这一行不能重试")
-    return ok(cim.preview_status(token, project_id) or {})
+    raise HTTPException(status_code=410, detail="用例编译重试已移除；请在编写工作区修改并使用 Scout 调试")
 
 
 @router.put("/{project_id}/cases/{case_id}", dependencies=[Depends(project_maintainer)])

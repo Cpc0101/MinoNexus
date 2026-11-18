@@ -13,7 +13,7 @@ from mino_nexus.loop.milestones import (
     write_state,
     _sync_scope,
 )
-from mino_nexus.casework.case_step_key_compiler import step_bundle
+from mino_nexus.contract.case_view import step_bundle
 from mino_nexus.navigation.atlas.nav_flow_block_catalog import resolve_effective_steps
 
 

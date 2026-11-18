@@ -44,6 +44,8 @@ def data_matches(rows, requirements):
 
 
 def rank_account_data(project_id, rows, requirements, *, app_id=""):
+    from mino_nexus.resources.accounts.app_scope import account_matches_app
+    rows = [row for row in rows if account_matches_app(row, app_id)]
     needs = validate_data_requirements(requirements)
     if not needs or not rows:
         return rows

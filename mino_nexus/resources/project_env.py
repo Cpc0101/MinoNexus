@@ -503,6 +503,8 @@ def _norm_test_accounts(raw: Any, env_doc: dict | None = None) -> List[dict]:
         display_name = str(item.get("display_name") or "").strip()[:80]
         if "tags" in item: raise ValueError("obsolete_account_tags; use facets")
         profile_id = str(item.get("profile_id") or "").strip()[:40]
+        from mino_nexus.resources.accounts.app_scope import normalize_app_ids
+        app_ids = normalize_app_ids(item.get("app_ids", []))
         stored = item.get("facets") if isinstance(item.get("facets"), dict) else {}
         defaults = facets_defaults_from_catalog(env_doc)
         stored_lower = {
@@ -569,6 +571,7 @@ def _norm_test_accounts(raw: Any, env_doc: dict | None = None) -> List[dict]:
                 "otp": str(item.get("otp") or item.get("sms_code") or "").strip()[:32],
                 "facets": facets,
                 "profile_id": profile_id,
+                "app_ids": app_ids,
                 "note": str(item.get("note") or "").strip()[:200],
                 "locked": bool(item.get("locked")),
                 "lease": lease,
@@ -645,8 +648,17 @@ def _merge_account_row(row: dict, old: dict) -> dict:
 def save_test_accounts(env_doc: dict, rows: List[dict], *, project_id: str = "") -> dict:
     doc = dict(env_doc or {})
     pid = str(project_id or "").strip()
-    incoming = _norm_test_accounts(rows, env_doc=doc)
     prev = {str(x.get("id")): x for x in list_test_accounts(doc, project_id=pid)}
+    from mino_nexus.resources.accounts.app_scope import normalize_app_ids, validate_project_apps
+    prepared = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if "app_ids" in row and pid:
+            validate_project_apps(pid, normalize_app_ids(row["app_ids"]))
+        old = prev.get(str(row.get("account_id") or row.get("id") or "")) or {}
+        prepared.append({"app_ids": old.get("app_ids", []), **row})
+    incoming = _norm_test_accounts(prepared, env_doc=doc)
     merged = [_merge_account_row(row, prev.get(row["id"]) or {}) for row in incoming]
     if pid:
         from mino_nexus.resources.pool_account_store import env_without_test_accounts_blob, replace_all
@@ -672,6 +684,9 @@ def save_one_test_account(
         raise ValueError("project_id required")
     doc = dict(env_doc or {})
     aid = str(account_id or row.get("account_id") or row.get("id") or "").strip()
+    if "app_ids" in row:
+        from mino_nexus.resources.accounts.app_scope import normalize_app_ids, validate_project_apps
+        validate_project_apps(pid, normalize_app_ids(row["app_ids"]))
     prev = {str(x.get("id")): x for x in list_test_accounts(doc, project_id=pid)}
     old = prev.get(aid) or {}
     payload = dict(row)
@@ -709,6 +724,8 @@ def save_one_test_account(
     if not normed:
         raise ValueError("account save failed")
     merged = _merge_account_row(normed[0], old)
+    if "app_ids" not in row:
+        merged.pop("app_ids", None)
     saved = upsert_one(pid, merged)
     if not saved:
         raise ValueError("account save failed")
@@ -819,6 +836,7 @@ def pick_test_accounts(
     rows: List[dict],
     *,
     prompt: str = "",
+    app_id: str = "",
     env: str = "",
     surface: str = "",
     channels: Optional[List[dict]] = None,
@@ -833,6 +851,11 @@ def pick_test_accounts(
     observed_by_account: Optional[dict] = None,
 ) -> List[dict]:
     from mino_nexus.resources.resource_pool import pick_accounts_by_requirements
+    from mino_nexus.resources.accounts.app_scope import account_matches_app
+    if project_id and app_id:
+        from mino_nexus.resources.accounts.app_scope import validate_project_apps
+        validate_project_apps(project_id, [app_id])
+    rows = [row for row in rows if account_matches_app(row, app_id)]
 
     raw = str(prompt or "").strip()
     req = resolve_pick_requirements(

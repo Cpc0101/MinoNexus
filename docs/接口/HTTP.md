@@ -1,5 +1,11 @@
 # HTTP 接口
 
+## 测试账号生效应用
+
+`POST /project/{project_id}/accounts` 与 `PATCH /project/{project_id}/accounts/{account_id}` 接受 `app_ids: string[]`：空列表为全部应用，非空为指定应用多选。服务端校验应用属于当前项目，最多 100 项，去重保存；省略字段保留原范围，新账号省略时默认全部应用。占用期间不可变更范围。账号列表、详情与分配结果返回保存的 `app_ids`。项目账号列表默认返回完整号池；按 `app_id` 读取和应用账号列表过滤到项目通用及对应范围账号。
+
+`POST /project/{project_id}/accounts/pick`、`POST /project/{project_id}/resources/accounts/select` 以及账号预约接受目标 `app_id`；指定账号同样执行范围检查，不能因传入账号 ID 绕过。预约未指定应用时只选择全部应用账号。运行环境与登录方式校验继续执行；自动补号保存本次目标应用范围。
+
 ## 部署与来源
 
 Workbench 与 Nexus 独立部署。正式 Workbench 构建时用 `VITE_NEXUS_URL` 指向 Nexus，HTTP 与 WebSocket 都使用该 origin；静态站点或 CDN 域名必须写入 Nexus 的 `MINO_WORKBENCH_ORIGINS`。`/node` 仍供 Scout 使用，协议不变。未登录 WS 仍以 1008 拒绝；CORS 默认只允许开发来源，不信任任意跨域来源。

@@ -14,6 +14,9 @@ params_schema:
     account_id:
       type: string
       description: 指定账号 id；留空则按条件选空闲账号
+    app_id:
+      type: string
+      description: 目标应用 ID；账号生效应用是硬条件，省略时只预约全部应用账号
     env:
       type: string
       description: 环境 key；选号时作为硬条件

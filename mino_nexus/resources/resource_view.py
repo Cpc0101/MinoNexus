@@ -112,6 +112,7 @@ def _public_account(row: dict[str, Any], env_doc: dict[str, Any]) -> dict[str, A
         "has_otp": bool(base.get("has_otp")),
         "note": text(base.get("note"), 300),
         "profile_id": text(base.get("profile_id"), 40),
+        "app_ids": list(base.get("app_ids") or []),
     }
     return out
 
@@ -667,6 +668,7 @@ def reserve_account(
     project_id: str,
     *,
     account_id: str = "",
+    app_id: str = "",
     env: str = "",
     lifecycle: str = "",
     run_id: str = "",
@@ -674,6 +676,9 @@ def reserve_account(
 ) -> tuple[dict[str, Any] | None, str, str]:
     """占用一个账号给 MCP 调用方。返回 (账号, 错误, run_id)。不返回凭证。"""
     doc = _env_doc(project_id)
+    from mino_nexus.resources.accounts.app_scope import account_matches_app, validate_project_apps
+    if app_id:
+        validate_project_apps(project_id, [app_id])
     rows = list_test_accounts(doc, project_id=project_id)
     rid = _reserve_run_id(run_id)
     if str(run_id or "").strip():
@@ -682,6 +687,8 @@ def reserve_account(
             None,
         )
         if existing is not None:
+            if not account_matches_app(existing, app_id):
+                return None, "账号不满足生效应用条件，未占用", rid
             if str(_lease(existing).get("case_id") or "") != "mcp-reserve":
                 return None, "run_id 已被其它租约使用，未占用", rid
             return _public_account(existing, doc), "", rid
@@ -700,6 +707,8 @@ def reserve_account(
         if wanted and aid == wanted:
             seen_wanted = True
             target_row = row
+        if not account_matches_app(row, app_id):
+            continue
         if env_q and str(row.get("env") or "").lower() != env_q:
             continue
         facets = account_facets(row)
@@ -726,6 +735,7 @@ def reserve_account(
         project_id,
         aid,
         rid,
+        app_id=app_id,
         case_id="mcp-reserve",
         env=str(row.get("env") or env_q or ""),
         ttl_sec=max(60, int(ttl_sec)) if ttl_sec else _lease_ttl_sec(),
@@ -775,6 +785,9 @@ def select_accounts(project_id: str, *, env: str = "", app_id: str = "", data_re
     """Advisory shortlist; leasing still enforces the actual identity and scope."""
     from mino_nexus.resources.account_data_match import rank_account_data
     doc = _env_doc(project_id)
+    if app_id:
+        from mino_nexus.resources.accounts.app_scope import validate_project_apps
+        validate_project_apps(project_id, [app_id])
     items = [_public_account(row, doc) for row in list_test_accounts(doc, project_id=project_id)]
     items = _filter_accounts(items, env=env, state="free", lifecycle="", q="", raw_idents={}, raw_displays={})
     for item in items:

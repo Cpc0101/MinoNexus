@@ -310,29 +310,8 @@ def impact(project_id, app_id, state_id, *, version='v1', review_id=''):
 
 
 def revalidate(project_id, app_id, state_id, body):
-    from mino_nexus.casework.case_compilation import enqueue
-    with session_scope() as db:
-        scope(db, project_id, app_id, write=True)
-    preview = impact(project_id, app_id, state_id, version=body.version, review_id=body.review_id)
-    if preview['impact_token'] != body.impact_token:
-        raise ValueError('impact_changed_refresh_required')
-    selected = set(body.case_ids)
-    allowed = {r['case_id']: r for r in preview['cases']}
-    if not selected or not selected <= allowed.keys():
-        raise ValueError('impact_selection_invalid')
-    result = []
-    for cid in sorted(selected):
-        case = allowed[cid]
-        try:
-            if body.action == 'compile':
-                receipt = enqueue(project_id, cid, case['expected_revision'],
-                                  'knowledge:' + body.request_id + ':' + cid)
-                result.append({'case_id': cid, 'status': receipt['status'], 'job_id': receipt['job_id']})
-            else:
-                result.append({'case_id': cid, 'status': 'failed', 'reason': 'review_removed'})
-        except ValueError as exc:
-            result.append({'case_id': cid, 'status': 'failed', 'reason': str(exc)})
-    return {'request_id': body.request_id, 'items': result, 'business_verified': False}
+    """Compatibility entry point for the retired compilation service."""
+    raise ValueError("case_compilation_removed")
 
 
 def trends(project_id, app_id, *, platform=''):

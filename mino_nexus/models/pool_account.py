@@ -21,6 +21,7 @@ class PoolAccount(Base):
     otp = Column(String, default="")
     kind = Column(String, default="mixed")
     profile_id = Column(String, default="")
+    app_ids = Column(JSON, nullable=False, default=list, server_default="[]")
     note = Column(Text, default="")
     locked = Column(Integer, default=0)
     lease = Column(JSON, default=dict)

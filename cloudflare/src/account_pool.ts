@@ -8,6 +8,7 @@ type Clause = { facet: string; op: string; value?: unknown };
 type Account = Record<string, unknown> & {
   id: string; project_id: string; owner_user_id: string; env: string;
   facets_json: string; lease_run_id: string; lease_session_id: string; locked: number;
+  app_ids_json: string;
 };
 const BAD_HEALTH = new Set(["dirty", "quarantine", "bad", "banned", "disabled", "invalid"]);
 const TEXT_FIELDS = ["env", "display_name", "phone", "email", "username", "password", "otp", "kind", "profile_id", "note"];
@@ -29,25 +30,48 @@ export class AccountError extends Error {
 function facets(row: Account): Record<string, unknown> {
   try { return JSON.parse(row.facets_json || "{}"); } catch { return {}; }
 }
+function normalizeAppIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 100 || value.some(item => typeof item !== "string" || !item.trim() || item.length > 80)) {
+    throw new AccountError("account_app_ids_invalid", "生效应用必须是应用 ID 列表");
+  }
+  return [...new Set(value.map(item => item.trim()))];
+}
+function accountAppIds(row: Account): string[] {
+  let value: unknown;
+  try { value = JSON.parse(row.app_ids_json || "[]"); }
+  catch { throw new AccountError("account_app_ids_invalid", "账号生效应用记录无效"); }
+  return normalizeAppIds(value);
+}
+function accountFitsApp(row: Account, appId = ""): boolean {
+  const ids = accountAppIds(row);
+  return !ids.length || Boolean(appId) && ids.includes(appId);
+}
+async function validateProjectApps(db: D1Database, owner: string, project: string, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    const app = await db.prepare("SELECT app_id FROM apps WHERE app_id=? AND project_id=? AND owner_user_id=?").bind(id, project, owner).first();
+    if (!app) throw new AccountError("account_app_not_in_project", "生效应用不属于当前项目");
+  }
+}
 function publicAccount(row: Account, secrets = false): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...row, account_id: row.id, facets: facets(row), locked: Boolean(row.locked),
+  const out: Record<string, unknown> = { ...row, app_ids: accountAppIds(row), account_id: row.id, facets: facets(row), locked: Boolean(row.locked),
     state: row.locked ? "locked" : row.lease_run_id ? "occupied" : "free",
     account_ident: row.email || row.phone || row.username || row.display_name,
     lease: row.lease_run_id ? { run_id: row.lease_run_id, session_id: row.lease_session_id } : {} };
-  for (const key of ["facets_json", "owner_user_id", "lease_run_id", "lease_session_id", "lease_id", "lease_expires_at_ms"]) delete out[key];
+  for (const key of ["app_ids_json", "facets_json", "owner_user_id", "lease_run_id", "lease_session_id", "lease_id", "lease_expires_at_ms"]) delete out[key];
   if (!secrets) { out.password_configured = Boolean(row.password); out.otp_configured = Boolean(row.otp); delete out.password; delete out.otp; }
   return out;
 }
 async function projectGate(db: D1Database, owner: string, project: string): Promise<void> {
   if (!await requireOwnedProject(db, project, owner)) throw new AccountError("project_not_found", "没有这个项目", 404);
 }
-export async function listAccounts(db: D1Database, owner: string, project: string, env = "", dataRequirements: unknown = [], app = ""): Promise<Record<string, unknown>> {
+export async function listAccounts(db: D1Database, owner: string, project: string, env = "", dataRequirements: unknown = [], app = "", selecting = false): Promise<Record<string, unknown>> {
   owner = await requireProjectOwner(db, project, owner);
   await projectGate(db, owner, project);
+  if (app) await validateProjectApps(db, owner, project, [app]);
   const rows = await db.prepare("SELECT * FROM pool_accounts WHERE owner_user_id=? AND project_id=? AND (?='' OR env=?) ORDER BY created_at,id")
     .bind(owner, project, env, env).all<Account>();
   let accounts: Record<string, unknown>[];
-  try { accounts = await rankAccountData(db, project, (rows.results || []).map(r => publicAccount(r)), dataRequirements, app); }
+  try { accounts = await rankAccountData(db, project, (rows.results || []).filter(r => !app && !selecting || accountFitsApp(r, app)).map(r => publicAccount(r)), dataRequirements, app); }
   catch (error) { throw new AccountError("account_data_invalid", String((error as Error).message), 422); }
   const environments = [...new Set((rows.results || []).map(r => r.env))].map(key => ({ key, label: key }));
   return { accounts, environments, default_profile: String(((await getProjectEnv(db, owner, project)).env as Record<string, unknown>)?.default_profile || "test") };
@@ -161,6 +185,8 @@ export async function saveAccount(db: D1Database, owner: string, project: string
   const old = accountId ? await db.prepare("SELECT * FROM pool_accounts WHERE id=? AND project_id=? AND owner_user_id=?").bind(id, project, owner).first<Account>() : null;
   if (accountId && !old) throw new AccountError("account_not_found", "没有这个账号", 404);
   if (old?.lease_run_id) throw new AccountError("account_busy", "账号仍被任务占用，结束任务后修改", 409);
+  const appIds = input.app_ids === undefined ? old ? accountAppIds(old) : [] : normalizeAppIds(input.app_ids);
+  if (input.app_ids !== undefined) await validateProjectApps(db, owner, project, appIds);
   const next: Record<string, unknown> = { env: "test", kind: "mixed", ...(old || {}) };
   for (const key of TEXT_FIELDS) if (input[key] !== undefined) next[key] = String(input[key] ?? "").trim().slice(0, key === "note" ? 2000 : 1000);
   if (!["display_name", "phone", "email", "username"].some(k => String(next[k] || "").trim())) throw new AccountError("account_ident_missing", "账号至少需要展示名、手机号、邮箱或用户名");
@@ -170,12 +196,12 @@ export async function saveAccount(db: D1Database, owner: string, project: string
   if (Object.keys(nextFacets).length > 100 || Object.values(nextFacets).some(v => typeof v === "object")) throw new AccountError("account_facets_invalid", "账号标签必须是简单字段");
   const locked = input.locked === undefined ? Number(old?.locked || 0) : input.locked ? 1 : 0;
   const now = Date.now();
-  const columns = ["id", "project_id", "owner_user_id", ...TEXT_FIELDS, "locked", "facets_json", "created_at", "updated_at"];
-  const values = [id, project, owner, ...TEXT_FIELDS.map(k => String(next[k] || "")), locked, JSON.stringify(nextFacets), Number(old?.created_at || now), now];
+  const columns = ["id", "project_id", "owner_user_id", ...TEXT_FIELDS, "app_ids_json", "locked", "facets_json", "created_at", "updated_at"];
+  const values = [id, project, owner, ...TEXT_FIELDS.map(k => String(next[k] || "")), JSON.stringify(appIds), locked, JSON.stringify(nextFacets), Number(old?.created_at || now), now];
   const changed = await db.prepare(`INSERT INTO pool_accounts (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})
-    ON CONFLICT(id) DO UPDATE SET ${[...TEXT_FIELDS, "locked", "facets_json", "updated_at"].map(k => `${k}=excluded.${k}`).join(",")}
-    WHERE pool_accounts.owner_user_id=excluded.owner_user_id AND pool_accounts.project_id=excluded.project_id AND pool_accounts.lease_run_id=''`)
-    .bind(...values).run();
+    ON CONFLICT(id) DO UPDATE SET ${[...TEXT_FIELDS, "app_ids_json", "locked", "facets_json", "updated_at"].map(k => `${k}=excluded.${k}`).join(",")}
+    WHERE pool_accounts.owner_user_id=excluded.owner_user_id AND pool_accounts.project_id=excluded.project_id AND pool_accounts.lease_run_id='' AND pool_accounts.app_ids_json=?`)
+    .bind(...values, old?.app_ids_json || "[]").run();
   if (!changed.meta.changes) throw new AccountError("account_busy", "账号状态已变化，请刷新后重试", 409);
   const saved = await db.prepare("SELECT * FROM pool_accounts WHERE id=?").bind(id).first<Account>();
   return publicAccount(saved!);
@@ -319,9 +345,10 @@ async function stableAccountId(scope: LeaseScope): Promise<string> {
   return "acc" + [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
 }
 async function leaseRow(db: D1Database, scope: LeaseScope, row: Account, loginPolicy: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!accountFitsApp(row, scope.app_id)) return {};
   const leaseId = String(row.lease_id || crypto.randomUUID());
-  const result = await db.prepare("UPDATE pool_accounts SET lease_run_id=?,lease_session_id=?,lease_id=?,lease_expires_at_ms=?,updated_at=? WHERE id=? AND owner_user_id=? AND project_id=? AND env=? AND locked=0 AND facets_json=? AND (lease_run_id='' OR (lease_run_id=? AND lease_session_id=?))")
-    .bind(scope.run, scope.session, leaseId, Date.now() + 120_000, Date.now(), row.id, scope.owner, scope.project, scope.env, row.facets_json, scope.run, scope.session).run();
+  const result = await db.prepare("UPDATE pool_accounts SET lease_run_id=?,lease_session_id=?,lease_id=?,lease_expires_at_ms=?,updated_at=? WHERE id=? AND owner_user_id=? AND project_id=? AND env=? AND locked=0 AND facets_json=? AND app_ids_json=? AND (lease_run_id='' OR (lease_run_id=? AND lease_session_id=?))")
+    .bind(scope.run, scope.session, leaseId, Date.now() + 120_000, Date.now(), row.id, scope.owner, scope.project, scope.env, row.facets_json, row.app_ids_json, scope.run, scope.session).run();
   if (!result.meta.changes) return {};
   return { ...publicAccount(row, true), state: "occupied", id: row.id, login_policy: loginPolicy, lease_id: leaseId };
 }
@@ -372,11 +399,11 @@ async function provisionAccount(db: D1Database, scope: LeaseScope, requirements:
     project_id: scope.project, phone: selected.phone, email: selected.email, username: "" }[clause.facet], clause))) return null;
   const now = Date.now(), facetsJson = JSON.stringify(planFacets());
   await db.prepare(`INSERT OR IGNORE INTO pool_accounts
-    (id,project_id,owner_user_id,env,display_name,phone,email,username,password,otp,kind,profile_id,note,locked,facets_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    (id,project_id,owner_user_id,env,display_name,phone,email,username,password,otp,kind,profile_id,note,locked,facets_json,created_at,updated_at,app_ids_json)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(id, scope.project, scope.owner, scope.env, (selected.email || selected.phone).slice(0, 80), selected.phone, selected.email,
       "", "", "", "mixed", "", `auto ${secrets.login.kind} ${scope.env_surface || ""} ${selected.tag || selected.phone}`.trim(),
-      0, facetsJson, now, now).run();
+      0, facetsJson, now, now, JSON.stringify(scope.app_id ? [scope.app_id] : [])).run();
   const created = await findStableAccount(db, scope, id);
   if (!created) throw new AccountError("account_provision_failed", "新账号已分配序列但未能写入号池");
   return leaseRow(db, scope, created, loginPolicyPayload(updatedEnv, scope));
@@ -387,6 +414,7 @@ function planFacets(): Record<string, unknown> {
 
 export async function leaseAccount(db: D1Database, scope: LeaseScope, requirements: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   scope = { ...scope, owner: await requireProjectOwner(db, scope.project, scope.owner) };
+  if (scope.app_id) await validateProjectApps(db, scope.owner, scope.project, [scope.app_id]);
   const required = clauses(requirements.all);
   const strict = new Set(["id", "account_id", "phone", "email", "username", "env"]);
   const all = required.filter(c => strict.has(c.facet));
@@ -402,7 +430,7 @@ export async function leaseAccount(db: D1Database, scope: LeaseScope, requiremen
     .bind(scope.owner, scope.project, scope.env, scope.run, scope.session).all<Account>();
   const candidates = (rows.results || []).map(row => {
     const values = accountValues(row);
-    const safe = !BAD_HEALTH.has(String(values.health || "")) && accountFitsLoginKind(row, secrets.login.kind) && all.every(c => matches(values[c.facet], c));
+    const safe = accountFitsApp(row, scope.app_id) && !BAD_HEALTH.has(String(values.health || "")) && accountFitsLoginKind(row, secrets.login.kind) && all.every(c => matches(values[c.facet], c));
     const score = prefer.filter(c => matches(values[c.facet], c)).length;
     return { row, score: score + (row.lease_run_id === scope.run ? 1000 : 0), safe };
   }).filter(c => c.safe).sort((a, b) => b.score - a.score || a.row.id.localeCompare(b.row.id));

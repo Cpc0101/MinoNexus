@@ -54,6 +54,7 @@ def _account_to_dict(row: PoolAccount, facets: dict[str, str]) -> dict[str, Any]
         "password": row.password or "",
         "otp": row.otp or "",
         "profile_id": row.profile_id or "",
+        "app_ids": list(row.app_ids or []),
         "note": row.note or "",
         "locked": bool(row.locked),
         "lease": row.lease if isinstance(row.lease, dict) else {},
@@ -97,6 +98,11 @@ def _upsert_row(db, project_id: str, row: dict[str, Any]) -> None:
     if existing is None:
         existing = PoolAccount(id=aid, project_id=project_id, created_at=now)
         db.add(existing)
+    from mino_nexus.resources.accounts.app_scope import normalize_app_ids
+    app_ids = normalize_app_ids(row.get("app_ids", existing.app_ids or []))
+    if (existing.lease or {}).get("run_id") and app_ids != (existing.app_ids or []):
+        raise ValueError("account_busy; cannot change app_ids while leased")
+    existing.app_ids = app_ids
     existing.env = str(row.get("env") or "test")[:32]
     existing.display_name = str(row.get("display_name") or "")[:80]
     existing.phone = str(row.get("phone") or "")[:32]
@@ -247,6 +253,7 @@ def try_claim_account_lease(
     lease: dict[str, Any],
     *, requirements: dict[str, Any] | None = None,
     field_defs: dict[str, dict[str, Any]] | None = None,
+    app_id: str = "",
 ) -> bool:
     """原子占号：仅当未被其它 run/设备占用（或同 run+同 sn 续租）时写入。"""
     from mino_nexus.resources.resource_pool import lease_blocks_other_holder
@@ -269,6 +276,11 @@ def try_claim_account_lease(
         if row is None:
             return False
         if row.locked:
+            return False
+        from mino_nexus.resources.accounts.app_scope import account_matches_app
+        if not account_matches_app({"app_ids": row.app_ids or []}, app_id):
+            from mino_nexus.resources.resource_claim_tx import deny_claim
+            deny_claim("resource_account_scope_mismatch", "account_app_not_in_scope", account_id=aid)
             return False
         facets = _facets_for_account(db, pid, aid)
         if facets.get("health") in {"dirty", "quarantine", "bad"}:

@@ -1,4 +1,4 @@
-"""前置程序计划：Claim / prep_flow → 子里程碑 + prep_program_plan（供 agent-vision-plan 只读）。"""
+"""历史前置计划的读取与状态兼容；Nexus 不再从 Claim 生成设备计划。"""
 from __future__ import annotations
 
 import json
@@ -14,11 +14,6 @@ from mino_nexus.loop.milestones import (
     write_state,
     _sync_scope,
 )
-from mino_nexus.resources.session.ensure import account_need_from_case
-from mino_nexus.contract.execution.ui import UiChannel, ui_channel_from_ctx
-from mino_nexus.resources.case_resource_claim import _case_resource_key
-from mino_nexus.resources.case_resource_key_catalog import catalog_payload
-from mino_nexus.resources.resource_preflight import claim_requires_clear_cache, _claim_from_case
 
 
 
@@ -135,77 +130,15 @@ def seed_prep_milestones_from_claim(
     *,
     writer: Any = None,
 ) -> dict[str, Any] | None:
-    """prep 阶段首轮：用 Claim 种子里程碑并缓存 prep_program_plan。"""
-    _, phase = step_scope_key(cursor)
-    if phase != "prep":
-        return None
-    state = _sync_scope(cursor, read_state(cursor))
-    if not milestones_empty(state):
-        sync_prep_internal_milestones(cursor, ctx)
-        return getattr(cursor, "prep_program_plan", None)
-
-    scene = dict(getattr(ctx, "case_scene", None) or {})
-    pre = str(
-        getattr(cursor, "precondition_text", "")
-        or getattr(cursor, "precondition", "")
-        or (case or {}).get("precondition")
-        or ""
-    ).strip()
-    claim = resolve_prep_claim(case, ctx)
-    plan = build_prep_program_plan(
-        claim=claim,
-        scene=scene,
-        precondition=pre,
-        ctx=ctx,
-        case=case,
-    )
-    rows = milestones_from_prep_program(plan)
-    if not rows:
-        return plan
-    want = str((plan.get("flags") or {}).get("device_session") or "").strip()
-    if want in ("logged_in", "guest"):
-        scene_obj = getattr(ctx, "case_scene", None)
-        if isinstance(scene_obj, dict) and str(scene_obj.get("required_session") or "any") in ("", "any"):
-            scene_obj["required_session"] = want
-    state["milestones"] = rows
-    state["status"] = "in_progress"
-    write_state(cursor, state)
-    setattr(cursor, "prep_program_plan", plan)
-    sync_prep_internal_milestones(cursor, ctx)
-    from mino_nexus.loop.milestone_orchestrator import ensure_single_in_progress
-
-    ensure_single_in_progress(cursor, writer=writer)
-    _log_milestones_snapshot(writer, read_state(cursor), source="program_seed:prep_claim")
-    if writer is not None:
-        try:
-            writer.append(
-                "milestone/program_seed",
-                {
-                    "phase": "prep",
-                    "source": "prep_claim",
-                    "step_count": len(rows),
-                    "flags": plan.get("flags"),
-                },
-            )
-        except Exception:  # noqa: BLE001
-            pass
-    return plan
+    """Nexus no longer generates device preparation plans from claims."""
+    raise RuntimeError("nexus_preparation_planning_removed")
 
 
 def prep_program_plan_json(cursor: Any, case: dict[str, Any] | None, ctx: Any) -> str:
+    """Read a captured plan only; never compile one on demand."""
     plan = getattr(cursor, "prep_program_plan", None)
-    if not isinstance(plan, dict) or not plan.get("steps"):
-        claim = resolve_prep_claim(case, ctx)
-        scene = dict(getattr(ctx, "case_scene", None) or {})
-        pre = str(getattr(cursor, "precondition", "") or (case or {}).get("precondition") or "")
-        plan = build_prep_program_plan(
-            claim=claim,
-            scene=scene,
-            precondition=pre,
-            ctx=ctx,
-            case=case,
-        )
-        setattr(cursor, "prep_program_plan", plan)
+    if not isinstance(plan, dict):
+        raise RuntimeError("nexus_preparation_planning_removed")
     return json.dumps(plan, ensure_ascii=False, indent=2, default=str)
 
 
@@ -351,38 +284,3 @@ def active_reauthentication_navigation(cursor: Any) -> bool:
         isinstance(row, dict) and row.get("status") == "in_progress" and row.get("source") == "prep_program"
         and row.get("prep_flow_id") == "reauthentication" and row.get("id") == marker.get("milestone_id")
         for row in state.get("milestones") or [])
-
-
-def resource_claim_json_for_plan(case: dict[str, Any] | None, ctx: Any) -> str:
-    claim = resolve_prep_claim(case, ctx)
-    if not claim:
-        return "{}"
-    slim = {
-        "version": claim.get("version"),
-        "platform": claim.get("platform"),
-        "device_app": claim.get("device_app"),
-        "account": {
-            "env": (claim.get("account") or {}).get("env"),
-            "required_session": (claim.get("account") or {}).get("required_session"),
-        },
-        "case_scene": claim.get("case_scene"),
-    }
-    return json.dumps(slim, ensure_ascii=False, indent=2, default=str)
-
-
-from mino_nexus.casework.prep_plan import (  # noqa: F401,E402
-    _account_clause,
-    _device_session_clause,
-    _launch_hook_cap,
-    _pre_lines,
-    _session_want,
-    build_prep_program_plan,
-    resolve_prep_claim,
-)
-
-
-from mino_nexus.casework.prep_plan import (  # noqa: F401,E402
-    _claim_needs_lease,
-    _env_clear_clause,
-    _extra_prep_catalog_steps,
-)

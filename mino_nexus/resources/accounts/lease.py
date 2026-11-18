@@ -138,6 +138,9 @@ def _row_matches_ctx_login_kind(
 ) -> bool:
     from mino_nexus.resources.otp_resolve import account_row_matches_login_kind
 
+    from mino_nexus.resources.accounts.app_scope import account_matches_app
+    if not account_matches_app(row, str(getattr(ctx, "app_id", "") or "")):
+        return False
     kind = _login_kind_for_ctx(ctx, env_doc, prompt=prompt)
     return account_row_matches_login_kind(row, kind)
 
@@ -235,6 +238,7 @@ def _pick_row(
     )
     ranked = pick_test_accounts(
         list_test_accounts(env_doc, project_id=project_id),
+        app_id=app_id,
         prompt=prompt,
         env=env_profile,
         surface=surface,
@@ -283,11 +287,15 @@ def _mark_leased(
     *,
     case_id: str = "",
     sn: str = "",
+    app_id: str = "",
     env: str = "",
     requirements: dict[str, Any] | None = None,
     ttl_sec: int | None = None,
 ) -> bool:
     from mino_nexus.resources.pool_account_store import try_claim_account_lease
+    if app_id:
+        from mino_nexus.resources.accounts.app_scope import validate_project_apps
+        validate_project_apps(project_id, [app_id])
 
     doc = ps.project_env(project_id)
     rows = list_test_accounts(doc, project_id=project_id)
@@ -306,7 +314,7 @@ def _mark_leased(
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
     defs = {str(d["key"]): d for d in merged_pool_field_defs(doc) if d.get("key")}
     ok = try_claim_account_lease(project_id, account_id, rec,
-                                 requirements=requirements, field_defs=defs)
+                                 requirements=requirements, field_defs=defs, app_id=app_id)
     if not ok:
         SLog.w(
             TAG,
@@ -385,7 +393,7 @@ def renew_run_lease(ctx: Any) -> bool:
     if not pid or not aid or not rid:
         return False
     try:
-        return _mark_leased(pid, aid, rid, case_id=str(getattr(ctx, "case_id", "") or "")[:64], sn=str(getattr(ctx, "sn", "") or ""), env=str(getattr(ctx, "env_profile", "") or ""))
+        return _mark_leased(pid, aid, rid, app_id=str(getattr(ctx, "app_id", "") or ""), case_id=str(getattr(ctx, "case_id", "") or "")[:64], sn=str(getattr(ctx, "sn", "") or ""), env=str(getattr(ctx, "env_profile", "") or ""))
     except Exception as exc:
         SLog.w(TAG, f"renew lease failed: {exc!r}")
         return False
@@ -529,6 +537,9 @@ def restore_lease_for_run(ctx: Any, run_id: str) -> tuple[dict[str, Any] | None,
     want_sn = str(getattr(ctx, "sn", "") or "").strip()
     for row in list_test_accounts(env_doc, project_id=project_id):
         lease = row.get("lease") if isinstance(row.get("lease"), dict) else {}
+        from mino_nexus.resources.accounts.app_scope import account_matches_app
+        if not account_matches_app(row, app_id):
+            continue
         if str(lease.get("run_id") or "").strip() != rid:
             continue
         if lease_expired(lease):
@@ -698,6 +709,7 @@ def _lease_for_context(
                     release_ctx_lease(ctx)
                 else:
                     if not _mark_leased(project_id, aid, run_id,
+                            app_id=app_id,
                             case_id=str(getattr(ctx, "case_id", "") or ""), sn=holder_sn,
                             env=env_profile, requirements=requirements):
                         from mino_nexus.resources.resource_claim_tx import claim_failure_code
@@ -724,6 +736,7 @@ def _lease_for_context(
                 project_id,
                 account_id,
                 run_id,
+                app_id=app_id,
                 case_id=str(getattr(ctx, "case_id", "") or "")[:64],
                 sn=holder_sn,
                 env=env_profile,
@@ -746,6 +759,7 @@ def _lease_for_context(
                 project_id,
                 account_id,
                 run_id,
+                app_id=app_id,
                 case_id=str(getattr(ctx, "case_id", "") or "")[:64],
                 sn=holder_sn,
                 env=env_profile,
@@ -784,6 +798,7 @@ def _lease_for_context(
                 project_id,
                 account_id,
                 run_id,
+                app_id=app_id,
                 case_id=str(getattr(ctx, "case_id", "") or "")[:64],
                 sn=holder_sn,
                 env=env_profile,
@@ -817,6 +832,7 @@ def _lease_for_context(
                 project_id,
                 account_id,
                 run_id,
+                app_id=app_id,
                 case_id=str(getattr(ctx, "case_id", "") or "")[:64],
                 sn=holder_sn,
                 env=env_profile,

@@ -273,6 +273,7 @@ def provision_phone_seq_account(
         project.env = doc
         now = int(time.time())
         account = PoolAccount(id=aid, project_id=pid, env=env_profile, phone=phone,
+            app_ids=[app_id] if app_id else [],
             display_name=f"{_channel_stem(doc, surface)}+{phone}"[:80], profile_id="",
             note=f"phone_seq candidate {surface}+{phone}; pending business verification", lease={}, locked=0,
             created_at=now, updated_at=now)

@@ -59,6 +59,7 @@ class TestAccountSaveBody(BaseModel):
 
 
 class TestAccountPatchBody(BaseModel):
+    app_ids: Optional[list[str]] = None
     env: Optional[str] = None
     display_name: Optional[str] = None
     phone: Optional[str] = None
@@ -92,6 +93,7 @@ class AccountTemplateStateBody(BaseModel):
 
 
 class TestAccountPickBody(BaseModel):
+    app_id: str = ""
     prompt: str = ""
     env: str = ""
     surface: str = ""
@@ -526,17 +528,24 @@ def list_app_accounts(app_id: str, env: str = "", _sess: dict = Depends(current_
     pid = str(app.get("project_id") or "").strip()
     if not pid:
         raise HTTPException(status_code=404, detail="App has no project_id")
-    return list_project_accounts(pid, env=env, _sess=_sess)
+    return list_project_accounts(pid, env=env, app_id=app_id, _sess=_sess)
 
 
 @router.get("/{project_id}/accounts")
-def list_project_accounts(project_id: str, env: str = "", _sess: dict = Depends(current_session)):
+def list_project_accounts(project_id: str, env: str = "", app_id: str = "", _sess: dict = Depends(current_session)):
     project_id = _resolve_project_id(project_id)
     try:
         doc = ps.project_env(project_id)
     except KeyError as exc:
         _missing(exc)
     rows = list_test_accounts(doc, project_id=project_id)
+    if app_id:
+        from mino_nexus.resources.accounts.app_scope import account_matches_app, validate_project_apps
+        try:
+            validate_project_apps(project_id, [app_id])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        rows = [row for row in rows if account_matches_app(row, app_id)]
     if env:
         rows = [x for x in rows if str(x.get("env") or "") == env]
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
@@ -561,6 +570,8 @@ def save_project_accounts(project_id: str, body: TestAccountSaveBody, _sess: dic
         doc = save_test_accounts(base, body.accounts, project_id=project_id)
     except KeyError as exc:
         _missing(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok(
         {
             "accounts": _public_accounts(
@@ -1114,6 +1125,8 @@ def pick_project_accounts(project_id: str, body: TestAccountPickBody, _sess: dic
     )
     ranked = pick_test_accounts(
         rows,
+        app_id=body.app_id,
+        project_id=project_id,
         prompt=body.prompt,
         env=body.env,
         surface=body.surface,

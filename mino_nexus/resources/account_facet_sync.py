@@ -65,11 +65,13 @@ def log_context_from_run_ctx(ctx: Any, *, source: str, case_id: str = "") -> Fac
 
 def _scalar_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key in _SCALAR_FIELDS:
+    for key in (*_SCALAR_FIELDS, "app_ids"):
         if key not in row:
             continue
         val = row.get(key)
-        if val is None:
+        if key == "app_ids":
+            out[key] = list(val or [])
+        elif val is None:
             out[key] = ""
         elif key == "password":
             out[key] = str(val)
@@ -168,7 +170,7 @@ def apply_account_template_state(
     save_payload: dict[str, Any] = {}
     if after_facets != before_facets:
         save_payload["facets"] = after_facets
-    for key in _SCALAR_FIELDS:
+    for key in (*_SCALAR_FIELDS, "app_ids"):
         if key not in patch:
             continue
         save_payload[key] = patch[key]

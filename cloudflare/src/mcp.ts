@@ -1131,7 +1131,7 @@ async function callTool(
         return pack(true, "项目环境配置已保存", await saveProjectEnv(env.DB, userId, project_id, args.env));
       }
       if (name === "resource_account_select") {
-        const result = await listAccounts(env.DB, userId, project_id, String(args.env || ""), args.data_requirements, String(args.app_id || ""));
+        const result = await listAccounts(env.DB, userId, project_id, String(args.env || ""), args.data_requirements, String(args.app_id || ""), true);
         return pack(true, "数据记忆仅辅助选号", {...result, accounts: (result.accounts as Record<string, unknown>[]).filter(row => row.state === "free")});
       }
       if (name === "resource_account_list") return pack(true, "", await listAccounts(env.DB, userId, project_id, String(args.env || "")));
@@ -1273,7 +1273,7 @@ export async function handleMcp(
         result: {
           protocolVersion: PROTOCOLS.has(offered) ? offered : protocol,
           capabilities: { tools: {} },
-          serverInfo: { name: "mino-nexus", version: "0.1.89-cloudflare" },
+          serverInfo: { name: "mino-nexus", version: "0.1.90-cloudflare" },
           instructions: AGENT_INSTRUCTIONS,
         },
       });

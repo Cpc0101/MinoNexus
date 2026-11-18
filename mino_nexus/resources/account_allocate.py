@@ -65,6 +65,7 @@ def allocate_by_template(
     holder_sn = str(getattr(ctx, "sn", "") or "")
     ranked = pick_test_accounts(
         rows,
+        app_id=str(getattr(ctx, "app_id", "") or ""),
         env=env_profile,
         env_doc=env_doc,
         requirements=req,
@@ -78,6 +79,7 @@ def allocate_by_template(
     for candidate in ranked:
         aid = str(candidate.get("id") or candidate.get("account_id") or "")
         if aid and _mark_leased(project_id, aid, run_id,
+                               app_id=str(getattr(ctx, "app_id", "") or ""),
                                case_id=str(getattr(ctx, "case_id", "") or ""),
                                sn=holder_sn, env=env_profile, requirements=req):
             row = {**candidate, "facets": merge_account_facets(candidate.get("facets"), ext)}

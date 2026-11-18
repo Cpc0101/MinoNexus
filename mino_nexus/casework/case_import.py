@@ -4,15 +4,11 @@
 开启「密钥/步骤键问题默认阻止提交」）会在提交前整批拒绝。
 """
 from __future__ import annotations
-from mino_nexus.platform.identity import user_thread, require_user_id
-from mino_nexus.casework.job_owner import owned_job
+from mino_nexus.platform.identity import require_user_id
 
 
 import copy
-import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextvars import copy_context
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -546,7 +542,14 @@ def preview_status(preview_token: str, project_id: str = "") -> dict[str, Any] |
     if not doc.get("cancel") and any(row.get("parse_status") == "pending" for row in rows):
         for row in rows:
             if row.get("parse_status") == "pending":
-                row["parse_status"] = "done"
+                row["parse_status"] = "error"
+                row["remark"] = "case_compilation_removed"
+                row["selected_by_default"] = False
+                row["runnable_now"] = False
+                row["status"] = "blocked"
+                row["ui_automation"] = {"status": "blocked", "runnable_now": False, "coverable": False,
+                                        "blocked_by": [{"reason": "case_compilation_removed"}]}
+                row["automatability"] = {"class": "C", "reason": "case_compilation_removed"}
         doc["rows"] = rows
         preview_store.update(str(preview_token), doc)
     parsed = sum(1 for row in rows if row.get("parse_status") != "pending")
@@ -572,128 +575,14 @@ def cancel_preview(preview_token: str, project_id: str = "") -> bool:
 
 
 def retry_preview_row(preview_token: str, row_index: int, project_id: str = "") -> bool:
-    doc = preview_store.get(str(preview_token or ""), project_id)
-    if not doc:
-        return False
-    found = False
-    for row in doc.get("rows") or []:
-        if int(row.get("row_index", -1)) != int(row_index):
-            continue
-        if row.get("parse_status") not in ("error", "cancelled"):
-            return False
-        row["parse_status"] = "pending"
-        row["steps_parsed"] = []
-        row["expected_parsed"] = []
-        found = True
-        break
-    if not found:
-        return False
-    preview_store.update_row(str(preview_token), row, restart=True)
-    _start_preview_worker(str(preview_token))
-    return True
+    """Compilation retries cannot restart a removed background worker."""
+    raise ValueError("case_compilation_removed")
 
 
-def _start_preview_worker(token: str) -> None:
-    worker_id = f"{os.getpid()}:{uuid.uuid4().hex}"
-    if preview_store.claim(token, worker_id):
-        try:
-            user_thread(target=_compile_preview_batches, args=(token, worker_id), daemon=True).start()
-        except Exception:
-            preview_store.release(token, worker_id)
-            raise
 
 
-def _apply_preview_compile_row(row: dict[str, Any], summary: dict[str, Any] | None, exc: Exception | None) -> None:
-    if exc is not None:
-        row["parse_status"] = "error"
-        row["remark"] = str(exc)[:200]
-        row["automatability"] = {"class": "C", "label": "仅部分可 UI 自动化", "reason": str(exc)[:200]}
-        row["selected_by_default"] = False
-        return
-    assert summary is not None
-    compiled_meta = dict(summary.get("compiled_meta") or {})
-    row["steps_parsed"] = list(summary.get("steps_parsed") or [])
-    row["expected_parsed"] = list(summary.get("expected_parsed") or [])
-    row["remark"] = str(summary.get("remark") or "")
-    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-    payload["meta"] = compiled_meta
-    row["payload"] = payload
-    row["meta"] = compiled_meta
-    row["step_key_validation"] = {key: summary[key] for key in summary if key != "compiled_meta"}
-    row["automation_details"] = summary.get("automation_details") or {}
-    row["ui_automation"] = summary.get("ui_automation") or {
-        "schema": "mino.ui_automation.v2", "status": "blocked", "coverable": False,
-        "runnable_now": False, "ui_plan": "none",
-        "setup": {"state": "unknown", "verified": False, "items": []},
-        "oracle": {"state": "unknown", "manual": False, "missing_items": []},
-        "blocked_by": [],
-    }
-    row["automatability"] = summary.get("automatability") or {"class": "C", "label": "仅部分可 UI 自动化", "reason": ""}
-    row["status"] = row["ui_automation"].get("status")
-    row["runnable_now"] = bool(row["ui_automation"].get("runnable_now"))
-    flags = [flag for flag in row.get("flags") or []
-             if flag not in ("step_key_issues", "ui_not_coverable", "needs_setup", "ui_partial", "non_ui")]
-    if summary.get("issues"):
-        flags.append("step_key_issues")
-    klass = str((row.get("automatability") or {}).get("class") or "C").upper()
-    if klass == "B":
-        flags.append("needs_setup")
-    elif klass not in ("A", "B"):
-        flags.append("ui_partial")
-    row["flags"] = flags
-    if klass not in ("A", "B"):
-        row["selected_by_default"] = False
-    row["parse_status"] = "done"
 
 
-def _compile_preview_batches(token: str, worker_id: str) -> None:
-    from mino_nexus.casework.case_key_registry import import_row_key_summary
-
-    try:
-        while True:
-            doc = preview_store.get(token)
-            if not doc or doc.get("cancel"):
-                return
-            pending = [row for row in doc.get("rows") or [] if row.get("parse_status") == "pending"]
-            if not pending:
-                return
-            batch_size = max(1, int(doc.get("batch_size") or 5))
-            batch = pending[:batch_size]
-            compiled: list[tuple[int, dict[str, Any] | None, Exception | None]] = []
-            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
-                futures = {
-                    executor.submit(
-                        copy_context().run,
-                        import_row_key_summary,
-                        row.get("payload") or {},
-                        project_id=str(doc.get("project_id") or ""),
-                        app_id=str(doc.get("app_id") or ""),
-                        env_doc=doc.get("env_doc"),
-                    ): int(row["row_index"])
-                    for row in batch
-                }
-                for future in as_completed(futures):
-                    row_index = futures[future]
-                    try:
-                        compiled.append((row_index, future.result(), None))
-                    except Exception as exc:
-                        compiled.append((row_index, None, exc))
-            doc = preview_store.get(token)
-            if not doc or doc.get("cancel"):
-                return
-            for row_index, summary, exc in sorted(compiled, key=lambda item: item[0]):
-                row = next((item for item in doc["rows"] if int(item.get("row_index", -1)) == row_index), None)
-                if not row:
-                    continue
-                _apply_preview_compile_row(row, summary, exc)
-                if not preview_store.update_row(token, row, worker_id=worker_id):
-                    preview_store.release(token, worker_id)
-                    return
-                doc = preview_store.get(token)
-                if not doc or doc.get("cancel"):
-                    return
-    finally:
-        preview_store.release(token, worker_id)
 
 
 def normalize_table(table: Any) -> list[list[str]]:
@@ -739,7 +628,9 @@ def commit_import(
             raise ValueError("预览与需求不匹配")
         for row in doc.get("rows") or []:
             if row.get("parse_status") == "pending":
-                row["parse_status"] = "done"
+                row["parse_status"] = "error"
+                row["remark"] = "case_compilation_removed"
+                row["selected_by_default"] = False
         if doc.get("cancel"):
             raise ValueError("预览已取消，请重新预览")
         if not fill_plat:
@@ -896,7 +787,7 @@ def cases_payload(project_id: str) -> dict[str, Any]:
     cases = list_cases(pid)
     req_titles = {str(r.get("id") or ""): str(r.get("title") or "") for r in list_project_requirements(pid)}
     rows: list[dict[str, Any]] = []
-    from mino_nexus.casework.case_key_registry import step_keys_summary_for_case
+    from mino_nexus.contract.case_view import stored_step_summary
 
     for raw in cases:
         title = req_titles.get(str(raw.get("requirement_id") or ""), "需求")
@@ -904,7 +795,7 @@ def cases_payload(project_id: str) -> dict[str, Any]:
             {
                 **raw,
                 "requirement_title": title,
-                "step_keys_summary": step_keys_summary_for_case(raw),
+                "step_keys_summary": stored_step_summary(raw),
             }
         )
     return {
