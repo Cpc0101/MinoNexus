@@ -31,6 +31,10 @@ env:
   TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
   TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
   MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top/health' }}
+  MINO_WORKBENCH_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top' }}
+  MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL || 'https://nexus.minocc.top' }}
+  MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top' }}
+  MINO_SCOUT_MANIFEST_URL: ${{ vars.MINO_SCOUT_MANIFEST_URL || 'https://nexus.minocc.top/scout-release/manifest.json' }}
 
 jobs:
   deploy:
@@ -75,23 +79,23 @@ jobs:
             exit 1
           }
 
-      - name: Verify image and remote Docker
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify remote Docker
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin > /dev/null
-          docker manifest inspect "$image" > /dev/null
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "docker version --format '{{.Server.Version}}' && docker compose version"
 
-      - name: Pull image on Tencent
+      - name: Ensure Nexus image on Tencent
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
+          if ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
+            "$TENCENT_USER@$TENCENT_HOST" "docker image inspect '$image' > /dev/null 2>&1"; then
+            echo "Nexus image already exists on Tencent: $image"
+            exit 0
+          fi
           printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
             "$TENCENT_USER@$TENCENT_HOST" "
               set -euo pipefail
@@ -135,22 +139,42 @@ jobs:
             "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/docker-compose.yml.next"
           scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes scripts/deploy-tencent.sh \
             "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/.deploy-tencent.sh"
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes scripts/configure-production-nginx.sh \
+            "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/.configure-production-nginx.sh"
+
+      - name: Configure standard HTTPS routes
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "bash '$TENCENT_DEPLOY_DIR/.configure-production-nginx.sh'"
 
       - name: Deploy with backup and rollback
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "MINO_DEPLOY_SKIP_PULL=1 bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
+            "MINO_DEPLOY_SKIP_PULL=1 MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
 
-      - name: Verify public deployment
+      - name: Verify deployment from Tencent
         run: |
           set -euo pipefail
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if curl --fail --silent --show-error --max-time 10 "$MINO_NEXUS_HEALTH_URL" > /tmp/nexus-health.json; then
-              break
-            fi
-            sleep 3
-          done
+          container_id=$(ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "cd '$TENCENT_DEPLOY_DIR' && docker compose ps -q nexus")
+          test -n "$container_id" || { echo 'Nexus container is not running' >&2; exit 1; }
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' '$container_id'" > /tmp/nexus-runtime-env.txt
+          grep -Fx "MINO_NEXUS_PUBLIC_URL=$MINO_NEXUS_PUBLIC_URL" /tmp/nexus-runtime-env.txt
+          grep -Fx "MINO_WORKBENCH_PUBLIC_URL=$MINO_WORKBENCH_PUBLIC_URL" /tmp/nexus-runtime-env.txt
+          grep -Fx "MINO_SCOUT_MANIFEST_URL=$MINO_SCOUT_MANIFEST_URL" /tmp/nexus-runtime-env.txt
+          echo 'Verified Nexus runtime public URLs'
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:443:127.0.0.1 '$MINO_NEXUS_HEALTH_URL'" > /tmp/nexus-health.json
+          echo 'Verified standard HTTPS Nexus health endpoint on Tencent'
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:443:127.0.0.1 '$MINO_SCOUT_MANIFEST_URL'" > /tmp/nexus-scout-manifest.json
+          echo 'Verified standard HTTPS Scout manifest on Tencent'
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "curl --fail --silent --show-error --max-time 20 --resolve workbench.minocc.top:443:127.0.0.1 '$MINO_WORKBENCH_URL'" > /tmp/workbench.html
+          echo 'Verified standard HTTPS Workbench homepage on Tencent'
           python3 - <<'PY'
           import json
           import os
@@ -161,5 +185,20 @@ jobs:
           actual = str(payload.get('nexus_version', ''))
           if not payload.get('ok') or actual != expected:
               raise SystemExit(f'Production verification failed: expected {expected}, got {actual}, ok={payload.get("ok")}')
+          manifest = json.loads(Path('/tmp/nexus-scout-manifest.json').read_text())
+          if not manifest.get('version'):
+              raise SystemExit('Scout release manifest has no version')
+          if not Path('/tmp/workbench.html').read_text().strip():
+              raise SystemExit('Workbench homepage is empty')
           print(f'Production Nexus is healthy at version {actual}')
           PY
+
+      - name: Probe public endpoints from GitHub runner
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          for url in "$MINO_NEXUS_HEALTH_URL" "$MINO_SCOUT_MANIFEST_URL" "$MINO_WORKBENCH_URL"; do
+            curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 5 \
+              --max-time 20 "$url" > /dev/null
+            echo "Reachable from GitHub runner: $url"
+          done
