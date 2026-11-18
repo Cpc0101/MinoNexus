@@ -1,0 +1,51 @@
+name: Inspect Workbench production deployment
+
+on:
+  push:
+    branches: [deploy/workbench-inspect]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    env:
+      TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+      TENCENT_USER: ${{ vars.TENCENT_USER }}
+      TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/mino-nexus-deploy
+          chmod 0600 ~/.ssh/mino-nexus-deploy
+          ssh-keygen -y -f ~/.ssh/mino-nexus-deploy > /dev/null
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 {print $2}')
+          test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
+
+      - name: Inspect nginx and Workbench files
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" '
+            set -e
+            echo "HOST=$(hostname)"
+            echo "USER=$(id)"
+            echo "NGINX=$(command -v nginx || true)"
+            echo "--- nginx -T ---"
+            nginx -T 2>&1 || true
+            echo "--- matching web roots ---"
+            find /var/www /srv /home -maxdepth 5 -type f -name index.html 2>/dev/null | while read -r file; do
+              if grep -q "Mino Workbench" "$file" 2>/dev/null; then
+                echo "$file"
+                ls -ld "$(dirname "$file")"
+              fi
+            done
+            echo "--- egress requests ---"
+            curl -fsS https://workbench.minocc.top/ | grep -F "__MINO_CONFIG__" || true
+          '
