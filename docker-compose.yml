@@ -9,6 +9,9 @@ services:
     volumes:
       - mino-data:/data
     environment:
+      MINO_NEXUS_PUBLIC_URL: ${MINO_NEXUS_PUBLIC_URL:-}
+      MINO_WORKBENCH_PUBLIC_URL: ${MINO_WORKBENCH_PUBLIC_URL:-}
+      MINO_SCOUT_MANIFEST_URL: ${MINO_SCOUT_MANIFEST_URL:-}
       MINO_WORKBENCH_ORIGINS: ${MINO_WORKBENCH_ORIGINS:-}
       # Trust forwarded scheme only from explicitly configured reverse-proxy IPs.
       FORWARDED_ALLOW_IPS: ${MINO_PROXY_IPS:-127.0.0.1}

@@ -46,7 +46,11 @@ else
 fi
 
 MINO_NEXUS_VERSION="$version" docker compose --env-file .env.next -f docker-compose.yml.next.validated config > /dev/null
-MINO_NEXUS_VERSION="$version" docker compose --env-file .env.next -f docker-compose.yml.next.validated pull nexus
+if [ "${MINO_DEPLOY_SKIP_PULL:-0}" = "1" ]; then
+  docker image inspect "ghcr.io/cpc0101/mino-nexus:$version" > /dev/null
+else
+  MINO_NEXUS_VERSION="$version" docker compose --env-file .env.next -f docker-compose.yml.next.validated pull nexus
+fi
 
 rollback() {
   status=$?

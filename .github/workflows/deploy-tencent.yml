@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: deploy-tencent-nexus
@@ -75,11 +76,23 @@ jobs:
           }
 
       - name: Verify image and remote Docker
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          docker manifest inspect "ghcr.io/cpc0101/mino-nexus:${NEXUS_VERSION}" > /dev/null
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin > /dev/null
+          docker manifest inspect "$image" > /dev/null
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "docker version --format '{{.Server.Version}}' && docker compose version"
+
+      - name: Transfer image to Tencent
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
+          docker pull --platform linux/amd64 "$image"
+          docker save "$image" | gzip -1 | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
+            "$TENCENT_USER@$TENCENT_HOST" "gzip -dc | docker load"
 
       - name: Resolve deployment directory
         run: |
@@ -120,7 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
+            "MINO_DEPLOY_SKIP_PULL=1 bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
 
       - name: Verify public deployment
         run: |
