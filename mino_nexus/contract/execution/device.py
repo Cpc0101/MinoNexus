@@ -14,6 +14,11 @@ def is_web_slot(sn: str = "", platform: str = "") -> bool:
     return valid and (not platform or platform == "web")
 
 
+def is_node_web_slot(sn: str, platform: str, node_id: str) -> bool:
+    """Only the canonical Web slot derived from this node's identity."""
+    return platform == "web" and bool(node_id) and is_web_slot(sn, platform) and sn == f"web{node_id}"
+
+
 def is_per_node_web_sn(sn: str = "") -> bool:
     """`web` + [a-z0-9]+ —— 升级后的 Playwright 槽位，不是 `web-local`。"""
     s = str(sn or "").strip().lower()

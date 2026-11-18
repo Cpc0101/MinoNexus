@@ -22,7 +22,7 @@ from mino_nexus.resources.device_store import remember as remember_device, get_d
 from mino_nexus.core.log import SLog
 from mino_nexus.resources.node_store import get_node as stored_node, sanitize_id, upsert as persist_node
 from mino_nexus.contract.execution.device import (
-    is_per_node_web_sn,
+    is_node_web_slot,
 )
 
 TAG = "NodeRegistry"
@@ -497,10 +497,14 @@ class NodeRegistry:
         device: P.DeviceManifest | None = None,
         session: NodeSession | None = None,
     ) -> None:
-        """当前位置跟当前 Scout；账号归属由 device_store 按首次出现锁定。"""
+        """实体设备保留首次归属；本节点 Web 虚拟槽跟随已认证节点。"""
         node = session or self._nodes.get(node_id)
+        node_web_slot = bool(
+            node and node.owner_user_id and device and device.sn == sn
+            and is_node_web_slot(sn, device.platform, node.node_id)
+        )
         persisted = get_device(sn)
-        if persisted is not None:
+        if persisted is not None and not node_web_slot:
             uid = str(persisted.get("owner_user_id") or "")
             if not uid:
                 previous_node = stored_node(str(persisted.get("current_scout_id") or "")) or {}
@@ -526,6 +530,8 @@ class NodeRegistry:
         node = session or self._nodes.get(node_id)
         if node is not None and device is not None:
             self._record_device(node, device)
+            if node_web_slot and persisted and persisted.get("owner_user_id") != node.owner_user_id:
+                SLog.i(TAG, f"Web 虚拟槽归属已随节点同步 sn={sn} node={node_id}")
 
 
 

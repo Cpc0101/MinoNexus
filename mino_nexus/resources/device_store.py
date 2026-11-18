@@ -1,13 +1,14 @@
 """设备身份落盘：一条 SN 一行。
 
-账号归属按**首次出现**锁定，换 Scout 只改当前位置，不另开一行。
-web 槽位是 `web`+scout_id，本来就不会在节点间搬家；ADB 序列号会。
+实体设备账号归属按**首次出现**锁定，换 Scout 只改当前位置，不另开一行。
+Web 槽位是 `web`+scout_id，归属跟随已认证的节点并修正历史冲突。
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
+from mino_nexus.contract.execution.device import is_node_web_slot
 from mino_nexus.resources.node_store import sanitize_id
 
 
@@ -138,7 +139,7 @@ def remember(
     status: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """按 SN upsert。owner_user_id 只在空的时候写入。"""
+    """按 SN upsert；仅本节点 Web 槽随节点更新归属，实体设备只填空归属。"""
     sid = str(sn or "").strip()
     if not sid:
         return {}
@@ -162,7 +163,10 @@ def remember(
     if studio:
         row["current_studio_id"] = studio
     owner = sanitize_id(owner_user_id)
-    if owner and not sanitize_id(str(row.get("owner_user_id") or "")):
+    if owner and is_node_web_slot(sid, str(row.get("platform") or ""), nid):
+        row["owner_user_id"] = owner
+        row["owner_name"] = str(owner_name or "").strip()
+    elif owner and not sanitize_id(str(row.get("owner_user_id") or "")):
         row["owner_user_id"] = owner
         if owner_name:
             row["owner_name"] = str(owner_name).strip()
