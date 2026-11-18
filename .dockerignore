@@ -1,12 +1,11 @@
 **
 !Dockerfile
 !pyproject.toml
+!MANIFEST.in
 !mino_nexus/
 !mino_nexus/**
 !scripts/
 !scripts/prepare_build.py
-!dist/
-!dist/*.whl
 mino_nexus/web/
 mino_nexus/BUILD.json
 **/__pycache__
