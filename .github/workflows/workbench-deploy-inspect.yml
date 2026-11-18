@@ -47,19 +47,27 @@ jobs:
           set -euo pipefail
           expected_asset=$(tar -xOf .deploy/workbench-web-0.0.61.tar.gz ./index.html | sed -n 's#.*src="/assets/\([^"]*\)".*#\1#p' | head -n 1)
           test -n "$expected_asset"
+          case "$expected_asset" in
+            *[!A-Za-z0-9._-]*) echo "Unsafe asset name: $expected_asset" >&2; exit 1 ;;
+          esac
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "python3 /tmp/deploy-workbench-remote.py /tmp/workbench-web-0.0.61.tar.gz '$expected_asset'"
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if curl --fail --silent --show-error --max-time 15 \
-              "https://workbench.minocc.top/assets/$expected_asset" --output /dev/null; then
-              break
-            fi
-            test "$attempt" -lt 10
-            sleep 3
-          done
-          body=$(curl --fail --silent --show-error --retry 5 --retry-delay 3 "https://workbench.minocc.top/")
-          printf '%s' "$body" | grep -F "/assets/$expected_asset" > /dev/null
-          ! printf '%s' "$body" | grep -F "nexus.minocc.top:8443"
+          # Verify from the production host so a transient GitHub-runner route to
+          # the Tencent edge does not turn a successful deployment into a false failure.
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "set -e
+            asset='$expected_asset'
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if curl --fail --silent --show-error --max-time 15 \"https://workbench.minocc.top/assets/\$asset\" --output /dev/null; then
+                break
+              fi
+              test \"\$attempt\" -lt 10
+              sleep 3
+            done
+            body=\$(curl --fail --silent --show-error --retry 5 --retry-delay 3 'https://workbench.minocc.top/')
+            printf '%s' \"\$body\" | grep -F \"/assets/\$asset\" > /dev/null
+            ! printf '%s' \"\$body\" | grep -F 'nexus.minocc.top:8443'
+            echo \"WORKBENCH_ASSET=\$asset\""
 
       - name: Verify Nexus is loopback-only
         run: |
