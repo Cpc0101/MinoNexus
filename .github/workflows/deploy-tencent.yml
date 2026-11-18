@@ -86,13 +86,20 @@ jobs:
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "docker version --format '{{.Server.Version}}' && docker compose version"
 
-      - name: Transfer image to Tencent
+      - name: Pull image on Tencent
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
-          docker pull --platform linux/amd64 "$image"
-          docker save "$image" | gzip -1 | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
-            "$TENCENT_USER@$TENCENT_HOST" "gzip -dc | docker load"
+          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
+            "$TENCENT_USER@$TENCENT_HOST" "
+              set -euo pipefail
+              trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+              docker login ghcr.io --username '$GITHUB_ACTOR' --password-stdin > /dev/null
+              timeout 20m docker pull --platform linux/amd64 '$image'
+              docker image inspect '$image' > /dev/null
+            "
 
       - name: Resolve deployment directory
         run: |
