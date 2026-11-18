@@ -18,7 +18,7 @@ from mino_nexus.api.deps import current_session, require_packs_writer
 from mino_nexus.resources.node_store import sanitize_id, upsert
 from mino_nexus.resources.runtime_tokens import issue
 from mino_nexus.resources.runtime_tokens import installation_status, revoke_node_credential
-from mino_nexus.api.scout_install import install_commands, installation_release, public_nexus_url
+from mino_nexus.api.scout_install import install_commands, installation_release, public_nexus_url, uninstall_commands
 from mino_nexus.resources.ui_devices import ui_assets, ui_devices, ui_nodes
 from mino_nexus.resources.node_workload import workload_for_node_id
 
@@ -333,6 +333,63 @@ async def revoke_node_token(node_id: str, sess: dict = Depends(current_session))
     revoke_node_credential(nid)
     await _close_node_connection(nid)
     return ok({"node_id": nid, "revoked": True})
+
+
+@router.delete("/nodes/{node_id}")
+async def delete_node(node_id: str, sess: dict = Depends(current_session)):
+    """解绑当前账号自己的 Scout；跨账号节点一律按不存在处理。"""
+    from datetime import datetime, timezone
+    from sqlalchemy import text
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.models.device import Device
+    from mino_nexus.models.node import Node
+    from mino_nexus.models.node_tool_task import NodeToolTask
+    from mino_nexus.models.token import InstallToken, NodeCredential
+
+    nid = sanitize_id(node_id)
+    row = stored_node(nid) if nid else None
+    if row is None or not node_visible(row, sess):
+        raise HTTPException(status_code=404, detail="没有这个节点")
+    uid = sanitize_id(str(sess.get("user_id") or ""))
+    if not uid:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    with session_scope() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        node = db.get(Node, nid)
+        if node is None or sanitize_id(str(node.owner_user_id or "")) != uid:
+            raise HTTPException(status_code=404, detail="没有这个节点")
+        credential = db.get(NodeCredential, nid)
+        if credential is not None and sanitize_id(str(credential.user_id or "")) != uid:
+            raise HTTPException(status_code=409, detail="节点凭证归属异常，请联系管理员处理")
+        now = datetime.now(timezone.utc).astimezone().isoformat()
+        for device in db.query(Device).filter(Device.node_id == nid).all():
+            if sanitize_id(str(device.owner_user_id or "")) == uid:
+                db.delete(device)
+            else:
+                # 不跨账号删除设备身份；只解除它与当前节点的关联。
+                device.node_id = ""
+                device.studio_id = ""
+                extra = dict(device.extra or {})
+                extra["current_scout_id"] = ""
+                extra["current_studio_id"] = ""
+                extra["updated_at"] = now
+                device.extra = extra
+                device.updated_at = now
+        db.query(NodeToolTask).filter_by(node_id=nid, owner_user_id=uid).delete(synchronize_session=False)
+        db.query(InstallToken).filter_by(node_id=nid, user_id=uid).delete(synchronize_session=False)
+        if credential is not None:
+            db.delete(credential)
+        db.delete(node)
+
+    await _close_node_connection(nid, reason="Scout 已由账号解绑")
+    get_registry().disconnect(nid)
+    return ok({
+        "node_id": nid,
+        "hostname": str(row.get("hostname") or ""),
+        "unbound": True,
+        "commands": uninstall_commands(),
+    }, msg="deleted")
 
 
 @router.patch("/nodes/{node_id}")

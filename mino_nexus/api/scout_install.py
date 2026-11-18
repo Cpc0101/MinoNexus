@@ -76,6 +76,30 @@ def install_commands(release: dict, *, token: str, nexus_url: str) -> dict[str, 
     return commands
 
 
+def uninstall_commands() -> dict[str, str]:
+    """返回各系统本机卸载命令；服务端只解绑，不执行客户端命令。"""
+    return {
+        "darwin": (
+            'uid=$(id -u); launchctl bootout "gui/${uid}/com.mino.scout" >/dev/null 2>&1 || true; '
+            'launchctl bootout system/com.mino.scout >/dev/null 2>&1 || true; '
+            'rm -f "$HOME/Library/LaunchAgents/com.mino.scout.plist" /Library/LaunchDaemons/com.mino.scout.plist; '
+            'rm -rf "${MINO_SCOUT_HOME:-$HOME/.mino/scout}"'
+        ),
+        "linux": (
+            'systemctl --user disable --now mino-scout >/dev/null 2>&1 || true; '
+            'rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/mino-scout.service"; '
+            'systemctl --user daemon-reload >/dev/null 2>&1 || true; '
+            'rm -rf "${MINO_SCOUT_HOME:-$HOME/.mino/scout}"'
+        ),
+        "win32": (
+            "Get-ScheduledTask | Where-Object { $_.TaskName -like 'Mino Scout*' } | ForEach-Object { "
+            "Stop-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue; "
+            "Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false }; "
+            "Remove-Item -Recurse -Force (Join-Path $env:USERPROFILE '.mino\\scout')"
+        ),
+    }
+
+
 def development_installation(token: str) -> dict:
     """Source development pairs locally; never invokes a production installer."""
     from pathlib import Path

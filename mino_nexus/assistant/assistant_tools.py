@@ -120,15 +120,14 @@ def tool_by_function_name(name: str) -> dict[str, Any] | None:
 
 
 def route_allowed(method: str, path: str) -> bool:
-    """助手 token 和 MCP token 只能打工具表里的路由，以及 MCP 端点本身。删除一律拒绝。
+    """助手 token 和 MCP token 只能打工具表里的路由，以及 MCP 端点本身。
 
     转给 Scout 的统一入口 `/forward/*` 也放行：它不新增能力，只是把
-    `capability_id` 原样交给节点，能力判定在 Scout 侧。
+    `capability_id` 原样交给节点，能力判定在 Scout 侧。删除路由同样必须
+    在工具表中精确登记；业务路由继续按当前登录用户做资源权限校验。
     """
     method = method.upper()
     path = path.split("?", 1)[0]
-    if method == "DELETE" or "/delete" in path.lower():
-        return False
     if method == "POST" and path == "/mcp":
         return True
     if path in _FORWARD_PATHS:
@@ -147,8 +146,6 @@ def route_allowed(method: str, path: str) -> bool:
 def write_allowed(method: str, path: str) -> bool:
     method = method.upper()
     path = path.split("?", 1)[0]
-    if method == "DELETE" or "/delete" in path.lower():
-        return False
     if method in ("GET", "HEAD", "OPTIONS"):
         return True
     for spec in all_tools():

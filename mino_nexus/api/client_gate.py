@@ -38,7 +38,7 @@ def _hit(rules: list[tuple[str, set[str]]], path: str, method: str) -> bool:
 
 
 def _api_token_allowed(path: str, method: str) -> bool:
-    """助手 token / MCP token 只能走工具表里登记过的路由；删除类一律不放行。"""
+    """助手 token / MCP token 只能走工具表里登记过的路由。"""
     from mino_nexus.assistant.assistant_tools import route_allowed
 
     return route_allowed(method, path)
