@@ -7,6 +7,11 @@ on:
         description: Released Nexus version, with or without the leading v
         required: true
         type: string
+      source_overlay:
+        description: Reuse the live Nexus base image and transfer only the package source
+        required: false
+        default: false
+        type: boolean
     secrets:
       TENCENT_SSH_PRIVATE_KEY:
         required: true
@@ -16,6 +21,11 @@ on:
         description: Released Nexus version, with or without the leading v
         required: true
         type: string
+      source_overlay:
+        description: Reuse the live Nexus base image and transfer only the package source
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -88,6 +98,7 @@ jobs:
       - name: Ensure Nexus image on Tencent
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_OVERLAY: ${{ inputs.source_overlay || 'false' }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
@@ -96,6 +107,49 @@ jobs:
             echo "Nexus image already exists on Tencent: $image"
             exit 0
           fi
+
+          if [ "$SOURCE_OVERLAY" = "true" ]; then
+            echo "Publishing $image by overlaying package source on the live Nexus container." >&2
+            archive=/tmp/mino-nexus-source.tar.gz
+            remote_archive="/tmp/mino-nexus-source-${NEXUS_VERSION}-${GITHUB_RUN_ID}.tar.gz"
+            trap 'rm -f "$archive"' EXIT
+            tar -C . -czf "$archive" mino_nexus
+            test -s "$archive"
+            scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$archive" \
+              "$TENCENT_USER@$TENCENT_HOST:$remote_archive"
+            ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
+              "$TENCENT_USER@$TENCENT_HOST" \
+              "bash -s -- '$image' '$NEXUS_VERSION' '$remote_archive'" <<'REMOTE'
+          set -euo pipefail
+          image=$1
+          version=$2
+          archive=$3
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp" "$archive"' EXIT
+          tar -xzf "$archive" -C "$tmp"
+          container=$(docker ps -q \
+            --filter label=com.docker.compose.project=mino-production \
+            --filter label=com.docker.compose.service=nexus | head -n 1)
+          test -n "$container" || {
+            echo "Cannot source-overlay $image: live Nexus container not found." >&2
+            exit 1
+          }
+          package_dir=/usr/local/lib/python3.12/site-packages/mino_nexus
+          docker exec "$container" test -d "$package_dir"
+          docker cp "$tmp/mino_nexus/." "$container:$package_dir/"
+          docker exec "$container" python -c \
+            'import mino_nexus, pathlib, sys; p=pathlib.Path(mino_nexus.__file__).parent/"VERSION"; v=p.read_text().strip(); assert v == sys.argv[1], (v, sys.argv[1])' \
+            "$version"
+          docker commit --change "LABEL org.opencontainers.image.version=$version" \
+            "$container" "$image" > /dev/null
+          docker run --rm --entrypoint python "$image" -c \
+            'import mino_nexus, pathlib, sys; p=pathlib.Path(mino_nexus.__file__).parent/"VERSION"; v=p.read_text().strip(); assert v == sys.argv[1], (v, sys.argv[1])' \
+            "$version"
+          REMOTE
+            echo "Published Nexus image with a source overlay: $image"
+            exit 0
+          fi
+
           if printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
             "$TENCENT_USER@$TENCENT_HOST" "
               set -euo pipefail
