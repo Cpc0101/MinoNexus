@@ -157,17 +157,24 @@ jobs:
       - name: Verify deployment from Tencent
         run: |
           set -euo pipefail
+          container_id=$(ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "cd '$TENCENT_DEPLOY_DIR' && docker compose ps -q nexus")
+          test -n "$container_id" || { echo 'Nexus container is not running' >&2; exit 1; }
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "cd '$TENCENT_DEPLOY_DIR' && docker compose exec -T nexus printenv MINO_NEXUS_PUBLIC_URL MINO_WORKBENCH_PUBLIC_URL MINO_SCOUT_MANIFEST_URL" > /tmp/nexus-runtime-env.txt
+            "docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' '$container_id'" > /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_NEXUS_PUBLIC_URL=$MINO_NEXUS_PUBLIC_URL" /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_WORKBENCH_PUBLIC_URL=$MINO_WORKBENCH_PUBLIC_URL" /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_SCOUT_MANIFEST_URL=$MINO_SCOUT_MANIFEST_URL" /tmp/nexus-runtime-env.txt
+          echo 'Verified Nexus runtime public URLs'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:443:127.0.0.1 '$MINO_NEXUS_HEALTH_URL'" > /tmp/nexus-health.json
+          echo 'Verified standard HTTPS Nexus health endpoint on Tencent'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:443:127.0.0.1 '$MINO_SCOUT_MANIFEST_URL'" > /tmp/nexus-scout-manifest.json
+          echo 'Verified standard HTTPS Scout manifest on Tencent'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve workbench.minocc.top:443:127.0.0.1 '$MINO_WORKBENCH_URL'" > /tmp/workbench.html
+          echo 'Verified standard HTTPS Workbench homepage on Tencent'
           python3 - <<'PY'
           import json
           import os
