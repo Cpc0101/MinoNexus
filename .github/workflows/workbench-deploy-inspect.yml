@@ -1,4 +1,4 @@
-name: Inspect Workbench production deployment
+name: Deploy Workbench to Tencent
 
 on:
   push:
@@ -8,14 +8,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-workbench-tencent
+  cancel-in-progress: false
+
 jobs:
-  inspect:
+  deploy:
     runs-on: ubuntu-22.04
     env:
       TENCENT_HOST: ${{ vars.TENCENT_HOST }}
       TENCENT_USER: ${{ vars.TENCENT_USER }}
       TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
     steps:
+      - uses: actions/checkout@v5
+
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
@@ -29,23 +35,22 @@ jobs:
           actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 {print $2}')
           test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
 
-      - name: Inspect nginx and Workbench files
+      - name: Upload Workbench release
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" '
-            set -e
-            echo "HOST=$(hostname)"
-            echo "USER=$(id)"
-            echo "NGINX=$(command -v nginx || true)"
-            echo "--- nginx -T ---"
-            nginx -T 2>&1 || true
-            echo "--- matching web roots ---"
-            find /var/www /srv /home -maxdepth 5 -type f -name index.html 2>/dev/null | while read -r file; do
-              if grep -q "Mino Workbench" "$file" 2>/dev/null; then
-                echo "$file"
-                ls -ld "$(dirname "$file")"
-              fi
-            done
-            echo "--- egress requests ---"
-            curl -fsS https://workbench.minocc.top/ | grep -F "__MINO_CONFIG__" || true
-          '
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
+            .deploy/workbench-web-0.0.61.tar.gz scripts/deploy-workbench-remote.py \
+            "$TENCENT_USER@$TENCENT_HOST:/tmp/"
+
+      - name: Deploy and verify
+        run: |
+          set -euo pipefail
+          expected_asset=$(tar -xOf .deploy/workbench-web-0.0.61.tar.gz index.html | sed -n 's#.*src="/assets/\([^"]*\)".*#\1#p' | head -n 1)
+          test -n "$expected_asset"
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "python3 /tmp/deploy-workbench-remote.py /tmp/workbench-web-0.0.61.tar.gz '$expected_asset'"
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+            "https://workbench.minocc.top/assets/$expected_asset" --output /dev/null
+          body=$(curl --fail --silent --show-error "https://workbench.minocc.top/")
+          printf '%s' "$body" | grep -F "/assets/$expected_asset" > /dev/null
+          ! printf '%s' "$body" | grep -F "nexus.minocc.top:8443"
