@@ -70,6 +70,8 @@ export async function enqueueRun(env: Env, doc: RunDoc, hint: Record<string, unk
         owner_user_id: doc.owner_user_id, case_id: row.case_id, sn: doc.sn, platform: doc.platform,
         repo_url: doc.repo_url, branch: doc.repo_branch, revision: doc.revision, script_path: row.script_path,
         execution_timeout_sec: 600,
+        ...(doc.debug_origin ? {debug_origin: doc.debug_origin} : {}),
+        ...(doc.execution_kind === "debug" ? { execution_kind: "debug", workspace: doc.workspace } : {}),
         ...(Object.keys(row.inputs || {}).length ? {inputs: row.inputs} : {}),
         ...(Object.keys(doc.source_context || {}).length ? {source_context: doc.source_context} : {}) };
       statements.push(db.prepare("INSERT INTO script_dispatches(attempt_id,run_id,case_id,session_id,scout_id,owner_user_id,params_json,hint_json,updated_at_ms,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)")
@@ -109,12 +111,12 @@ function canonical(value: unknown): string {
 }
 function summaryIndex(raw: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = dataSummary(raw);
-  const text = ["task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform", "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "execution_started", "scout_process_generation", "started_at", "finished_at", "detail_availability", "source_hash", "run_purpose"];
+  const text = ["execution_kind", "debug_state", "workspace_hash", "task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform", "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "execution_started", "scout_process_generation", "started_at", "finished_at", "detail_availability", "source_hash", "run_purpose"];
   for (const key of text) if (raw[key] !== undefined) result[key] = raw[key] === null ? null : String(raw[key]).slice(0, key === "summary" ? 1000 : 500);
   for (const key of ["summary_version", "last_event_seq", "elapsed_ms"]) result[key] = Math.max(0, Number(raw[key] || 0));
   result.sealed = raw.sealed === true;
   result.resource_isolated = raw.resource_isolated === true;
-  for (const key of ["execution_stopped", "browser_closed"]) if (typeof raw[key] === "boolean") result[key] = raw[key];
+  for (const key of ["execution_stopped", "browser_closed", "debug_origin_matched"]) if (typeof raw[key] === "boolean") result[key] = raw[key];
   for (const key of ["started_at", "finished_at"]) {
     const value = raw[key];
     if (typeof value === "number") result[key] = value > 0 ? new Date(value < 1e12 ? value * 1000 : value).toISOString() : null;
@@ -182,9 +184,10 @@ async function materializeSummary(env: Env, job: Dispatch, summary: Record<strin
     if (resolution) run.resource_resolution = JSON.parse(resolution.proof_json);
     const row = run.cases.find(c => c.case_id === job.case_id);
     if (!row || Number(row.summary_version || 0) > Number(summary.summary_version || 0)) return;
-    Object.assign(row, { status: summary.status, summary: summary.summary || "", reason_code: summary.reason_code || "",
+    Object.assign(row, { ...(summary.execution_kind === "debug" ? { execution_kind: "debug", debug_state: summary.debug_state, workspace_hash: summary.workspace_hash } : {}), status: summary.status, summary: summary.summary || "", reason_code: summary.reason_code || "",
       error: summary.status === "pass" ? "" : summary.summary || "", failure_stage: summary.failure_stage || "",
       elapsed_ms: Number(summary.elapsed_ms || 0), execution_started: summary.execution_started || "unknown",
+      ...(typeof summary.debug_origin_matched === "boolean" ? {debug_origin_matched: summary.debug_origin_matched} : {}),
       started_at: summary.started_at || null, finished_at: terminal ? summary.finished_at || null : null,
       revision: String(summary.revision || row.revision || ""),
       ...(summary.run_purpose ? { run_purpose: String(summary.run_purpose) } : {}),

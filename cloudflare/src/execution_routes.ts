@@ -1,3 +1,4 @@
+import { debugCase } from "./debug_cases";
 import { taskReport } from "./execution_report";
 import { ProjectAccessError, canReadRun, ACCESS_SQL } from "./project_access";
 /** Shared HTTP business routes for persistent tasks, records and account pools. */
@@ -13,6 +14,11 @@ function number(value: string | null, fallback: number): number { const n = Numb
 export async function executionRoutes(request: Request, env: Env, owner: string, pathname: string): Promise<Response | null> {
   const url = new URL(request.url), q = url.searchParams, method = request.method;
   try {
+    const debug = /^\/case-runner\/debug(?:\/([^/]+)(?:\/(execute|status|cancel|reset|close|checkpoint))?)?$/.exec(pathname);
+    if (debug && method === "POST") {
+      const args = await request.json() as Record<string, unknown>;
+      return ok(await debugCase(env, owner, debug[2] || "start", { ...args, ...(debug[1] ? { session_id: decodeURIComponent(debug[1]) } : {}) }));
+    }
     const select = /^\/project\/([^/]+)\/resources\/accounts\/select$/.exec(pathname);
     if (select && method === "POST") {
       const body = await request.json() as Record<string, unknown>;

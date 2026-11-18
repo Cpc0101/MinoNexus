@@ -1,3 +1,4 @@
+import { DEBUG_TOOLS, debugCase } from "./debug_cases";
 import { listMembers, addMember, removeMember, ProjectAccessError, canReadRun } from "./project_access";
 /**
  * MCP endpoint — auth and tool table match mino_nexus.api.rMcp + prompts/assistant/tools.
@@ -46,6 +47,7 @@ const PROTOCOLS = new Set(["2025-03-26", "2025-06-18", "2025-11-25"]);
 
 /** Tool specs copied from mino_nexus/prompts/assistant/tools/*.yaml (mcp surface). */
 const TOOLS = [
+  ...DEBUG_TOOLS.map(({ operation, ...tool }) => tool),
   {
     name: "agent_guide",
     title: "给其他 agent 的使用说明",
@@ -366,6 +368,7 @@ const TOOLS = [
       type: "object",
       properties: {
         client_request_id: { type: "string", maxLength: 160 },
+        debug_origin: { type: "object", additionalProperties: false, required: ["session_id", "checkpoint_id"], properties: {session_id: {type: "string"}, checkpoint_id: {type: "string"}} },
         case_inputs: { type: "object", description: "按 case_id 或脚本路径传入业务对象与 account_id；禁止凭据。" },
         source_context: { type: "object", properties: { parent_task_id: { type: "string" }, purpose: { type: "string", enum: ["prepare", "resume"] }, data_need: { type: "string" } }, required: ["parent_task_id", "purpose"] },
         project_id: { type: "string" },
@@ -679,7 +682,7 @@ function agentGuidePayload(): Record<string, unknown> {
       "缺数据后的查找、构造、替代和重试决策只属于 Agent；脚本仓不内置 get_or_create、缺数据自动补数或自动换号。flows 只执行明确业务操作、识别阶段、等待、定位指定对象和复用验证方法。",
       "账号业务标签与资产记忆是选号线索，缺省、未知或未命中不得单独阻塞执行。申请账号时用 case.nexus.account(data_need=描述) 留存所需数据；resource_account_data_list/save/delete 管理独立对象引用记忆，不创建被测业务数据、不进行全量盘点。",
       "对象生产后绑定实际 ID 或区分特征，弹窗重绘、跨页和跨应用使用该变量重新定位并验证关联。业务阶段放 flows，原文映射和整例编排留用例。相同缺口无新观察时停止重复申请与整例重跑，Agent 选择有依据的准备路径；写结果未知先查同一任务。探针与准备用途排除正式统计；task_get.statistics 按执行次数、原文预期和辅助断言分列，completed 是已结束。通过率无判定为 null；blocked/declined/skipped/cancelled 不算 failed。报告绑定同一 task/session/attempt/revision/source_hash 和带时区记录时间；准备及续跑独立，不把历史局部通过拼成本次结论。缺完整证据时展示保存的摘要并说明证据暂不可用。",
-      "脚本文本只由 agent 写在本机脚本仓并通过 Git 推送；MCP 只做查询、同步元数据与触发执行，不写代码。各仓库分工与 Scout 安装见 agent 技能 overview。",
+      "编写工作区由本机 agent 编辑；debug_case 直接在该目录调试，正式 case_run 使用固定 Git 版本与独立任务工作区。MCP 不编辑工作区文件。各仓库分工与 Scout 安装见 agent 技能 overview。",
       "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
       "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；号池为空或没有匹配账号时由 Nexus 自动补号。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
     ],
@@ -713,21 +716,13 @@ function agentGuidePayload(): Record<string, unknown> {
       },
       {
         name: "编写或修改用例脚本",
-        tools: [
-          "project_list",
-          "case_list",
-          "device_list",
-          "case_run",
-          "task_get",
-          "session_events",
-          "session_screenshot",
-        ],
-        then: "使用 write-test-cases。先选一台 executable 设备。",
+        tools: ["project_list", "device_list", "debug_case", "debug_case_execute", "debug_case_status", "debug_case_cancel", "debug_case_reset", "debug_case_checkpoint", "debug_case_close", "session_events", "session_screenshot", "case_run"],
+        then: "先用本机 mino-scout status 和 device_list 核对节点/设备。debug_case 绑定本机编写工作区，不拉仓、不要求 commit；debug_case_execute 提交 code 或 script_path，保留设备和应用现场，刷新 pages/flows。先观察 nodes、验证定位及公共路径，再扩展完整用例。debug_case_status 查询请求，session_events/screenshot/artifact 读取同一证据；取消片段、重置和结束使用对应 debug_case 工具。写结果未知只读核验，不盲目重试。用 debug_case_checkpoint 记录草稿、完整实现、路径验证，后者绑定同版本执行证据。结束并确认停止后，固定完整 commit，case_run 带 debug_origin 引用检查点，从独立初始状态正式验证；远端节点只用于正式执行。",
       },
       {
         name: "按需求链接编写并执行脚本",
-        tools: ["case_list", "device_list", "case_run", "task_get"],
-        then: "case_list 返回需求 id、名称和链接。从链接读用例，写成 tests/<需求ID>/<用例ID>.py 并 push。开跑前 plugin_status，缺的渠道程序先装完。case_run 传 script_targets。执行与汇报使用 agent 技能 run-test-cases。",
+        tools: ["case_list", "device_list", "debug_case", "debug_case_execute", "debug_case_status", "debug_case_close", "case_run", "task_get"],
+        then: "case_list 返回需求 id、名称和链接。从链接读原文，在本机 debug_case 中先观察和验证 pages/公共路径，再完成 tests/<需求ID>/<用例ID>.py。静态检查通过、结束调试并确认停止后，push 固定版本，case_run 传 script_targets 与 revision，从独立初始状态正式验证。执行与汇报使用 agent 技能 run-test-cases。",
       },
       {
         name: "让节点安装渠道程序",
@@ -854,6 +849,12 @@ async function callTool(
 
   if (userId === "system:probe") {
     return pack(false, "probe token 仅允许 initialize/ping/tools/list", {}, 403);
+  }
+
+  const debugTool = DEBUG_TOOLS.find(tool => tool.name === name);
+  if (debugTool) {
+    try { return pack(true, "", await debugCase(env, userId, debugTool.operation, args)); }
+    catch (error) { if (error instanceof TaskError) return pack(false, error.message, { reason_code: error.code }, error.http); throw error; }
   }
 
   if (name === "agent_guide") {
@@ -1180,7 +1181,7 @@ async function callTool(
       sn: String(args.sn || ""),
       case_ids: args.case_ids,
       script_targets: args.script_targets,
-      case_inputs: args.case_inputs, source_context: args.source_context,
+      case_inputs: args.case_inputs, source_context: args.source_context, debug_origin: args.debug_origin,
       revision: String(args.revision || ""),
       env_profile: String(args.env_profile || ""),
       env_surface: String(args.env_surface || ""),
@@ -1272,7 +1273,7 @@ export async function handleMcp(
         result: {
           protocolVersion: PROTOCOLS.has(offered) ? offered : protocol,
           capabilities: { tools: {} },
-          serverInfo: { name: "mino-nexus", version: "0.1.88-cloudflare" },
+          serverInfo: { name: "mino-nexus", version: "0.1.89-cloudflare" },
           instructions: AGENT_INSTRUCTIONS,
         },
       });

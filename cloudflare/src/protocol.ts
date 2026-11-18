@@ -159,7 +159,7 @@ export function registeredOk(
     "REGISTERED",
     {
       accepted: true,
-      nexus_version: "0.1.88-cloudflare",
+      nexus_version: "0.1.89-cloudflare",
       protocol_version: PROTOCOL_VERSION,
       session_token: `sess-${msgId()}`,
       heartbeat_interval_sec: HEARTBEAT_INTERVAL_SEC,
@@ -180,7 +180,7 @@ export function registeredReject(replyTo: string, reason: string): NexusOutbound
     "REGISTERED",
     {
       accepted: false,
-      nexus_version: "0.1.88-cloudflare",
+      nexus_version: "0.1.89-cloudflare",
       protocol_version: PROTOCOL_VERSION,
       reason,
       platform_contract_version: 1,

@@ -115,6 +115,8 @@ def run_cases(
     script_targets: Optional[list[dict[str, Any]]] = None,
     case_inputs: Optional[dict[str, Any]] = None,
     source_context: Optional[dict[str, Any]] = None,
+    debug: Optional[dict[str, Any]] = None,
+    debug_origin: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     phases: list[tuple[str, int]] = []
@@ -139,7 +141,7 @@ def run_cases(
         "requirement_id": requirement_id, "release_id": release_id, "slot_id": slot_id,
         "provider_id": provider_id, "playwright_headless": playwright_headless, "env_profile": env_profile,
         "env_surface": env_surface, "action_scheme": action_scheme, "execution_mode": execution_mode, "expected_build": expected_build,
-        "revision": revision, "script_targets": targets, "case_inputs": case_inputs, "source_context": source_context})
+        "revision": revision, "script_targets": targets, "case_inputs": case_inputs, "source_context": source_context, "debug": debug, "debug_origin": debug_origin or {}})
     if client_request_id:
         from mino_nexus.core.database import session_scope
         from mino_nexus.models.run_admission import RunAdmission
@@ -164,7 +166,10 @@ def run_cases(
     cov = cov or "once"
 
     skipped_cases: list[dict[str, Any]] = []
-    if targets:
+    if debug:
+        cases = [{"case_id": "debug", "name": "本机编写调试", "project_id": app.get("project_id"), "script_path": "debug.py", "run_purpose": "authoring"}]
+        requested_total = 1
+    elif targets:
         cases = []
         requested_total = 0
     else:
@@ -214,7 +219,7 @@ def run_cases(
     from mino_nexus.resources.project_env import resolve_run_env_profile
 
     repo_public_url, repo_branch = "", ""
-    if project_id:
+    if project_id and not debug:
         from mino_nexus.casework.script_workspace import get_repo, public_url
 
         _repo = get_repo(project_id)
@@ -256,6 +261,11 @@ def run_cases(
     known_inputs = {str(c.get("case_id") or "") for c in cases} | {str(c.get("script_path") or "") for c in cases}
     if set(case_inputs) - known_inputs:
         raise ValueError("case_inputs_target_unknown")
+    if debug_origin:
+        from mino_nexus.loop.debug_cases import resolve_origin
+        debug_origin = resolve_origin(str(app["id"]), debug_origin, revision, resolved_env)
+        if any(c.get("script_path") != debug_origin["script_path"] for c in cases):
+            raise ValueError("debug_origin_case_mismatch")
     if source_context:
         parent = run_store.get(source_context["parent_task_id"])
         if not parent or parent.get("owner_user_id") != require_user_id() or parent.get("project_id") != project_id or parent.get("env_profile") != resolved_env:
@@ -292,6 +302,7 @@ def run_cases(
         "request_digest": request_digest,
         "case_inputs": case_inputs,
         "source_context": source_context,
+        "debug_origin": debug_origin or {},
         "derived_from": derived_from,
         "expected_build": expected_build,
         "revision": str(revision or "").strip(),
@@ -300,7 +311,8 @@ def run_cases(
         "environment_baseline_digest": digest({"profile": resolved_env, "surface": env_surface_id,
             "package": package, "environment": (env_doc.get("profiles") or {}).get(resolved_env),
             "channels": env_doc.get("channels") or []}),
-        "execution_policy": {"version": 1, "batch_deadline_at": time.time() + batch_budget,
+        **({"execution_kind": "debug", "workspace": debug["workspace"], "debug_app_key": debug["app_key"], "debug_node_id": debug["node_id"], "debug_start_request": debug.get("request", {})} if debug else {}),
+        "execution_policy": {"version": 1, "batch_deadline_at": 0 if debug else time.time() + batch_budget,
             "batch_budget_seconds": batch_budget, "cleanup_seconds": 10},
         "task_id": run_id,
         "engine": "agent",

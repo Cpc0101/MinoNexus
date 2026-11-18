@@ -10,6 +10,8 @@ STATES = ("passed", "failed", "blocked", "declined", "skipped", "cancelled", "un
 
 
 def purpose(case, doc):
+    if doc.get("execution_kind") == "debug":
+        return "authoring"
     if (doc.get("source_context") or {}).get("purpose") == "prepare":
         return "preparation"
     value = case.get("run_purpose") or (case.get("test_report") or {}).get("run_purpose")

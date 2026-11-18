@@ -4,6 +4,7 @@ const states = ['passed', 'failed', 'blocked', 'declined', 'skipped', 'cancelled
 const live = ['pending', 'queued', 'running', 'accepted', 'cancel_requested'];
 const aliases: Record<string, string> = { product_fail: 'fail', tool_blocked: 'blocked', env_blocked: 'blocked', skip: 'skipped', unknown: 'unverified', untestable: 'unverified', unverifiable: 'unverified', unexecutable: 'unverified' };
 export function executionPurpose(c: Row, doc: Row): string {
+  if (doc.execution_kind === "debug") return "authoring";
   if (doc.source_context?.purpose === 'prepare') return 'preparation';
   const value = c.run_purpose || c.test_report?.run_purpose;
   return value === 'authoring' ? 'authoring' : !value || ['verification', 'regression'].includes(value) ? 'formal' : 'unclassified';

@@ -1,0 +1,56 @@
+{
+  "id": "debug.case.checkpoint",
+  "title": "记录用例编写阶段",
+  "description": "记录 draft/implemented/path_validated 与源码版本。完整实现须通过静态检查；路径验证须引用同版本同路径的成功执行请求。阶段不代表正式通过。",
+  "route": "POST /case-runner/debug/{session_id}/checkpoint",
+  "risk": "write",
+  "async": false,
+  "params_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "client_request_id": {
+        "type": "string"
+      },
+      "script_path": {
+        "type": "string"
+      },
+      "workspace_hash": {
+        "type": "string"
+      },
+      "timeout_sec": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 3600
+      },
+      "stage": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "implemented",
+          "path_validated"
+        ]
+      },
+      "evidence_request_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "client_request_id",
+      "script_path",
+      "stage"
+    ]
+  },
+  "param_resolvers": {},
+  "result_pick": [
+    "data"
+  ],
+  "surfaces": [
+    "mcp"
+  ],
+  "enabled": true
+}

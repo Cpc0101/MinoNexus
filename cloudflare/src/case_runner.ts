@@ -1,3 +1,4 @@
+import { getProjectEnv } from "./project_env";
 import { ACCESS_SQL } from "./project_access";
 /**
  * Validate and persist a run before asynchronous Scout submission.
@@ -21,6 +22,8 @@ const REVISION = /^[A-Za-z0-9][A-Za-z0-9._\/\-]{0,119}$/;
 const PLATFORMS = new Set(["android", "ios", "web", "mac", "win"]);
 
 export type StartRunArgs = {
+  debug?: { workspace: string; node_id: string; app_key: string };
+  debug_origin?: unknown;
   case_inputs?: unknown;
   source_context?: unknown;
   userId: string;
@@ -229,7 +232,7 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
 
   const targets = parseScriptTargets(args.script_targets);
   if (typeof targets === "string") return refuse(422, "script_targets_invalid", targets);
-  const caseIds = cleanCaseIds(args.case_ids);
+  const caseIds = cleanCaseIds(args.debug ? ["debug"] : args.case_ids);
   if (typeof caseIds === "string") return refuse(422, "case_ids_invalid", caseIds);
   if (!targets && !caseIds.length) {
     return refuse(
@@ -248,7 +251,7 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
   try { inputs = caseInputs(args.case_inputs); source = sourceContext(args.source_context); }
   catch (error) { return refuse(422, "runtime_data_invalid", (error as Error).message); }
   const requestFingerprint = JSON.stringify({ app: appRef, sn: String(args.sn || ""), case_ids: caseIds, script_targets: targets, revision, case_inputs: inputs, source_context: source,
-    project: String(args.project_id || ""), env_profile: String(args.env_profile || "test"), env_surface: String(args.env_surface || "") });
+    debug: args.debug || null, debug_origin: args.debug_origin || {}, project: String(args.project_id || ""), env_profile: String(args.env_profile || "test"), env_surface: String(args.env_surface || "") });
   const reused = await findRunByRequest(db, userId, String(args.client_request_id || ""));
   if (reused) {
     if (reused.request_fingerprint && reused.request_fingerprint !== requestFingerprint) return refuse(409, "request_conflict", "相同 client_request_id 不能用于不同任务参数");
@@ -278,15 +281,22 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
   }
   const projectId = app.project_id;
 
-  const repo = await getRepo(db, projectId);
-  if (!repo.url.trim()) {
+  const environment = (await getProjectEnv(db, userId, projectId)).env as Record<string, unknown>;
+  const envProfile = String(args.env_profile || environment.default_profile || "test");
+  const environments = environment.environments as Array<Record<string, unknown>>;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(envProfile) || !environments.some(row => row.key === envProfile))
+    return refuse(422, "env_profile_invalid", "环境标识无效或未在项目中配置；本次未创建任务");
+  const repo = args.debug ? { url: "", branch: "" } : await getRepo(db, projectId);
+  if (!args.debug && !repo.url.trim()) {
     return refuse(422, "script_repo_missing", "项目还没有配置用例脚本仓库");
   }
   const manifest = await getRepoApps(db, projectId);
-  if (Object.keys(manifest.apps).length && !(await hasApp(db, projectId, app.app_id))) {
+  if (!args.debug && Object.keys(manifest.apps).length && !(await hasApp(db, projectId, app.app_id))) {
     return refuse(422, "app_not_in_repo_config", "脚本仓库的 config.yaml 里没有这个应用，请先 repo_apps_sync");
   }
-  const appKey = await keyForApp(db, projectId, app.app_id);
+  const configuredKey = await keyForApp(db, projectId, app.app_id);
+  const appKey = args.debug?.app_key || configuredKey;
+  if (args.debug && configuredKey && configuredKey !== appKey) return refuse(422, "debug_app_key_mismatch", "app_key 与应用绑定不一致");
 
   const appPlatforms = String(app.platform || "")
     .split(",")
@@ -295,12 +305,20 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
   const resolved = await resolveDevice(env, userId, String(args.sn || "").trim(), appPlatforms);
   if ("error" in resolved) return resolved.error;
   const { device, platform } = resolved;
+  if (args.debug && device.scout_id !== args.debug.node_id) return refuse(422, "debug_local_node_mismatch", "调试设备须属于指定的本机 Scout");
   const scout = await db.prepare("SELECT record_api_version FROM scouts WHERE scout_id=?").bind(device.scout_id).first<{ record_api_version: number }>();
   if (Number(scout?.record_api_version || 0) < 1) return refuse(409, "record_api_required", "目标 Scout 尚不支持持久任务记录，请先升级 Scout");
   const views = await deviceAvailability(env, userId, { only_online: false, app_id: app.app_id });
   const view = views.find(row => row.sn === device.device_id && row.scout_id === device.scout_id);
   if (!view?.executable) return refuse(409, String(view?.blocking_code || "device_unavailable"), "设备当前不能接受任务");
 
+  if (args.debug) {
+    const prepared = await scoutExecute(env, { scout_id: device.scout_id, capability_id: "debug.prepare", timeout_ms: 15000,
+      params: { owner_user_id: userId, workspace: args.debug.workspace, app_key: appKey, platform, env_profile: envProfile } });
+    const facts = merged(prepared);
+    if (prepared.http !== 200 || prepared.status !== "pass" || facts.debug_api_version !== 1)
+      return refuse(422, String(facts.reason_code || "debug_workspace_unavailable"), prepared.summary || "本机 Scout 不支持调试或编写工作区不可用");
+  }
   const runId = newRunId();
   let planned: Array<{ case_id: string; script_path: string }> = caseIds.map((id) => ({
     case_id: id,
@@ -351,8 +369,15 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
       return refuse(422, "case_ids_invalid", `一次最多执行 ${MAX_CASES} 条用例`);
     }
   }
-  const envProfile = String(args.env_profile || "").trim() || "test";
   const now = new Date().toISOString();
+  let debugOrigin: Record<string, unknown> | undefined;
+  if (args.debug_origin && Object.keys(args.debug_origin).length) {
+    const { resolveDebugOrigin } = await import("./debug_origin");
+    debugOrigin = await resolveDebugOrigin(env, userId, app.app_id, envProfile, revision, args.debug_origin);
+    const features = await scoutExecute(env, {scout_id: device.scout_id, capability_id: "debug.capabilities", timeout_ms: 15000, params: {owner_user_id: userId}});
+    if (features.http !== 200 || features.status !== "pass" || merged(features).formal_origin_verification !== true) return refuse(409, "debug_origin_verification_required", "目标 Scout 尚不支持调试版本核对");
+    if (planned.some(c => c.script_path !== debugOrigin!.script_path)) return refuse(422, "debug_origin_case_mismatch", "正式用例须与检查点路径一致");
+  }
   const inputTargets = new Set(planned.flatMap(item => [item.case_id, item.script_path]));
   if (Object.keys(inputs).some(key => !inputTargets.has(key))) return refuse(422, "case_inputs_target_unknown", "运行输入对应的用例不在本次任务中");
   if (source.parent_task_id) {
@@ -360,8 +385,10 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
     if (!parent || parent.owner_user_id !== userId || parent.project_id !== projectId || parent.env_profile !== envProfile) return refuse(422, "source_context_scope_mismatch", "父任务须属于本次执行账号、项目与环境");
   }
   const doc: RunDoc = {
+    ...(args.debug ? { execution_kind: "debug" as const, workspace: args.debug.workspace } : {}),
     case_inputs: inputs,
     source_context: source,
+    ...(debugOrigin ? {debug_origin: debugOrigin} : {}),
     run_id: runId,
     task_id: runId,
     client_request_id: String(args.client_request_id || "").trim().slice(0, 160),
@@ -387,6 +414,7 @@ export async function startRun(env: Env, args: StartRunArgs): Promise<StartRunRe
     cases: planned.map((item) => {
       const row = newCaseRow(item.case_id, device.device_id, `ses_${randomHex(12)}`);
       row.script_path = item.script_path;
+      if (args.debug) row.run_purpose = "authoring";
       row.inputs = inputs[item.script_path] || inputs[item.case_id] || {};
       return row;
     }),

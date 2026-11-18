@@ -13,6 +13,7 @@ from mino_nexus.platform.identity import require_user_id
 
 TERMINAL = frozenset({"pass", "fail", "blocked", "declined", "skipped", "cancelled"})
 _SUMMARY_FIELDS = frozenset({
+    "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
     "task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform",
     "revision", "script_path", "state", "status", "summary", "reason_code", "failure_stage", "elapsed_ms",
     "execution_started", "started_at", "finished_at", "summary_version", "last_event_seq", "sealed",

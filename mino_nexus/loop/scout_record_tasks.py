@@ -25,6 +25,7 @@ def project(row: dict[str, Any]) -> None:
                 settle_terminal_task(row["task_id"], row["owner_user_id"])
             return
         fields = {key: summary[key] for key in (
+            "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
             "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
             "started_at", "finished_at", "sealed", "last_event_seq", "run_purpose", "revision",
             "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report", "data_outputs", "data_missing",
@@ -98,6 +99,9 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
     from mino_nexus.contract.step_pointer import compute_case_wall_budget_sec
     from mino_nexus.loop.script_dispatch import _device_hint
     from mino_nexus.loop.script_callback import ScriptAdmission, register, unregister
+    from mino_nexus.casework import run_store
+    if doc.get("execution_kind") == "debug" and (run_store.cancel_requested(run_id) or not run_store.task_is_live(run_store.get(run_id))):
+        return {"status": "cancelled", "reason_code": "task_cancelled", "execution_started": "no", "summary": "调试会话开始前已结束", "run_purpose": "authoring"}
     sid = str(case.get("report_run_id") or run_id)
     budget = max(1.0, min(86400.0, float(compute_case_wall_budget_sec(case) or 600)))
     if case.get("attempt_deadline_at"):
@@ -107,6 +111,8 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
         owner_user_id=require_user_id(), case_id=str(case.get("case_id") or ""), sn=sn,
         platform=platform, repo_url=public_url(repo.get("url") or ""), branch=repo.get("branch") or "",
         revision=doc.get("revision") or "", script_path=case.get("script_path") or "",
+        execution_kind=doc.get("execution_kind", "case"), workspace=doc.get("workspace", ""),
+        debug_origin=doc.get("debug_origin") or {},
         execution_timeout_sec=budget, inputs=case.get("inputs") or {}, source_context=doc.get("source_context") or {}))))
     from mino_nexus.resources.resource_claim_tx import _claim
     resource_request = dict(_claim.get() or {})
@@ -115,7 +121,8 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
         "app_id": app_id, "project_id": project_id, "package": package,
         "provider_id": provider_id, "env_profile": ctx.env_profile,
         "case": {key: case[key] for key in ("case_id", "account_requirements", "account_template_id", "template_id") if key in case},
-        "device_hint": _device_hint(node, sn, platform, ctx.env_profile, app_id, project_id),
+        "device_hint": {**_device_hint(node, sn, platform, ctx.env_profile, app_id, project_id),
+                        **({"app_key": doc["debug_app_key"]} if doc.get("execution_kind") == "debug" else {})},
     })
     register(ScriptAdmission(run_id=run_id, session_id=sid, case_id=row["case_id"], sn=sn,
         node_id=node.node_id, owner_user_id=row["owner_user_id"], ctx=ctx, writer=None,

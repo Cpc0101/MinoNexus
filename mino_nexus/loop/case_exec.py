@@ -267,7 +267,7 @@ def _run_case_list(
             from mino_nexus.casework.script_workspace import get_repo
             from mino_nexus.resources.accounts.lease import ensure_case_account_lease
 
-            repo = get_repo(project_id) if project_id else {}
+            repo = get_repo(project_id) if project_id and doc.get("execution_kind") != "debug" else {}
             with admission(doc, case, project_id=project_id, package=package, platform=platform) as resource_attempt:
                 ok, lease_err = (True, "") if case.get("script_path") else ensure_case_account_lease(
                     run_id, app_id=app_id, env_profile=str(doc.get("env_profile") or "test"),

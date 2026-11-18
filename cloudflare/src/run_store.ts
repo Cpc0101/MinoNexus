@@ -48,6 +48,9 @@ export type CaseRow = {
 };
 
 export type RunDoc = {
+  execution_kind?: "case" | "debug";
+  debug_origin?: Record<string, unknown>;
+  workspace?: string;
   case_inputs?: Record<string, Record<string, unknown>>;
   source_context?: Record<string, unknown>;
   run_id: string;
@@ -255,6 +258,9 @@ export function toTaskJson(doc: RunDoc, includeCases = true): Record<string, unk
     run_id: doc.run_id,
     client_request_id: doc.client_request_id || "",
     source_context: doc.source_context || {},
+    debug_origin: doc.debug_origin || {},
+    execution_kind: doc.execution_kind || "case",
+    workspace: doc.workspace || "",
     app_id: doc.app_id,
     app_name: doc.app_name || "",
     app_key: doc.app_key || "",

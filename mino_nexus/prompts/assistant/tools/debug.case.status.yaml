@@ -1,0 +1,31 @@
+{
+  "id": "debug.case.status",
+  "title": "查询调试状态",
+  "description": "查询会话和请求执行结果；调试完成不代表正式用例通过。",
+  "route": "POST /case-runner/debug/{session_id}/status",
+  "risk": "read",
+  "async": false,
+  "params_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "client_request_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ]
+  },
+  "param_resolvers": {},
+  "result_pick": [
+    "data"
+  ],
+  "surfaces": [
+    "mcp"
+  ],
+  "enabled": true
+}

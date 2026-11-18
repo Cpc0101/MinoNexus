@@ -1,0 +1,28 @@
+{
+  "id": "debug.case.close",
+  "title": "结束调试会话",
+  "description": "记录结束意图，Scout 确认停止后才释放资源。",
+  "route": "POST /case-runner/debug/{session_id}/close",
+  "risk": "write",
+  "async": false,
+  "params_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ]
+  },
+  "param_resolvers": {},
+  "result_pick": [
+    "data"
+  ],
+  "surfaces": [
+    "mcp"
+  ],
+  "enabled": true
+}

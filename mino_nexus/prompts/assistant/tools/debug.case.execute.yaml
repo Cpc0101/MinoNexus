@@ -1,0 +1,46 @@
+{
+  "id": "debug.case.execute",
+  "title": "执行调试片段",
+  "description": "code 与 script_path 二选一。支持 run(case) 或直接使用 case/app；刷新 pages/flows，不重复前后置、不释放设备。请求 ID 幂等，后续查询状态和 session_events。",
+  "route": "POST /case-runner/debug/{session_id}/execute",
+  "risk": "write",
+  "async": false,
+  "params_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "client_request_id": {
+        "type": "string"
+      },
+      "code": {
+        "type": "string"
+      },
+      "script_path": {
+        "type": "string"
+      },
+      "workspace_hash": {
+        "type": "string"
+      },
+      "timeout_sec": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 3600
+      }
+    },
+    "required": [
+      "session_id",
+      "client_request_id"
+    ]
+  },
+  "param_resolvers": {},
+  "result_pick": [
+    "data"
+  ],
+  "surfaces": [
+    "mcp"
+  ],
+  "enabled": true
+}

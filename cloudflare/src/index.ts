@@ -59,7 +59,7 @@ export default {
     } else if (url.pathname === "/") {
       response = Response.json({
         service: "mino-nexus-cloudflare",
-        version: "0.1.88",
+        version: "0.1.89",
         workbench: true,
         endpoints: {
           health: "GET /health",

@@ -1,0 +1,32 @@
+{
+  "id": "debug.case.cancel",
+  "title": "取消调试片段",
+  "description": "取消指定 client_request_id，尽量保留现场；结果未知则保持写停止。",
+  "route": "POST /case-runner/debug/{session_id}/cancel",
+  "risk": "write",
+  "async": false,
+  "params_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "client_request_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "client_request_id"
+    ]
+  },
+  "param_resolvers": {},
+  "result_pick": [
+    "data"
+  ],
+  "surfaces": [
+    "mcp"
+  ],
+  "enabled": true
+}

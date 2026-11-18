@@ -20,6 +20,53 @@ from mino_nexus.runtime.run_context import WEB_PLAYWRIGHT_PARALLEL_LANES
 router = APIRouter(prefix="/case-runner", tags=["CaseRunner"])
 
 
+class DebugStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    app_id: str
+    sn: str
+    node_id: str
+    app_key: str
+    workspace: str
+    client_request_id: str = Field(min_length=1, max_length=160)
+    project_id: str = ""
+    env_profile: str = ""
+    env_surface: str = ""
+
+
+class DebugControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    client_request_id: str = ""
+    code: str = ""
+    script_path: str = ""
+    workspace_hash: str = ""
+    stage: str = "draft"
+    evidence_request_id: str = ""
+    checkpoint_id: str = ""
+    timeout_sec: float = Field(default=60, ge=1, le=3600)
+
+
+@router.post("/debug")
+def start_debug(body: DebugStartRequest, sess: dict = Depends(current_session)):
+    from mino_nexus.loop.debug_cases import start
+    try:
+        app = ps.require_app(body.app_id)
+        require_project_write(str(app.get("project_id") or ""), sess)
+        return ok(start(app, body.model_dump()))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="App not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": str(exc), "message": str(exc)}) from exc
+
+
+@router.post("/debug/{session_id}/{operation}")
+def control_debug(session_id: str, operation: str, body: DebugControlRequest, _sess: dict = Depends(current_session)):
+    from mino_nexus.loop.debug_cases import control
+    try:
+        return ok(control(session_id, operation, body.model_dump()))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"reason_code": str(exc), "message": str(exc)}) from exc
+
+
 class CaseResultsBody(BaseModel):
     app_id: str
     case_ids: list[str] = Field(default_factory=list, max_length=200)
@@ -68,6 +115,7 @@ class RunRequest(BaseModel):
     script_targets: Optional[List["ScriptTarget"]] = None
     case_inputs: dict = Field(default_factory=dict)
     source_context: dict = Field(default_factory=dict)
+    debug_origin: dict = Field(default_factory=dict)
 
 
 class ScriptTarget(BaseModel):
@@ -188,6 +236,7 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             script_targets=[item.model_dump() for item in body.script_targets] if body.script_targets else None,
             case_inputs=body.case_inputs,
             source_context=body.source_context,
+            debug_origin=body.debug_origin,
         )
         return ok(snapshot, msg="AI-led 回归任务已启动")
     except (cr.DeviceBusy, ResourceBusy) as exc:

@@ -1,0 +1,57 @@
+{
+  "id": "debug.case",
+  "title": "启动本机调试会话",
+  "description": "直接绑定本机 Scout 的编写工作区，不拉仓、不要求 commit；远端节点仅供正式执行。返回 session_id，后续分段执行保留设备与应用状态。",
+  "route": "POST /case-runner/debug",
+  "risk": "write",
+  "async": false,
+  "params_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "type": "string"
+      },
+      "sn": {
+        "type": "string"
+      },
+      "node_id": {
+        "type": "string"
+      },
+      "app_key": {
+        "type": "string"
+      },
+      "workspace": {
+        "type": "string"
+      },
+      "client_request_id": {
+        "type": "string"
+      },
+      "project_id": {
+        "type": "string"
+      },
+      "env_profile": {
+        "type": "string"
+      },
+      "env_surface": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "app_id",
+      "sn",
+      "node_id",
+      "app_key",
+      "workspace",
+      "client_request_id"
+    ]
+  },
+  "param_resolvers": {},
+  "result_pick": [
+    "data"
+  ],
+  "surfaces": [
+    "mcp"
+  ],
+  "enabled": true
+}

@@ -65,6 +65,16 @@ def dispatch_script_case(
     # Persist admission before the short ACK. Long execution belongs to Scout.
     from mino_nexus.resources.node_registry import get_registry
     node, _ = get_registry().resolve(sn)
+    if doc.get("debug_origin"):
+        from mino_nexus.loop.debug_cases import _call
+        try:
+            features = _call(node, "debug.capabilities", {"owner_user_id": doc["owner_user_id"]}) if node else {}
+            if features.get("formal_origin_verification") is not True:
+                raise ValueError("debug_origin_verification_required")
+        except (ValueError, OSError):
+            return _outcome("blocked", "目标 Scout 尚不支持调试版本核对", t0, reason_code="debug_origin_verification_required", failure_stage="admission", started="no")
+    if doc.get("execution_kind") == "debug" and (node is None or node.node_id != doc.get("debug_node_id") or node.record_api_version != 1):
+        return _outcome("blocked", "本机调试节点不可用", t0, reason_code="debug_local_node_mismatch", failure_stage="admission", started="no")
     if not project_error and node is not None and node.record_api_version == 1:
         from mino_nexus.loop.scout_record_tasks import dispatch
         return dispatch(run_id=run_id, case=case, sn=sn, app_id=app_id, package=package,

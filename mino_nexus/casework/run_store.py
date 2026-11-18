@@ -203,7 +203,7 @@ def _upsert_run(doc: dict[str, Any]) -> None:
             if frozen.get("cancel_requested"):
                 doc["cancel_requested"] = True
             for field in ("owner_user_id", "plugin_user_id", "client_request_id", "request_digest", "derived_from",
-                          "source_context", "case_inputs", "requested_total", "skipped_cases", "coverage", "sns", "device_targets", "platforms_by_sn",
+                          "source_context", "debug_origin", "execution_kind", "workspace", "debug_app_key", "debug_node_id", "debug_start_request", "case_inputs", "requested_total", "skipped_cases", "coverage", "sns", "device_targets", "platforms_by_sn",
                           "environment_baseline_digest", "execution_policy", "retry_contract"):
                 if field in frozen:
                     doc[field] = copy.deepcopy(frozen[field])
@@ -431,6 +431,8 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
     task = {
         "task_id": doc.get("run_id") or doc.get("task_id") or "",
         "client_request_id": doc.get("client_request_id") or "",
+        "execution_kind": doc.get("execution_kind", "case"),
+        **({"workspace": doc.get("workspace", "")} if doc.get("execution_kind") == "debug" else {}),
         "derived_from": doc.get("derived_from") or "",
         "execution_policy": copy.deepcopy(doc.get("execution_policy") or {}),
         "run_id": doc.get("run_id") or "",
@@ -438,6 +440,7 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "app_name": doc.get("app_name") or "",
         "project_id": doc.get("project_id") or "",
         "source_context": copy.deepcopy(doc.get("source_context") or {}),
+        "debug_origin": copy.deepcopy(doc.get("debug_origin") or {}),
         "report_url": _report_url(doc),
         "cancel_requested": bool(doc.get("cancel_requested")),
         "run_type": doc.get("run_type") or "manual",
@@ -588,6 +591,18 @@ def get(run_id: str) -> Optional[dict[str, Any]]:
             return copy.deepcopy(doc)
     rows = _fetch_payloads(limit=1, run_id=rid)
     return copy.deepcopy(rows[0]) if rows else None
+
+
+def debug_formal_runs(session_id: str) -> dict:
+    from sqlalchemy import text
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.platform.identity import require_user_id
+    owner = require_user_id()
+    where = "owner_user_id=:owner AND json_extract(payload, '$.debug_origin.session_id')=:session"
+    with session_scope() as db:
+        total = db.execute(text("SELECT COUNT(*) FROM app_regression_runs WHERE " + where), {"owner": owner, "session": session_id}).scalar()
+        rows = db.execute(text("SELECT payload FROM app_regression_runs WHERE " + where + " ORDER BY started_at DESC LIMIT 200"), {"owner": owner, "session": session_id}).fetchall()
+    return {"total": total, "truncated": total > len(rows), "items": [to_task_json(_parse_payload(row[0])) for row in rows]}
 
 
 def list_runs(

@@ -67,6 +67,16 @@ params_schema:
     case_inputs:
       type: object
       description: 按 case_id 或脚本路径传入业务对象与 account_id，禁止传凭据；每例 16KiB，总共 64KiB。
+    debug_origin:
+      type: object
+      additionalProperties: false
+      properties:
+        session_id:
+          type: string
+        checkpoint_id:
+          type: string
+      required: [session_id, checkpoint_id]
+      description: 引用已结束调试的路径验证检查点，须同时传完整 commit SHA 与相同 script_targets；Scout 在设备动作前核对源码版本。
     source_context:
       type: object
       properties:

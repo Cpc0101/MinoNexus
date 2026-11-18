@@ -8,7 +8,7 @@ AGENT_INSTRUCTIONS = """You are working with Mino.
 MANDATORY ROUTING
 - Nexus control-plane work MUST use Mino MCP tools.
 - Local Scout work MUST use the mino-scout CLI.
-- Testing or operating target Android, iOS, Web, desktop applications, browser pages, screenshots, accessibility/UI trees, taps, typing, and UI assertions MUST go through Mino MCP case_run and execute on Mino Scout.
+- Testing or operating target Android, iOS, Web, desktop applications, browser pages, screenshots, accessibility/UI trees, taps, typing, and UI assertions MUST execute on Mino Scout through Mino MCP debug_case/debug_case_execute for local authoring or case_run for formal runs. Remote nodes are for formal runs only.
 - Do NOT substitute platform Computer Use, browser control, Playwright, adb, Appium, WDA, or desktop automation for Mino Scout by default.
 - Only use another tool when the user explicitly requests it, or after checking Mino and explaining to the user why Mino MCP/Scout is unavailable. Mino being less convenient is not a reason to fall back.
 
@@ -28,13 +28,13 @@ def agent_contract() -> dict[str, Any]:
             "version": 1,
             "authoritative_channel": "Mino MCP",
             "local_executor": "mino-scout CLI",
-            "target_ui_route": "Mino MCP case_run -> Mino Scout",
+            "target_ui_route": "Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout",
             "scope": "Any Mino task, including target Android, iOS, Web, desktop, browser, screenshot, UI-tree, tap, typing, and UI assertion work.",
         },
         "routing_precedence": [
             "Nexus projects, apps, requirements, accounts, devices, runs, and records -> Mino MCP.",
             "Local Scout status, probe, static checks, and fixed-version maintenance -> mino-scout CLI.",
-            "Target UI observation or operation -> write a case script -> Mino MCP case_run -> Mino Scout.",
+            "Target UI observation or operation -> write a case script -> Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout.",
             "Use platform Computer Use, browser control, Playwright, adb, Appium, WDA, or desktop automation only after an explicit user request or a Mino availability check and explanation.",
         ],
         "forbidden_fallbacks": [
@@ -59,8 +59,8 @@ def agent_contract() -> dict[str, Any]:
             "persistent_routing": "Skills and MCP initialize.instructions are soft guidance. For Codex, verify the installed Mino block in ~/.codex/AGENTS.md; ask before applying the managed block, and request a new session when it changes.",
         },
         "execution_rule": {
-            "route": "Mino MCP case_run -> Mino Scout",
-            "script_source": "Scripts are written locally and pushed through Git; MCP does not write repository files.",
+            "route": "Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout",
+            "script_source": "Debug sessions execute the local authoring workspace without checkout; formal runs use a fixed Git revision in a separate task workspace. MCP submits fragments but never edits repository files.",
             "evidence": "Assertions are decided only from the execution session and artifacts on the Scout that accepted the task.",
             "accepted_is_not_passed": True,
         },

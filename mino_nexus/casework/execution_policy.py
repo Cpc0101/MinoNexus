@@ -15,6 +15,10 @@ def start_attempt(run_id, case):
         current = next((row for row in doc.get("cases") or [] if row.get("execution_unit_id") == case.get("execution_unit_id")), None)
         if current is None:
             raise ValueError("execution_unit_missing")
+        if doc.get("execution_kind") == "debug":
+            current["status"] = "running"
+            run_store.put(doc)
+            return 0
         end = current.get("attempt_deadline_at") or time.time() + compute_case_wall_budget_sec(current)
         batch = deadline(doc)
         end = min(end, batch) if batch else end

@@ -693,3 +693,12 @@ MCP 对应 `resource_account_data_list/save/delete`。业务标签仅在脚本�
 ## 任务统计与报告
 
 任务列表/详情含 `statistics`（version=1、unit=case_execution）：execution_units、formal、authoring、preparation、unclassified，expectations、assertions、auxiliary_assertions，result_status、source、timing。顶层 passed/failed/blocked/declined/skipped/cancelled/unverified 与正式分组一致；total/completed 与全部执行分组一致，completed 仅代表已结束。无正式判定 pass_rate=null。列表用例摘要保留用途、test_report、封存和时间字段。应用 tasks/summary 的 items 使用同一投影。完整字段含义见 [执行统计与报告口径](../专题/执行统计与报告口径.md)。
+
+
+### 本机调试会话
+
+`POST /case-runner/debug` 接收 app_id、sn、node_id、app_key、workspace、client_request_id，可选 project_id/env_profile/env_surface；返回任务和 session_id。工作区是本机已有编写目录，不接收仓库版本。
+
+`POST /case-runner/debug/{session_id}/{execute|status|cancel|reset|close|checkpoint}` 与 MCP debug_case 系列共用鉴权、资源和记录。execute 接收 code/script_path（二选一）、请求 ID，可选 workspace_hash/timeout_sec。cancel/reset 要求请求 ID，status 可查询原请求，close 持久记录结束意图。完整证据沿用 sessions 读取接口；调试完成不代表正式通过，结束请求成功不代表资源已释放。
+
+检查点与 `case_run.debug_origin` 的字段、阶段统计及版本核验见 [协议](协议.md#检查点阶段进度与正式版本关联)。
