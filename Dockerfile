@@ -1,6 +1,4 @@
 # syntax=docker/dockerfile:1
-ARG WHEEL_STAGE=source-wheel
-
 FROM python:3.12-slim AS source-wheel
 ARG SOURCE_COMMIT=
 WORKDIR /build
@@ -11,14 +9,9 @@ RUN SOURCE_COMMIT="$SOURCE_COMMIT" python scripts/prepare_build.py \
  && python -m pip install --no-cache-dir build \
  && python -m build --wheel --outdir /wheels
 
-# Release CI uses the already built wheel, never a second source build.
-FROM scratch AS release-wheel
-COPY dist/*.whl /wheels/
-
-FROM ${WHEEL_STAGE} AS selected-wheel
 FROM python:3.12-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 MINO_NEXUS_MODE=production MINO_NEXUS_DATA_DIR=/data MINO_NEXUS_MDNS=0
-COPY --from=selected-wheel /wheels/ /wheels/
+COPY --from=source-wheel /wheels/ /wheels/
 RUN python -m pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels && useradd --uid 10001 --create-home nexus && mkdir /data && chown nexus:nexus /data
 WORKDIR /home/nexus
 USER 10001:10001

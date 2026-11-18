@@ -1,22 +1,25 @@
 # Nexus 发布与升级
 
-Nexus 与 Workbench 独立构建、独立部署。Nexus 的 wheel 和 Docker 镜像只包含服务端；Workbench 在自己的仓库构建静态文件并发布到静态站点或 CDN。Scout 继续使用自己的原生发布与安装能力。
+Nexus 与 Workbench 独立构建、独立部署。Nexus 正式发布只产出腾讯云使用的 Linux AMD64 Docker 镜像；macOS wheel 仅在本地运行时按需构建。Nexus 的 wheel 和 Docker 镜像只包含服务端；Workbench 在自己的仓库构建静态文件并发布到静态站点或 CDN。Scout 继续使用自己的原生发布与安装能力。
 
 Workbench 构建时用 `VITE_NEXUS_URL` 指向 Nexus。跨域部署时，Nexus 必须通过 `MINO_WORKBENCH_ORIGINS` 显式允许 Workbench 的完整 origin；不要信任任意来源。
 
 ## 构建和发布
 
-- Nexus 的 main push、PR 和手动 CI：只运行 Nexus 自身的检查与 wheel 构建，不 checkout Workbench，也不需要读取 Workbench 私有仓库的令牌。
-- Nexus 的 `v*` tag：先校验 tag 与 `mino_nexus/VERSION` 一致，再构建 wheel/sdist 并发布 Release；同一 wheel 再打成 AMD64/ARM64 Docker 镜像，发布 GHCR 多架构标签及分架构离线镜像包。
-- Workbench 的 main push、PR 和手动运行：在 Workbench 仓库执行前端检查、构建，并按腾讯云部署流程发布；v* tag 独立发布静态压缩包。
+- Nexus 的 main push、PR 和手动 CI：只运行 Nexus 自身的静态检查，不构建或上传发布包，不 checkout Workbench，也不需要读取 Workbench 私有仓库的令牌。
+- Nexus 的 `v*` tag：先校验 tag 与 `mino_nexus/VERSION` 一致，再构建并推送腾讯云所需的 `linux/amd64` 镜像；不生成 wheel、sdist、ARM64 镜像、离线镜像包或 GitHub Release 附件。
+- Workbench 的 main push、PR 和手动运行：在 Workbench 仓库执行前端检查、构建，并按自己的静态部署流程发布；v* tag 独立发布静态压缩包。
 - Nexus 的 `BUILD.json` 只记录 Nexus 版本、源码 commit 与 dirty 状态，不记录 Workbench build ID。两端发布版本可独立演进，不要求 tag 同步。
 
-普通 push 不发布 Nexus Release。修改工作流必须提交并推送后才在 GitHub 生效。
+普通 push 不发布 Nexus 镜像。修改工作流必须提交并推送后才在 GitHub 生效。
 
 ## macOS
 
 ```sh
-pipx install ./mino_nexus-X.Y.Z-py3-none-any.whl
+python -m pip install build
+python scripts/prepare_build.py
+python -m build --wheel --outdir dist
+pipx install ./dist/mino_nexus-X.Y.Z-py3-none-any.whl
 mino-nexus service install
 mino-nexus service status
 ```
@@ -37,7 +40,7 @@ docker compose pull
 docker compose up -d
 ```
 
-现场构建：执行 `docker compose build`，再 `docker compose up -d --pull never`。Dockerfile 的默认 `source-wheel` 阶段只构建 Nexus；发布 CI 用 `WHEEL_STAGE=release-wheel` 安装已经构建的同一份 Nexus wheel。运行容器非 root，单进程、50104、数据卷 `/data`，禁用 mDNS。
+现场构建：执行 `docker compose build`，再 `docker compose up -d --pull never`。Dockerfile 的 `source-wheel` 阶段只构建 Nexus 服务端 wheel，运行镜像安装该 wheel。正式 CI 只构建并推送腾讯云所需的 `linux/amd64` 镜像。运行容器非 root，单进程、50104、数据卷 `/data`，禁用 mDNS。
 
 反向代理需转发 Host、WebSocket Upgrade，并按 Workbench 的实际静态域名设置 `MINO_WORKBENCH_ORIGINS`。仅把真实代理地址写入 `MINO_PROXY_IPS`，不笼统信任所有来源。Scout 连接 `ws://服务器:50104/node`，TLS 代理使用 `wss://域名/node`。
 
@@ -45,7 +48,7 @@ AI 配置通过 Workbench 按账号保存，不从 `MINO_AI_API_KEY` 等旧环�
 
 升级：停写并备份数据卷，修改固定 tag，再 `docker compose pull && docker compose up -d`。回滚：改回原 tag 后重建容器；需要恢复数据时先确认影响。不要执行 `docker compose down -v`，它会删除业务卷。同一卷只能供单个 Nexus 进程使用，启动锁会拒绝第二个新进程。
 
-离线部署：校验对应架构清单，`gunzip -c mino-nexus-X.Y.Z-linux-amd64.tar.gz | docker load`，将镜像标记为 Compose 使用的无架构后缀固定 tag，随后 `docker compose up -d --pull never`。ARM64 使用 `arm64` 包。离线包本身的标签为 `X.Y.Z-amd64` 或 `X.Y.Z-arm64`，例如 `docker tag ghcr.io/<owner>/mino-nexus:X.Y.Z-amd64 ghcr.io/<owner>/mino-nexus:X.Y.Z`。
+正式发布不再生成离线镜像包。腾讯云通过 GHCR 拉取固定的 `X.Y.Z` 标签；需要离线安装时应从该镜像自行执行 `docker save` 并在目标机 `docker load`。
 
 ## 旧安装迁移
 

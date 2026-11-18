@@ -1,4 +1,4 @@
-name: Build product
+name: Nexus checks
 on:
   push:
     branches: [main]
@@ -41,12 +41,3 @@ jobs:
         # 声明了返回类型却会掉出函数末尾，调用方拿到 None 再取属性就 AttributeError
         # （2026-10-22 的 apply_turn_prior → `_prior.leave`）。
         run: python tools/check_returns.py
-      - name: Build Nexus wheel
-        run: |
-          python -m pip install build
-          python scripts/prepare_build.py
-          python -m build --wheel --outdir dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: product-wheel
-          path: dist/*.whl
