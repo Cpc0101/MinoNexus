@@ -1,0 +1,165 @@
+name: Deploy Tencent Nexus (incremental patch)
+
+on:
+  push:
+    branches: [deploy/nexus-096-patch]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-tencent-nexus
+  cancel-in-progress: false
+
+env:
+  NEXUS_VERSION: "0.1.96"
+  BASE_VERSION: "0.1.95"
+  TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+  TENCENT_USER: ${{ vars.TENCENT_USER }}
+  TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
+  TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate deployment configuration
+        run: |
+          set -euo pipefail
+          test -n "$TENCENT_HOST" || { echo 'Missing repository variable TENCENT_HOST' >&2; exit 1; }
+          test -n "$TENCENT_USER" || { echo 'Missing repository variable TENCENT_USER' >&2; exit 1; }
+          test -n "$TENCENT_HOST_KEY_FINGERPRINT" || { echo 'Missing repository variable TENCENT_HOST_KEY_FINGERPRINT' >&2; exit 1; }
+          test "$(cat mino_nexus/VERSION)" = "$NEXUS_VERSION"
+          git diff --quiet "v${BASE_VERSION}..HEAD" -- mino_nexus ':!mino_nexus/VERSION' || {
+            echo "Refusing patch: application code differs from v${BASE_VERSION}" >&2
+            git diff --stat "v${BASE_VERSION}..HEAD"
+            exit 1
+          }
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/mino-nexus-deploy
+          chmod 0600 ~/.ssh/mino-nexus-deploy
+          ssh-keygen -y -f ~/.ssh/mino-nexus-deploy > /dev/null
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 {print $2}')
+          test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
+
+      - name: Build Nexus wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --no-cache-dir build
+          SOURCE_COMMIT="$GITHUB_SHA" python scripts/prepare_build.py
+          python -m build --wheel --outdir dist
+          wheel=$(find dist -maxdepth 1 -type f -name "mino_nexus-${NEXUS_VERSION}-*.whl" | head -n 1)
+          test -n "$wheel"
+          printf 'WHEEL=%s\n' "$wheel" >> "$GITHUB_ENV"
+          printf 'WHEEL_BASENAME=%s\n' "$(basename "$wheel")" >> "$GITHUB_ENV"
+
+      - name: Build incremental image on Tencent
+        run: |
+          set -euo pipefail
+          cat > /tmp/nexus-patch.Dockerfile <<EOF
+          FROM mino-nexus-patch:${BASE_VERSION}
+          USER root
+          COPY wheel /tmp/${WHEEL_BASENAME}
+          RUN python -m pip install --no-cache-dir --no-index --no-deps --force-reinstall /tmp/${WHEEL_BASENAME} \
+              && rm -f /tmp/${WHEEL_BASENAME}
+          USER 10001:10001
+          EOF
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$WHEEL" /tmp/nexus-patch.Dockerfile \
+            "$TENCENT_USER@$TENCENT_HOST:/tmp/"
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" "
+            set -euo pipefail
+            base_image='ghcr.io/cpc0101/mino-nexus:${BASE_VERSION}'
+            target_image='ghcr.io/cpc0101/mino-nexus:${NEXUS_VERSION}'
+            docker image inspect \"\$base_image\" > /dev/null
+            docker tag \"\$base_image\" 'mino-nexus-patch:${BASE_VERSION}'
+            build_dir=\$(mktemp -d /tmp/mino-nexus-patch.XXXXXX)
+            trap 'rm -rf \"\$build_dir\"' EXIT
+            cp '/tmp/${WHEEL_BASENAME}' \"\$build_dir/wheel\"
+            cp '/tmp/nexus-patch.Dockerfile' \"\$build_dir/Dockerfile\"
+            DOCKER_BUILDKIT=0 docker build --pull=false --network=none -t \"\$target_image\" \"\$build_dir\"
+            docker image inspect \"\$target_image\" > /dev/null
+          "
+
+      - name: Resolve deployment directory
+        run: |
+          set -euo pipefail
+          if [ -n "$TENCENT_DEPLOY_DIR" ]; then
+            echo "Using configured deployment directory: $TENCENT_DEPLOY_DIR"
+            exit 0
+          fi
+          ssh_cmd=(ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST")
+          container_id=$("${ssh_cmd[@]}" "docker ps -aq --filter volume=mino-production_mino-data | head -n 1")
+          test -n "$container_id" || { echo 'Cannot resolve TENCENT_DEPLOY_DIR' >&2; exit 1; }
+          project=$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}}' '$container_id'")
+          deploy_dir=$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' '$container_id'")
+          test "$project" = mino-production
+          case "$deploy_dir" in
+            ''|/|*/|*[!A-Za-z0-9._/-]*) echo "Unsafe resolved deployment directory: $deploy_dir" >&2; exit 1 ;;
+          esac
+          echo "TENCENT_DEPLOY_DIR=$deploy_dir" >> "$GITHUB_ENV"
+
+      - name: Upload deployment files
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "mkdir -p '$TENCENT_DEPLOY_DIR'"
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes docker-compose.yml \
+            "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/docker-compose.yml.next"
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes scripts/deploy-tencent.sh \
+            "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/.deploy-tencent.sh"
+
+      - name: Deploy patch with backup and rollback
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "MINO_DEPLOY_SKIP_PULL=1 bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
+
+      - name: Verify public deployment
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl --fail --silent --show-error --max-time 10 https://nexus.minocc.top/health > /tmp/nexus-health.json; then
+              break
+            fi
+            test "$attempt" -lt 10
+            sleep 3
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/nexus-health.json').read_text())
+          assert payload.get('ok') is True, payload
+          assert payload.get('nexus_version') == '0.1.96', payload
+          print(f"Production Nexus is healthy at version {payload['nexus_version']}")
+          PY
+
+      - name: Verify loopback-only binding
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" '
+            set -e
+            container=$(docker ps --filter label=com.docker.compose.service=nexus --format "{{.ID}}" | head -n 1)
+            test -n "$container"
+            mapping=$(docker port "$container" 50104/tcp)
+            echo "NEXUS_PORT_MAPPING=$mapping"
+            test "$mapping" = "127.0.0.1:50104"
+            deploy_dir=$(docker inspect --format "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}" "$container")
+            grep "^MINO_BIND_ADDRESS=127.0.0.1$" "$deploy_dir/.env"
+            curl --fail --silent --show-error http://127.0.0.1:50104/health
+          '
