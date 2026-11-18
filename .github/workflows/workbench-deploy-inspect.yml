@@ -49,8 +49,32 @@ jobs:
           test -n "$expected_asset"
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "python3 /tmp/deploy-workbench-remote.py /tmp/workbench-web-0.0.61.tar.gz '$expected_asset'"
-          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
-            "https://workbench.minocc.top/assets/$expected_asset" --output /dev/null
-          body=$(curl --fail --silent --show-error "https://workbench.minocc.top/")
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl --fail --silent --show-error --max-time 15 \
+              "https://workbench.minocc.top/assets/$expected_asset" --output /dev/null; then
+              break
+            fi
+            test "$attempt" -lt 10
+            sleep 3
+          done
+          body=$(curl --fail --silent --show-error --retry 5 --retry-delay 3 "https://workbench.minocc.top/")
           printf '%s' "$body" | grep -F "/assets/$expected_asset" > /dev/null
           ! printf '%s' "$body" | grep -F "nexus.minocc.top:8443"
+
+      - name: Verify Nexus is loopback-only
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" '
+            set -e
+            container=$(docker ps --filter label=com.docker.compose.service=nexus --format "{{.ID}}" | head -n 1)
+            test -n "$container"
+            mapping=$(docker port "$container" 50104/tcp)
+            echo "NEXUS_PORT_MAPPING=$mapping"
+            test "$mapping" = "127.0.0.1:50104"
+            deploy_dir=$(docker inspect --format "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}" "$container")
+            if grep -q "^MINO_BIND_ADDRESS=" "$deploy_dir/.env"; then
+              grep "^MINO_BIND_ADDRESS=" "$deploy_dir/.env"
+            else
+              echo "MINO_BIND_ADDRESS is unset; Compose default is loopback-only"
+            fi
+          '
