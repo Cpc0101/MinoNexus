@@ -44,6 +44,14 @@ if grep -q '^MINO_NEXUS_VERSION=' .env.next; then
 else
   printf 'MINO_NEXUS_VERSION=%s\n' "$version" >> .env.next
 fi
+# Production traffic reaches Nexus through the same-host HTTPS reverse proxy.
+# Normalize legacy .env files so an old public bind cannot override the safe
+# loopback-only default from docker-compose.yml.
+if grep -q '^MINO_BIND_ADDRESS=' .env.next; then
+  sed -i 's/^MINO_BIND_ADDRESS=.*/MINO_BIND_ADDRESS=127.0.0.1/' .env.next
+else
+  printf 'MINO_BIND_ADDRESS=127.0.0.1\n' >> .env.next
+fi
 
 MINO_NEXUS_VERSION="$version" docker compose --env-file .env.next -f docker-compose.yml.next.validated config > /dev/null
 if [ "${MINO_DEPLOY_SKIP_PULL:-0}" = "1" ]; then
@@ -91,6 +99,11 @@ MINO_NEXUS_VERSION="$version" docker compose up -d --no-build --pull never --wai
 health=$(curl --fail --silent --show-error --retry 10 --retry-delay 3 --max-time 10 http://127.0.0.1:50104/health)
 printf '%s' "$health" | grep -Fq "\"nexus_version\":\"$version\""
 test "$(docker compose ps --status running --services | grep -c '^nexus$')" -eq 1
+port_mapping=$(docker compose port nexus 50104 2>/dev/null | head -n 1)
+test "$port_mapping" = "127.0.0.1:50104" || {
+  echo "Refusing deployment: Nexus port mapping is '$port_mapping', expected 127.0.0.1:50104" >&2
+  false
+}
 updated=0
 trap - ERR
 echo "Deployed Nexus $version to $deploy_dir"
