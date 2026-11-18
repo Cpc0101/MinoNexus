@@ -53,6 +53,24 @@ else
   printf 'MINO_BIND_ADDRESS=127.0.0.1\n' >> .env.next
 fi
 
+set_public_env() {
+  key=$1
+  value=$2
+  case "$value" in
+    https://*) ;;
+    *) echo "$key must use an https:// URL: $value" >&2; return 1 ;;
+  esac
+  case "$value" in
+    *[[:space:]]*) echo "$key contains whitespace: $value" >&2; return 1 ;;
+  esac
+  sed -i "/^${key}=/d" .env.next
+  printf '%s=%s\n' "$key" "$value" >> .env.next
+}
+
+set_public_env MINO_NEXUS_PUBLIC_URL "${MINO_NEXUS_PUBLIC_URL:-https://nexus.minocc.top}"
+set_public_env MINO_WORKBENCH_PUBLIC_URL "${MINO_WORKBENCH_PUBLIC_URL:-https://workbench.minocc.top}"
+set_public_env MINO_SCOUT_MANIFEST_URL "${MINO_SCOUT_MANIFEST_URL:-https://nexus.minocc.top/scout-release/manifest.json}"
+
 MINO_NEXUS_VERSION="$version" docker compose --env-file .env.next -f docker-compose.yml.next.validated config > /dev/null
 if [ "${MINO_DEPLOY_SKIP_PULL:-0}" = "1" ]; then
   docker image inspect "ghcr.io/cpc0101/mino-nexus:$version" > /dev/null
