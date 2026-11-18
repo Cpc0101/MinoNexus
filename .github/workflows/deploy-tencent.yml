@@ -30,7 +30,7 @@ env:
   TENCENT_USER: ${{ vars.TENCENT_USER }}
   TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
   TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
-  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top:8443/health' }}
+  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top/health' }}
 
 jobs:
   deploy:

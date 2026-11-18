@@ -34,11 +34,12 @@ B4 启动前自动备份按用户要求暂缓；不存在“每次启动已自�
 
 ```sh
 export MINO_NEXUS_VERSION=X.Y.Z
-# 默认向宿主所有地址发布端口；仅本机反向代理访问时设为 127.0.0.1。
-export MINO_BIND_ADDRESS=127.0.0.1
+# 默认仅向宿主本机发布 50104，由同机反向代理对外提供 HTTPS。
 docker compose pull
 docker compose up -d
 ```
+
+只有确实需要绕过反向代理直接访问 Nexus 时，才显式设置 `MINO_BIND_ADDRESS=0.0.0.0`。
 
 现场构建：执行 `docker compose build`，再 `docker compose up -d --pull never`。Dockerfile 的 `source-wheel` 阶段只构建 Nexus 服务端 wheel，运行镜像安装该 wheel。正式 CI 只构建并推送腾讯云所需的 `linux/amd64` 镜像。运行容器非 root，单进程、50104、数据卷 `/data`，禁用 mDNS。
 
