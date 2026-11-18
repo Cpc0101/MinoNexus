@@ -1,0 +1,33 @@
+id: requirement.save
+title: 新增需求
+description: 在项目下新增需求并关联一个或多个应用，可同时保存需求文档与用例文档链接。相同需求 ID 重复保存时更新原记录，不会重复创建。
+route: POST /project/{project_id}/requirements
+risk: write
+async: false
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+    requirement_id:
+      type: string
+    title:
+      type: string
+    app_ids:
+      type: array
+      items:
+        type: string
+    app_id:
+      type: string
+    source_url:
+      type: string
+    cases_url:
+      type: string
+  required: [project_id, title]
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [im, mcp]
+enabled: true

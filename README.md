@@ -2,7 +2,7 @@
 
 Nexus 与 Workbench 独立构建、独立部署。Nexus 提供 HTTP API 与 WebSocket，macOS 使用 wheel + launchd，Linux 使用 AMD64/ARM64 Docker 镜像；Workbench 在自己的仓库构建静态文件并部署到静态站点或 CDN。Nexus wheel 和容器不包含、不构建、不托管 Workbench。旧原生安装器与在线自更新链路已移除，Scout 继续独立安装。
 
-从 [Release](https://github.com/pengchengluoyi/MinoNexus/releases) 获取完整 wheel / 离线镜像并核对 SHA256。安装、Compose、升级、回滚及源码打包步骤见 [部署手册](docs/github-updates.md)。
+从 [Release](https://github.com/Cpc0101/MinoNexus/releases) 获取完整 wheel / 离线镜像并核对 SHA256。安装、Compose、升级、回滚及源码打包步骤见 [部署手册](docs/github-updates.md)。
 
 ```sh
 pipx install ./mino_nexus-X.Y.Z-py3-none-any.whl

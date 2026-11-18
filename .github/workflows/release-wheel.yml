@@ -118,3 +118,10 @@ jobs:
         with:
           files: offline/*
           fail_on_unmatched_files: true
+
+  deploy-tencent:
+    needs: publish-image
+    uses: ./.github/workflows/deploy-tencent.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit

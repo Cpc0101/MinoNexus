@@ -84,12 +84,14 @@ def _source_url_ok(value: str) -> bool:
     return not any(ch.isspace() or ord(ch) < 32 for ch in text)
 
 
-def _public_requirement(row: dict[str, Any]) -> dict[str, str]:
+def _public_requirement(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(row.get("id") or ""),
         "title": str(row.get("title") or ""),
         "source_url": str(row.get("source_url") or ""),
+        "cases_url": str(row.get("cases_url") or ""),
         "app_id": str(row.get("app_id") or ""),
+        "app_ids": list(row.get("app_ids") or []),
     }
 
 
@@ -115,11 +117,14 @@ def _load_requirements(env: dict[str, Any]) -> list:
 
 def create_project_requirement(
     project_id: str,
-    app_id: str,
+    app_id: str | None,
     title: str,
     requirement_id: str = "",
     source_url: str = "",
-) -> dict[str, str]:
+    *,
+    app_ids: list[str] | None = None,
+    cases_url: str = "",
+) -> dict[str, Any]:
     import time
     from sqlalchemy import text
     from mino_nexus.core.database import session_scope
@@ -132,54 +137,84 @@ def create_project_requirement(
     wanted = str(requirement_id or "").strip()
     if wanted and not _requirement_id_ok(wanted):
         raise ValueError("需求 ID 须以字母开头，只含字母、数字、下划线或连字符，最长 64 位")
-    link = str(source_url or "").strip()
-    if link and not _source_url_ok(link):
-        raise ValueError("用例链接须是 http 或 https 地址")
+    if app_ids is not None and app_id is not None:
+        raise ValueError("app_ids 与 app_id 不能同时填写")
+    links = {}
+    for key, value in (("source_url", source_url), ("cases_url", cases_url)):
+        link = str(value or "").strip()
+        if link and not _source_url_ok(link):
+            raise ValueError("文档链接须是 http 或 https 地址")
+        links[key] = link
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
         owned(db, project_id)
-        app = db.get(App, app_id)
-        if app is None or app.project_id != project_id:
+        apps = db.query(App).filter(App.project_id == project_id).all()
+        by_id = {app.id: app for app in apps}
+        targets = list(dict.fromkeys(app_ids if app_ids is not None else ([app_id] if app_id else [])))
+        if not targets:
+            raise ValueError("请选择至少一个应用")
+        if any(target not in by_id for target in targets):
             raise ValueError("应用不属于当前项目")
-        for other in db.query(App).filter(App.project_id == project_id).all():
-            if wanted and other.id != app_id:
-                for row in _iter_requirements(other.env or {}):
-                    if isinstance(row, dict) and str(row.get("id") or "") == wanted:
-                        raise ValueError("需求 ID 已在本项目使用")
-        env = copy.deepcopy(app.env or {})
-        automation = env.setdefault("automation", {})
-        if not isinstance(automation, dict):
-            raise ValueError("应用需求配置异常，请先修复配置")
-        process = automation.setdefault("qa_process", {})
-        if not isinstance(process, dict):
-            raise ValueError("应用需求配置异常，请先修复配置")
-        requirements = process.setdefault("requirements", [])
-        if not isinstance(requirements, list):
-            raise ValueError("应用需求配置异常，请先修复配置")
-        for requirement in requirements:
-            if not isinstance(requirement, dict) or not requirement.get("id") or requirement.get("id") == "__imported_cases__":
-                continue
-            same = str(requirement.get("id")) == wanted if wanted else requirement.get("title") == title
-            if same:
-                if link:
-                    requirement["source_url"] = link
-                    requirement["updated_at"] = _now()
-                    process["updated_at"] = requirement["updated_at"]
-                    app.env, app.updated_at = env, int(time.time())
-                return _public_requirement({**requirement, "app_id": app_id})
+
+        matches = []
+        for app in apps:
+            for row in _iter_requirements(app.env or {}):
+                if not isinstance(row, dict) or not row.get("id") or row.get("id") == "__imported_cases__":
+                    continue
+                same = str(row.get("id")) == wanted if wanted else row.get("title") == title
+                if same:
+                    matches.append((app, row))
+
         stamp = _now()
-        from mino_nexus.core.ids import prefixed
-        requirement = {
-            "id": wanted or prefixed("req", 16),
-            "title": title,
-            "source_url": link,
-            "created_at": stamp,
-            "updated_at": stamp,
+        if matches:
+            existing = matches[0][1]
+            requirement = {
+                **copy.deepcopy(existing),
+                **links,
+                "id": str(existing.get("id") or wanted),
+                "title": title,
+                "app_ids": targets,
+                "updated_at": stamp,
+            }
+        else:
+            from mino_nexus.core.ids import prefixed
+            requirement = {
+                "id": wanted or prefixed("req", 16),
+                "title": title,
+                **links,
+                "app_ids": targets,
+                "created_at": stamp,
+                "updated_at": stamp,
+            }
+
+        matched_app_ids = {app.id for app, _ in matches}
+        for app in apps:
+            if app.id not in targets and app.id not in matched_app_ids:
+                continue
+            env = copy.deepcopy(app.env or {})
+            automation = env.setdefault("automation", {})
+            if not isinstance(automation, dict):
+                raise ValueError("应用需求配置异常，请先修复配置")
+            process = automation.setdefault("qa_process", {})
+            if not isinstance(process, dict):
+                raise ValueError("应用需求配置异常，请先修复配置")
+            requirements = process.setdefault("requirements", [])
+            if not isinstance(requirements, list):
+                raise ValueError("应用需求配置异常，请先修复配置")
+            requirement_id = str(requirement["id"])
+            process["requirements"] = [
+                row for row in requirements
+                if not isinstance(row, dict) or str(row.get("id") or "") != requirement_id
+            ]
+            if app.id in targets:
+                process["requirements"].append(copy.deepcopy(requirement))
+            process["updated_at"] = stamp
+            app.env, app.updated_at = env, int(time.time())
+        return {
+            **_public_requirement(requirement),
+            "app_id": targets[0] if len(targets) == 1 else "",
+            "project_id": project_id,
         }
-        requirements.append(requirement)
-        process["updated_at"] = stamp
-        app.env, app.updated_at = env, int(time.time())
-        return _public_requirement({**requirement, "app_id": app_id})
 
 
 def update_project_requirement(

@@ -64,6 +64,11 @@ def agent_guide() -> dict[str, Any]:
                 "then": "先用本机 mino-scout status 和 device_list 核对节点/设备。debug_case 绑定本机编写工作区，不拉仓、不要求 commit；debug_case_execute 提交 code 或 script_path，保留设备和应用现场，刷新 pages/flows。先观察 nodes、验证定位及公共路径，再扩展完整用例。debug_case_status 查询请求，session_events/screenshot/artifact 读取同一证据；取消片段、重置和结束使用对应 debug_case 工具。写结果未知只读核验，不盲目重试。用 debug_case_checkpoint 记录草稿、完整实现、路径验证，后者绑定同版本执行证据。结束并确认停止后，固定完整 commit，case_run 带 debug_origin 引用检查点，从独立初始状态正式验证；远端节点只用于正式执行。",
             },
             {
+                "name": "登记或维护项目需求",
+                "tools": ["project_list", "requirement_list", "requirement_save", "requirement_update"],
+                "then": "新建需求使用 requirement_save，至少传 project_id、title 和应用：单应用传 app_id，关联多个应用时传 app_ids。requirement_id 可选，未传时自动生成；source_url 是需求文档，cases_url 是用例文档。相同 requirement_id 重复保存会更新原记录。需求列表为空时不要调用 requirement_update；维护已有需求时先用 requirement_list 核对，再调用 requirement_update。写入结果未知时先重新读取 requirement_list 核对，不盲目重试。",
+            },
+            {
                 "name": "按需求链接编写并执行脚本",
                 "tools": ["requirement_list", "device_list", "debug_case", "debug_case_execute", "debug_case_status", "debug_case_close", "case_run", "task_get"],
                 "then": "requirement_list 返回需求 id、名称和渠道链接。从链接读原文，在本机 debug_case 中先观察和验证 pages/公共路径，再完成 tests/<需求ID>/<用例ID>.py。静态检查通过、结束调试并确认停止后，push 固定版本。case_run 传 script_targets：[{requirement_id, case_ids}]，revision 传已 push 的 commit，从独立初始状态正式验证。case_ids 为空时执行该需求目录下的全部脚本。",

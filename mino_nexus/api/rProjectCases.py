@@ -23,10 +23,12 @@ class ResourceKeyPreviewBody(BaseModel):
 
 class ImportRequirementCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    app_id: str = Field(min_length=1, max_length=200)
+    app_id: str | None = Field(default=None, min_length=1, max_length=200)
+    app_ids: list[str] | None = Field(default=None, max_length=100)
     title: str = Field(min_length=1, max_length=200)
     requirement_id: str = ""
     source_url: str = ""
+    cases_url: str = ""
 
 
 class RequirementUpdateBody(BaseModel):
@@ -366,7 +368,8 @@ def list_import_requirements(project_id: str, _sess: dict = Depends(current_sess
 def create_import_requirement(project_id: str, body: ImportRequirementCreateBody, _sess: dict = Depends(project_maintainer)):
     try:
         return ok({"requirement": cim.create_project_requirement(
-            project_id, body.app_id, body.title, body.requirement_id, body.source_url)})
+            project_id, body.app_id, body.title, body.requirement_id, body.source_url,
+            app_ids=body.app_ids, cases_url=body.cases_url)})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

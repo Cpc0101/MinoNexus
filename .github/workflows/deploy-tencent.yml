@@ -1,0 +1,145 @@
+name: Deploy Tencent Cloud
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Released Nexus version, with or without the leading v
+        required: true
+        type: string
+    secrets:
+      TENCENT_SSH_PRIVATE_KEY:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Released Nexus version, with or without the leading v
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-tencent-nexus
+  cancel-in-progress: false
+
+env:
+  TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+  TENCENT_USER: ${{ vars.TENCENT_USER }}
+  TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
+  TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top:8443/health' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate deployment configuration
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version=${REQUESTED_VERSION#v}
+          case "$version" in
+            ''|*[!0-9A-Za-z.+-]*) echo "Invalid version: $REQUESTED_VERSION" >&2; exit 1 ;;
+          esac
+          test -n "$TENCENT_HOST" || { echo 'Missing repository variable TENCENT_HOST' >&2; exit 1; }
+          test -n "$TENCENT_USER" || { echo 'Missing repository variable TENCENT_USER' >&2; exit 1; }
+          if [ -n "$TENCENT_DEPLOY_DIR" ]; then
+            case "$TENCENT_DEPLOY_DIR" in
+              /|*/|*[!A-Za-z0-9._/-]*) echo "Unsafe TENCENT_DEPLOY_DIR: $TENCENT_DEPLOY_DIR" >&2; exit 1 ;;
+            esac
+          else
+            echo 'TENCENT_DEPLOY_DIR is not set; it will be resolved from the live mino-production container.'
+          fi
+          test -n "$TENCENT_HOST_KEY_FINGERPRINT" || { echo 'Missing repository variable TENCENT_HOST_KEY_FINGERPRINT' >&2; exit 1; }
+          echo "NEXUS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/mino-nexus-deploy
+          chmod 0600 ~/.ssh/mino-nexus-deploy
+          ssh-keygen -y -f ~/.ssh/mino-nexus-deploy > /dev/null
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 {print $2}')
+          test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT" || {
+            echo "Tencent host fingerprint mismatch: expected $TENCENT_HOST_KEY_FINGERPRINT, got $actual" >&2
+            exit 1
+          }
+
+      - name: Verify image and remote Docker
+        run: |
+          set -euo pipefail
+          docker manifest inspect "ghcr.io/cpc0101/mino-nexus:${NEXUS_VERSION}" > /dev/null
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "docker version --format '{{.Server.Version}}' && docker compose version"
+
+      - name: Resolve deployment directory
+        run: |
+          set -euo pipefail
+          if [ -n "$TENCENT_DEPLOY_DIR" ]; then
+            echo "Using configured deployment directory: $TENCENT_DEPLOY_DIR"
+            exit 0
+          fi
+          ssh_cmd=(ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST")
+          container_id=$("${ssh_cmd[@]}" "docker ps -aq --filter volume=mino-production_mino-data | head -n 1")
+          test -n "$container_id" || {
+            echo 'Cannot resolve TENCENT_DEPLOY_DIR: no container uses volume mino-production_mino-data.' >&2
+            exit 1
+          }
+          project=$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}}' '$container_id'")
+          deploy_dir=$("${ssh_cmd[@]}" "docker inspect --format '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' '$container_id'")
+          test "$project" = mino-production || {
+            echo "Refusing deployment: live volume belongs to Compose project '$project', not mino-production." >&2
+            exit 1
+          }
+          case "$deploy_dir" in
+            ''|/|*/|*[!A-Za-z0-9._/-]*) echo "Unsafe resolved deployment directory: $deploy_dir" >&2; exit 1 ;;
+          esac
+          echo "TENCENT_DEPLOY_DIR=$deploy_dir" >> "$GITHUB_ENV"
+          echo "Resolved deployment directory from live volume: $deploy_dir"
+
+      - name: Upload deployment files
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "mkdir -p '$TENCENT_DEPLOY_DIR'"
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes docker-compose.yml \
+            "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/docker-compose.yml.next"
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes scripts/deploy-tencent.sh \
+            "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/.deploy-tencent.sh"
+
+      - name: Deploy with backup and rollback
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
+
+      - name: Verify public deployment
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl --fail --silent --show-error --max-time 10 "$MINO_NEXUS_HEALTH_URL" > /tmp/nexus-health.json; then
+              break
+            fi
+            sleep 3
+          done
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/nexus-health.json').read_text())
+          expected = os.environ['NEXUS_VERSION']
+          actual = str(payload.get('nexus_version', ''))
+          if not payload.get('ok') or actual != expected:
+              raise SystemExit(f'Production verification failed: expected {expected}, got {actual}, ok={payload.get("ok")}')
+          print(f'Production Nexus is healthy at version {actual}')
+          PY

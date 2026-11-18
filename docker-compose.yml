@@ -1,6 +1,7 @@
+name: mino-production
 services:
   nexus:
-    image: ghcr.io/pengchengluoyi/mino-nexus:${MINO_NEXUS_VERSION:?Set an explicit released version, such as 0.1.53}
+    image: ghcr.io/cpc0101/mino-nexus:${MINO_NEXUS_VERSION:?Set an explicit released version, such as 0.1.53}
     build:
       context: .
     ports:
