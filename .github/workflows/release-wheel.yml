@@ -4,6 +4,7 @@ on:
     tags: ['v*']
 permissions:
   contents: read
+  packages: read
 concurrency:
   group: release-tencent-image-${{ github.ref }}
   cancel-in-progress: false
