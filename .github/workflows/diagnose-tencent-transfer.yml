@@ -52,3 +52,18 @@ jobs:
             echo "--- disk ---"
             df -h /
           '
+
+      - name: Probe remote GHCR access
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" '
+            set +e
+            timeout 30 docker manifest inspect ghcr.io/cpc0101/mino-nexus:0.1.96 > /dev/null
+            echo "GHCR_MANIFEST_EXIT=$?"
+            curl --silent --show-error --output /dev/null --write-out "GHCR_HTTP=%{http_code} CONNECT=%{time_connect} TOTAL=%{time_total}\n" \
+              --connect-timeout 10 --max-time 30 https://ghcr.io/v2/
+            echo "GHCR_CURL_EXIT=$?"
+            curl --silent --show-error --output /dev/null --write-out "GITHUB_HTTP=%{http_code} CONNECT=%{time_connect} TOTAL=%{time_total}\n" \
+              --connect-timeout 10 --max-time 30 https://github.com/
+            echo "GITHUB_CURL_EXIT=$?"
+          '
