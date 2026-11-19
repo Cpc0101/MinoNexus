@@ -57,12 +57,13 @@ jobs:
             --arg sha "$sha" \
             --arg source_ref "refs/tags/v${IMAGE_TAG%-*}" \
             --arg title "Recover MinoNexus $IMAGE_TAG" \
+            --arg sync true \
             '{
               branch: $branch,
               event: $event,
               sha: $sha,
               env: {SOURCE_SHA: $sha, SOURCE_REF: $source_ref},
-              sync: true,
+              sync: $sync,
               title: $title
             }')
           response=$(curl --fail-with-body --silent --show-error \
@@ -76,7 +77,7 @@ jobs:
           success=$(printf '%s' "$response" | jq -r '.success // .data.success // false')
           test "$success" = true
           sn=$(printf '%s' "$response" | jq -r '.sn // .data.sn // empty')
-          build_url=$(printf '%s' "$response" | jq -r '.url // .buildUrl // .data.url // .data.buildUrl // empty')
+          build_url=$(printf '%s' "$response" | jq -r '.buildLogUrl // .url // .buildUrl // .data.buildLogUrl // .data.url // .data.buildUrl // empty')
           test -n "$sn" || { echo 'CNB build response did not contain a build SN.' >&2; exit 1; }
           echo "CNB recovery build triggered: $sn"
           test -z "$build_url" || echo "CNB build URL: $build_url"
