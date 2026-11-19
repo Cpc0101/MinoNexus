@@ -73,5 +73,15 @@ jobs:
             echo "Verified public TLS request: $host"
             curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\n' "https://$host/health" || true
           done
+          python3 - <<'PY'
+          import os, socket, ssl
+          context = ssl.create_default_context()
+          context.check_hostname = False
+          with socket.create_connection((os.environ['TENCENT_HOST'], 443), timeout=8) as raw:
+              with context.wrap_socket(raw) as connection:
+                  names = connection.getpeercert().get('subjectAltName', ())
+                  assert ('DNS', 'nexus.minocc.top') in names
+                  print('Control TLS without SNI: valid certificate chain and expected domain; protocol:', connection.version())
+          PY
           wait "$capture" || true
           cat ingress.txt
