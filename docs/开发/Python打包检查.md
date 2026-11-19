@@ -25,3 +25,7 @@ Scout 主分支的原生打包全部成功后，在 Scout 仓库运行 `Publish 
 `scripts/publish-scout-release.py` 先验证官方清单的版本、源码 SHA、build_id、三平台、应用与运行时/浏览器层依赖及所有 ZIP 的长度与 SHA256，然后发布不可变版本目录。已发布的版本不可更换 build_id，禁止降级；校验完成才原子切换根清单，入口 bootstrap 同步更新。可重复运行同一版本。下载、校验或传输失败不会提前更新根清单，失败的 incoming 目录保留供排查。
 
 部署后核对公开清单版本和 build_id，再通过 MCP `scout_release_meta` 验证 Nexus 返回的安装版本；不能只凭 GitHub 最新 tag 或清单地址返回 200 宣称分发已更新。
+
+公网 TLS 入口需从外部验证。2026-11-19 的排查确认 443 在公网被重置而已配置的 8443 可达；新的 Scout 分发清单使用 8443 资产地址。服务器 localhost 健康检查成功不能替代公网可达性；`continue-on-error` 的公网检查失败也不能写成“所有部署检查通过”。
+
+Agent workflow 初始化的 `scope` 是业务入参，转发层必须保留；不能沿用旧 case-selection 范围过滤而将它丢弃。

@@ -571,6 +571,9 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
     for name in names:
         url = url.replace("{" + name + "}", str(args.get(name)))
     rest = {k: v for k, v in args.items() if k not in names and k not in ("project_id", "module", "modules", "ordinal", "scope", "scope_revision", "all_cases", "intent") and v not in (None, "")}
+    if spec.get("id") == "agent.workflow.init":
+        # Workflow scope is business input, not the legacy case-selection scope.
+        rest["scope"] = args["scope"]
     if spec.get('id') in {'cli.query', 'cli.execute'}:
         rest = {key: value for key, value in rest.items() if key in props}
     if spec.get('id') == 'case.api':

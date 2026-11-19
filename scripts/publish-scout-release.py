@@ -77,7 +77,7 @@ def validate(source, tag):
 def publish(source, destination, tag, public_url):
     manifest, files = validate(source, tag)
     source, destination = Path(source).resolve(), Path(destination).resolve()
-    if not re.fullmatch(r"https://[A-Za-z0-9.-]+/scout-release", public_url):
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::8443)?/scout-release", public_url):
         raise ValueError("invalid_public_release_url")
     destination.mkdir(parents=True, exist_ok=True)
     current = destination / "manifest.json"
@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--destination")
-    parser.add_argument("--public-url", default="https://nexus.minocc.top/scout-release")
+    parser.add_argument("--public-url", default="https://nexus.minocc.top:8443/scout-release")
     args = parser.parse_args()
     if args.destination:
         publish(args.source, args.destination, args.release_tag, args.public_url)
