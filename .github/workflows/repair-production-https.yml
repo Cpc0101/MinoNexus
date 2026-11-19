@@ -1,0 +1,55 @@
+name: Repair production HTTPS listeners
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-tencent-nexus
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    env:
+      TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+      TENCENT_USER: ${{ vars.TENCENT_USER }}
+      HOST_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure authenticated maintenance transport
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/repair
+          chmod 600 ~/.ssh/repair
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          test "$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')" = "$HOST_FINGERPRINT"
+      - name: Normalize listeners and validate HTTPS with rollback
+        run: |
+          scp -i ~/.ssh/repair -o BatchMode=yes scripts/normalize-production-listeners.py "$TENCENT_USER@$TENCENT_HOST:/tmp/mino-normalize-listeners-$GITHUB_RUN_ID.py"
+          ssh -i ~/.ssh/repair -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" "bash -s -- '$GITHUB_RUN_ID'" <<'SH'
+          set -Eeuo pipefail
+          config=$(readlink -f /etc/nginx/sites-enabled/mino)
+          backup="${config}.mino-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+          cp -p "$config" "$backup"
+          rollback() {
+            trap - ERR
+            cp -p "$backup" "$config"
+            nginx -t && systemctl reload nginx
+            exit 1
+          }
+          trap rollback ERR
+          python3 "/tmp/mino-normalize-listeners-$1.py" "$config"
+          nginx -t
+          systemctl reload nginx
+          curl --fail --silent --show-error --max-time 15 --resolve nexus.minocc.top:443:127.0.0.1 https://nexus.minocc.top/health
+          curl --fail --silent --show-error --max-time 15 --resolve workbench.minocc.top:443:127.0.0.1 https://workbench.minocc.top/BUILD.json
+          ss -lnt '( sport = :443 )'
+          echo "Nginx backup: $backup"
+          rm -f "/tmp/mino-normalize-listeners-$1.py"
+          SH
+      - name: Verify standard public Nexus HTTPS
+        run: curl --fail --silent --show-error --max-time 20 https://nexus.minocc.top/health
