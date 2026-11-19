@@ -7,13 +7,16 @@ on:
         description: Released Nexus version, with or without the leading v
         required: true
         type: string
-      source_overlay:
-        description: Reuse the live Nexus base image and transfer only the package source
-        required: false
-        default: false
-        type: boolean
+      image_tag:
+        description: Immutable TCR tag, formatted as VERSION-FULL_GIT_SHA
+        required: true
+        type: string
     secrets:
       TENCENT_SSH_PRIVATE_KEY:
+        required: true
+      TCR_USERNAME:
+        required: true
+      TCR_PASSWORD:
         required: true
   workflow_dispatch:
     inputs:
@@ -21,15 +24,13 @@ on:
         description: Released Nexus version, with or without the leading v
         required: true
         type: string
-      source_overlay:
-        description: Reuse the live Nexus base image and transfer only the package source
-        required: false
-        default: false
-        type: boolean
+      image_tag:
+        description: Immutable TCR tag, formatted as VERSION-FULL_GIT_SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
-  packages: read
 
 concurrency:
   group: deploy-tencent-nexus
@@ -45,6 +46,8 @@ env:
   MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL || 'https://nexus.minocc.top' }}
   MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top' }}
   MINO_SCOUT_MANIFEST_URL: ${{ vars.MINO_SCOUT_MANIFEST_URL || 'https://nexus.minocc.top/scout-release/manifest.json' }}
+  TCR_REGISTRY: hkccr.ccs.tencentyun.com
+  TCR_IMAGE: hkccr.ccs.tencentyun.com/mino/mino-nexus
 
 jobs:
   deploy:
@@ -55,12 +58,27 @@ jobs:
       - name: Validate deployment configuration
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+          TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
+          TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
         run: |
           set -euo pipefail
           version=${REQUESTED_VERSION#v}
+          image_tag=$REQUESTED_IMAGE_TAG
           case "$version" in
             ''|*[!0-9A-Za-z.+-]*) echo "Invalid version: $REQUESTED_VERSION" >&2; exit 1 ;;
           esac
+          if [ "$image_tag" = latest ]; then
+            echo 'Refusing to deploy the mutable latest image tag.' >&2
+            exit 1
+          fi
+          image_sha=${image_tag#"$version-"}
+          if [[ "$image_tag" != "$version-"* ]] || ! [[ "$image_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid immutable image tag for version $version: $image_tag" >&2
+            exit 1
+          fi
+          test -n "$TCR_USERNAME" || { echo 'Missing repository secret TCR_USERNAME' >&2; exit 1; }
+          test -n "$TCR_PASSWORD" || { echo 'Missing repository secret TCR_PASSWORD' >&2; exit 1; }
           test -n "$TENCENT_HOST" || { echo 'Missing repository variable TENCENT_HOST' >&2; exit 1; }
           test -n "$TENCENT_USER" || { echo 'Missing repository variable TENCENT_USER' >&2; exit 1; }
           if [ -n "$TENCENT_DEPLOY_DIR" ]; then
@@ -72,6 +90,7 @@ jobs:
           fi
           test -n "$TENCENT_HOST_KEY_FINGERPRINT" || { echo 'Missing repository variable TENCENT_HOST_KEY_FINGERPRINT' >&2; exit 1; }
           echo "NEXUS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "NEXUS_IMAGE_TAG=$image_tag" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -95,82 +114,29 @@ jobs:
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "docker version --format '{{.Server.Version}}' && docker compose version"
 
-      - name: Ensure Nexus image on Tencent
+      - name: Ensure immutable Nexus image on Tencent
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_OVERLAY: ${{ inputs.source_overlay || 'false' }}
+          TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
+          TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus:${NEXUS_VERSION}"
+          image="$TCR_IMAGE:$NEXUS_IMAGE_TAG"
           if ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
             "$TENCENT_USER@$TENCENT_HOST" "docker image inspect '$image' > /dev/null 2>&1"; then
             echo "Nexus image already exists on Tencent: $image"
             exit 0
           fi
 
-          if [ "$SOURCE_OVERLAY" = "true" ]; then
-            echo "Publishing $image by overlaying package source on the live Nexus container." >&2
-            archive=/tmp/mino-nexus-source.tar.gz
-            remote_archive="/tmp/mino-nexus-source-${NEXUS_VERSION}-${GITHUB_RUN_ID}.tar.gz"
-            trap 'rm -f "$archive"' EXIT
-            tar -C . -czf "$archive" mino_nexus
-            test -s "$archive"
-            scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$archive" \
-              "$TENCENT_USER@$TENCENT_HOST:$remote_archive"
-            ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
-              "$TENCENT_USER@$TENCENT_HOST" \
-              "bash -s -- '$image' '$NEXUS_VERSION' '$remote_archive'" <<'REMOTE'
-          set -euo pipefail
-          image=$1
-          version=$2
-          archive=$3
-          tmp=$(mktemp -d)
-          trap 'rm -rf "$tmp" "$archive"' EXIT
-          tar -xzf "$archive" -C "$tmp"
-          container=$(docker ps -q \
-            --filter label=com.docker.compose.project=mino-production \
-            --filter label=com.docker.compose.service=nexus | head -n 1)
-          test -n "$container" || {
-            echo "Cannot source-overlay $image: live Nexus container not found." >&2
-            exit 1
-          }
-          package_dir=/usr/local/lib/python3.12/site-packages/mino_nexus
-          docker exec "$container" test -d "$package_dir"
-          docker cp "$tmp/mino_nexus/." "$container:$package_dir/"
-          docker exec "$container" python -c \
-            'import mino_nexus, pathlib, sys; p=pathlib.Path(mino_nexus.__file__).parent/"VERSION"; v=p.read_text().strip(); assert v == sys.argv[1], (v, sys.argv[1])' \
-            "$version"
-          docker commit --change "LABEL org.opencontainers.image.version=$version" \
-            "$container" "$image" > /dev/null
-          docker run --rm --entrypoint python "$image" -c \
-            'import mino_nexus, pathlib, sys; p=pathlib.Path(mino_nexus.__file__).parent/"VERSION"; v=p.read_text().strip(); assert v == sys.argv[1], (v, sys.argv[1])' \
-            "$version"
-          REMOTE
-            echo "Published Nexus image with a source overlay: $image"
-            exit 0
-          fi
-
-          if printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
+          printf '%s' "$TCR_PASSWORD" | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
             "$TENCENT_USER@$TENCENT_HOST" "
               set -euo pipefail
-              trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-              docker login ghcr.io --username '$GITHUB_ACTOR' --password-stdin > /dev/null
-              timeout 3m docker pull --platform linux/amd64 '$image'
-            "; then
-            ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
-              "$TENCENT_USER@$TENCENT_HOST" "docker image inspect '$image' > /dev/null"
-            exit 0
-          fi
-
-          echo "Tencent could not pull from GHCR; transferring the image from the GitHub runner." >&2
-          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin > /dev/null
-          docker pull --platform linux/amd64 "$image"
-          docker save "$image" | gzip -1 | ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
-            "$TENCENT_USER@$TENCENT_HOST" "set -euo pipefail; gunzip | docker load"
+              trap 'docker logout $TCR_REGISTRY >/dev/null 2>&1 || true' EXIT
+              docker login '$TCR_REGISTRY' --username '$TCR_USERNAME' --password-stdin > /dev/null
+              timeout 10m docker pull --platform linux/amd64 '$image'
+            "
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
             "$TENCENT_USER@$TENCENT_HOST" "docker image inspect '$image' > /dev/null"
-          echo "Transferred Nexus image to Tencent from the GitHub runner: $image"
+          echo "Pulled immutable Nexus image on Tencent: $image"
 
       - name: Resolve deployment directory
         run: |
@@ -219,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "MINO_DEPLOY_SKIP_PULL=1 MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$TENCENT_DEPLOY_DIR'"
+            "MINO_DEPLOY_SKIP_PULL=1 MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$NEXUS_IMAGE_TAG' '$TENCENT_DEPLOY_DIR'"
 
       - name: Verify deployment from Tencent
         run: |
@@ -227,6 +193,9 @@ jobs:
           container_id=$(ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "cd '$TENCENT_DEPLOY_DIR' && docker compose ps -q nexus")
           test -n "$container_id" || { echo 'Nexus container is not running' >&2; exit 1; }
+          runtime_image=$(ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "docker inspect --format '{{.Config.Image}}' '$container_id'")
+          test "$runtime_image" = "$TCR_IMAGE:$NEXUS_IMAGE_TAG"
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' '$container_id'" > /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_NEXUS_PUBLIC_URL=$MINO_NEXUS_PUBLIC_URL" /tmp/nexus-runtime-env.txt

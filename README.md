@@ -2,7 +2,7 @@
 
 Nexus 与 Workbench 独立构建、独立部署。Nexus 提供 HTTP API 与 WebSocket；正式发布只产出腾讯云使用的 Linux AMD64 Docker 镜像，macOS 如需本地运行可从源码构建 wheel + launchd；Workbench 在自己的仓库构建静态文件并部署到静态站点或 CDN。Nexus wheel 和容器不包含、不构建、不托管 Workbench。旧原生安装器与在线自更新链路已移除，Scout 继续独立安装。
 
-腾讯云从 GHCR 拉取固定版本的 `linux/amd64` 镜像；后续 tag 不再生成 wheel、sdist、ARM64 镜像或离线镜像包。安装、Compose、升级、回滚及本地 wheel 构建步骤见 [部署手册](docs/github-updates.md)。
+GitHub tag 触发 CNB 构建 `linux/amd64` 镜像并推送到腾讯云 TCR；腾讯云只拉取“版本号-full commit SHA”不可变标签，不使用 `latest`。后续 tag 不再生成 wheel、sdist、ARM64 镜像或离线镜像包。安装、Compose、升级、回滚及本地 wheel 构建步骤见 [部署手册](docs/github-updates.md)。
 
 ```sh
 pipx install ./mino_nexus-X.Y.Z-py3-none-any.whl

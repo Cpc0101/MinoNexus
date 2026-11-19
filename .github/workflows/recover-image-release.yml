@@ -1,87 +1,89 @@
-name: Recover image release
+name: Recover CNB image release
+
 on:
-  push:
-    branches: [main]
-    paths: ['.github/release-image-recovery.json']
   workflow_dispatch:
+    inputs:
+      version:
+        description: Released Nexus version, with or without the leading v
+        required: true
+        type: string
+      commit:
+        description: Full commit SHA for the existing version tag
+        required: true
+        type: string
+
 permissions:
-  actions: read
-  contents: write
-  packages: write
+  contents: read
+
 concurrency:
-  group: recover-image-release
+  group: recover-cnb-image-release
   cancel-in-progress: false
+
+env:
+  CNB_REPOSITORY: MinoNexusCI/mino-nexus-ci
+
 jobs:
-  publish:
+  recover:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Validate original release and build
+      - name: Validate release identity
         env:
-          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_COMMIT: ${{ inputs.commit }}
         run: |
-          python - <<'PYTHON'
-          import json, os, re, subprocess
-          from pathlib import Path
-          request = json.loads(Path('.github/release-image-recovery.json').read_text())
-          tag = request['release_tag']
-          run_id = request['source_run_id']
-          commit = request['source_commit']
-          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag)
-          assert isinstance(run_id, int) and run_id > 0
-          assert re.fullmatch(r'[0-9a-f]{40}', commit)
-          repository = os.environ['GITHUB_REPOSITORY']
-          original = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/actions/runs/{run_id}'], text=True))
-          assert original['head_sha'] == commit
-          assert original['head_branch'] == tag and original['event'] == 'push'
-          assert original['path'] == '.github/workflows/release-wheel.yml'
-          assert subprocess.check_output(['git', 'rev-parse', f'{tag}^{{commit}}'], text=True).strip() == commit
-          published = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'tagName,isDraft'], text=True))
-          assert published['tagName'] == tag and not published['isDraft']
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write(f'SOURCE_RUN_ID={run_id}\nRELEASE_TAG={tag}\nVERSION={tag[1:]}\n')
-          print(f'Reusing artifacts from {tag} ({commit[:7]}) run {run_id}')
-          PYTHON
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ env.SOURCE_RUN_ID }}
-          pattern: image-*
-          path: offline
-          merge-multiple: true
-      - name: Verify original image archives
-        working-directory: offline
+          set -euo pipefail
+          version=${REQUESTED_VERSION#v}
+          commit=${REQUESTED_COMMIT,,}
+          test "$(cat mino_nexus/VERSION)" = "$version"
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid full commit SHA: $REQUESTED_COMMIT" >&2
+            exit 1
+          fi
+          test "$(git rev-parse "v$version^{commit}")" = "$commit"
+          echo "IMAGE_TAG=$version-$commit" >> "$GITHUB_ENV"
+      - name: Rebuild image through CNB
+        env:
+          CNB_API_TOKEN: ${{ secrets.CNB_API_TOKEN }}
         run: |
-          for arch in amd64 arm64; do
-            test -f "mino-nexus-$VERSION-linux-$arch.tar.gz"
-            sha256sum --check "SHA256SUMS-linux-$arch.txt"
-          done
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish existing images
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mino-nexus"
-          for arch in amd64 arm64; do
-            gunzip -c "offline/mino-nexus-$VERSION-linux-$arch.tar.gz" | docker load
-            pushed=false
-            for attempt in 1 2 3; do
-              if docker push "$image:$VERSION-$arch"; then
-                pushed=true
-                break
-              fi
-              if [ "$attempt" -lt 3 ]; then sleep 5; fi
-            done
-            test "$pushed" = true
-          done
-          docker manifest create "$image:$VERSION" "$image:$VERSION-amd64" "$image:$VERSION-arm64"
-          docker manifest push "$image:$VERSION"
-      - uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: offline/*
-          fail_on_unmatched_files: true
+          set -euo pipefail
+          test -n "$CNB_API_TOKEN" || { echo 'Missing repository secret CNB_API_TOKEN' >&2; exit 1; }
+          sha=${IMAGE_TAG##*-}
+          request=$(jq -n \
+            --arg branch main \
+            --arg event api_trigger \
+            --arg sha "$sha" \
+            --arg source_ref "refs/tags/v${IMAGE_TAG%-*}" \
+            --arg title "Recover MinoNexus $IMAGE_TAG" \
+            '{
+              branch: $branch,
+              event: $event,
+              sha: $sha,
+              env: {SOURCE_SHA: $sha, SOURCE_REF: $source_ref},
+              sync: true,
+              title: $title
+            }')
+          response=$(curl --fail-with-body --silent --show-error \
+            --max-time 120 \
+            --request POST \
+            --url "https://api.cnb.cool/$CNB_REPOSITORY/-/build/start" \
+            --header 'Accept: application/vnd.cnb.api+json' \
+            --header "Authorization: $CNB_API_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data "$request")
+          success=$(printf '%s' "$response" | jq -r '.success // .data.success // false')
+          test "$success" = true
+          sn=$(printf '%s' "$response" | jq -r '.sn // .data.sn // empty')
+          build_url=$(printf '%s' "$response" | jq -r '.url // .buildUrl // .data.url // .data.buildUrl // empty')
+          test -n "$sn" || { echo 'CNB build response did not contain a build SN.' >&2; exit 1; }
+          echo "CNB recovery build triggered: $sn"
+          test -z "$build_url" || echo "CNB build URL: $build_url"
+          echo "CNB_BUILD_SN=$sn" >> "$GITHUB_ENV"
+          echo "CNB recovered immutable image tag: $IMAGE_TAG"
+
+      - name: Wait for CNB recovery build
+        env:
+          CNB_API_TOKEN: ${{ secrets.CNB_API_TOKEN }}
+        run: bash .github/scripts/wait-for-cnb-build.sh

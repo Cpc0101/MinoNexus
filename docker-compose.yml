@@ -1,7 +1,7 @@
 name: mino-production
 services:
   nexus:
-    image: ghcr.io/cpc0101/mino-nexus:${MINO_NEXUS_VERSION:?Set an explicit released version, such as 0.1.53}
+    image: hkccr.ccs.tencentyun.com/mino/mino-nexus:${MINO_NEXUS_IMAGE_TAG:?Set an explicit immutable image tag, such as 0.1.53-<full-commit-sha>}
     build:
       context: .
     ports:

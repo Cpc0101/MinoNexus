@@ -7,7 +7,7 @@ Workbench 构建时用 `VITE_NEXUS_URL` 指向 Nexus。跨域部署时，Nexus �
 ## 构建和发布
 
 - Nexus 的 main push、PR 和手动 CI：只运行 Nexus 自身的静态检查，不构建或上传发布包，不 checkout Workbench，也不需要读取 Workbench 私有仓库的令牌。
-- Nexus 的 `v*` tag：先校验 tag 与 `mino_nexus/VERSION` 一致，再构建并推送腾讯云所需的 `linux/amd64` 镜像；不生成 wheel、sdist、ARM64 镜像、离线镜像包或 GitHub Release 附件。
+- Nexus 的 `v*` tag：先校验 tag 与 `mino_nexus/VERSION` 一致，再由 GitHub Actions 以精确 commit SHA 触发 CNB。CNB 构建并推送腾讯云 TCR 所需的 `linux/amd64` 镜像；不生成 wheel、sdist、ARM64 镜像、离线镜像包或 GitHub Release 附件。
 - Workbench 的 main push、PR 和手动运行：在 Workbench 仓库执行前端检查、构建，并按自己的静态部署流程发布；v* tag 独立发布静态压缩包。
 - Nexus 的 `BUILD.json` 只记录 Nexus 版本、源码 commit 与 dirty 状态，不记录 Workbench build ID。两端发布版本可独立演进，不要求 tag 同步。
 
@@ -33,7 +33,7 @@ B4 启动前自动备份按用户要求暂缓；不存在“每次启动已自�
 在 `docker-compose.yml` 所在目录设置实际发布的固定版本：
 
 ```sh
-export MINO_NEXUS_VERSION=X.Y.Z
+export MINO_NEXUS_IMAGE_TAG=X.Y.Z-<full-commit-sha>
 # 默认仅向宿主本机发布 50104，由同机反向代理对外提供 HTTPS。
 docker compose pull
 docker compose up -d
@@ -49,7 +49,7 @@ AI 配置通过 Workbench 按账号保存，不从 `MINO_AI_API_KEY` 等旧环�
 
 升级：停写并备份数据卷，修改固定 tag，再 `docker compose pull && docker compose up -d`。回滚：改回原 tag 后重建容器；需要恢复数据时先确认影响。不要执行 `docker compose down -v`，它会删除业务卷。同一卷只能供单个 Nexus 进程使用，启动锁会拒绝第二个新进程。
 
-正式发布不再生成离线镜像包。腾讯云通过 GHCR 拉取固定的 `X.Y.Z` 标签；需要离线安装时应从该镜像自行执行 `docker save` 并在目标机 `docker load`。
+正式发布不再生成离线镜像包。腾讯云从 TCR 拉取固定且不可变的 `X.Y.Z-<full-commit-sha>` 标签；需要离线安装时应从该镜像自行执行 `docker save` 并在目标机 `docker load`。
 
 ## 旧安装迁移
 
