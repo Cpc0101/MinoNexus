@@ -1,0 +1,67 @@
+name: Inspect production HTTPS
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    env:
+      TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+      TENCENT_USER: ${{ vars.TENCENT_USER }}
+      HOST_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+    steps:
+      - name: Configure authenticated read-only inspection
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/inspect
+          chmod 600 ~/.ssh/inspect
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          test "$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')" = "$HOST_FINGERPRINT"
+      - name: Compare HTTPS configuration and deployment backups
+        run: |
+          ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" 'python3 -' <<'PY'
+          import difflib, pathlib, re, subprocess
+          result = subprocess.run(['nginx', '-T'], capture_output=True, text=True)
+          print('NGINX config exit:', result.returncode)
+          allowed = re.compile(r'^\s*(listen |server_name |ssl_(?:certificate |protocols |ciphers |reject_handshake |conf_command )|root |alias |proxy_pass |return |location )')
+          for line in result.stdout.splitlines():
+              if line.startswith('# configuration file') or allowed.search(line):
+                  print(line)
+          config = pathlib.Path('/etc/nginx/sites-enabled/mino').resolve()
+          if config.is_file():
+              print('Current config:', config, 'mtime:', config.stat().st_mtime)
+              for backup in sorted(config.parent.glob(config.name + '.mino-backup-*'))[-8:]:
+                  print('Backup:', backup, 'mtime:', backup.stat().st_mtime)
+                  old, new = backup.read_text().splitlines(), config.read_text().splitlines()
+                  for line in difflib.unified_diff(old, new, fromfile=backup.name, tofile=config.name):
+                      if line.startswith(('---', '+++', '@@')) or allowed.search(line.lstrip('+- ')):
+                          print(line)
+          for path in ('/etc/letsencrypt/live/nexus.minocc.top/fullchain.pem',):
+              if pathlib.Path(path).is_file():
+                  subprocess.run(['openssl', 'x509', '-in', path, '-noout', '-subject', '-issuer', '-dates', '-fingerprint', '-sha256', '-ext', 'subjectAltName'])
+          print('TCP capture available:', subprocess.run(['sh', '-c', 'command -v tcpdump'], capture_output=True, text=True).stdout.strip())
+          for host, path in [('nexus.minocc.top', '/health'), ('workbench.minocc.top', '/BUILD.json')]:
+              probe = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--max-time', '10', '--resolve', host+':443:127.0.0.1', 'https://'+host+path], capture_output=True, text=True)
+              print('Local verified TLS:', host, 'exit:', probe.returncode, 'body:', probe.stdout[:1200], 'error:', probe.stderr[:300])
+          PY
+      - name: Trace standard HTTPS requests at ingress
+        run: |
+          set -euo pipefail
+          client_ip=$(curl --fail --silent --show-error --max-time 10 https://api.ipify.org)
+          [[ "$client_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "timeout 20 tcpdump -l -n -tttt -i any 'tcp port 443 and host $client_ip'" > ingress.txt 2>&1 &
+          capture=$!
+          sleep 2
+          for host in nexus.minocc.top workbench.minocc.top; do
+            echo "Verified public TLS request: $host"
+            curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\n' "https://$host/health" || true
+          done
+          wait "$capture" || true
+          cat ingress.txt
