@@ -174,7 +174,7 @@ def _account(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, An
 
 def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
     from mino_nexus.loop.script_runtime import ScriptAbort
-    from mino_nexus.resources.accounts.lease import lease_script_account
+    from mino_nexus.resources.accounts.lease import current_lease_is_active, lease_script_account
     from mino_nexus.resources.account_data import validate_data_need, record_request
 
     data_need = validate_data_need(params.get("data_need", ""))
@@ -191,6 +191,8 @@ def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[st
         selected_case["account_requirements"] = explicit
     # The allocator validates a restored lease against the requested clauses.
     row = dict(getattr(admission.ctx, "picked_account", None) or {})
+    if str(row.get("id") or row.get("account_id") or "").strip() and not current_lease_is_active(admission.ctx):
+        raise ScriptAbort("当前账号租约已失效，停止返回缓存凭据", reason_code="resource_account_missing")
     if explicit is not None or data_requirements or not str(row.get("id") or row.get("account_id") or "").strip():
         leased, err = lease_script_account(admission.ctx, selected_case)
         row = dict(leased or {})

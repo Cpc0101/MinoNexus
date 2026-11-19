@@ -225,12 +225,14 @@ def _pick_row(
     platform: str,
     target_id: str,
     run_id: str,
+    surface: str = "",
     holder_sn: str = "",
     prompt: str = "",
     observed_by_account: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     surface = resolve_surface_id(
         env_doc,
+        surface=surface,
         platform=platform,
         target_id=target_id,
         prompt=prompt,
@@ -783,6 +785,7 @@ def _lease_for_context(
         app_id=str(getattr(ctx, "app_id", "") or ""),
         requirements=requirements,
         env_profile=env_profile,
+        surface=str(getattr(ctx, "env_surface", "") or ""),
         platform=platform,
         target_id=target_id,
         run_id=run_id,

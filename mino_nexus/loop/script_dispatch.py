@@ -49,19 +49,21 @@ def dispatch_script_case(
         project_error = str(exc)
     project_id = str(project_id or getattr(ctx, "project_id", "") or case.get("project_id") or "")
     try:
+        from mino_nexus.casework import run_store as _rs
+
+        doc = _rs.get(run_id) or {}
+        ctx.env_profile = str(doc.get("env_profile") or getattr(ctx, "env_profile", "") or "test")
+        target = (doc.get("device_targets") or {}).get(sn) or {}
+        ctx.env_surface = str(target.get("target_surface", doc.get("env_surface")) or "")
+    except Exception:
+        doc = {}
+    try:
         from mino_nexus.resources.accounts.lease import restore_lease_for_run
 
         if not project_error:
             restore_lease_for_run(ctx, run_id)
     except Exception as exc:
         SLog.w(TAG, f"restore lease failed case={cid}: {exc!r}")
-    try:
-        from mino_nexus.casework import run_store as _rs
-
-        doc = _rs.get(run_id) or {}
-        ctx.env_profile = str(doc.get("env_profile") or getattr(ctx, "env_profile", "") or "test")
-    except Exception:
-        doc = {}
     # Persist admission before the short ACK. Long execution belongs to Scout.
     from mino_nexus.resources.node_registry import get_registry
     node, _ = get_registry().resolve(sn)

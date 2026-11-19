@@ -83,6 +83,13 @@ def restore_admission(node_id: str, session_id: str):
                                 provider_id=data.get("provider_id", ""), target_package=data.get("package", ""))
         ctx.session_id, ctx.case_id, ctx.scout_run_id = session_id, row["case_id"], session_id
         ctx.project_id, ctx.env_profile = data.get("project_id", ""), data.get("env_profile", "test")
+        ctx.env_surface = str(data.get("env_surface") or "")
+        if "env_surface" not in data:
+            # Older admissions can recover the selected channel from their owner's task.
+            from mino_nexus.casework import run_store
+            doc = run_store.get(row["task_id"]) or {}
+            target = (doc.get("device_targets") or {}).get(row["sn"]) or {}
+            ctx.env_surface = str(target.get("target_surface", doc.get("env_surface")) or "")
         from mino_nexus.resources.accounts.lease import restore_lease_for_run
         restore_lease_for_run(ctx, row["task_id"])
         admission = ScriptAdmission(run_id=row["task_id"], session_id=session_id, case_id=row["case_id"],
@@ -119,7 +126,7 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
     row = records.register(node_id=node.node_id, payload=payload, context={
         "resource_request": resource_request,
         "app_id": app_id, "project_id": project_id, "package": package,
-        "provider_id": provider_id, "env_profile": ctx.env_profile,
+        "provider_id": provider_id, "env_profile": ctx.env_profile, "env_surface": ctx.env_surface,
         "case": {key: case[key] for key in ("case_id", "account_requirements", "account_template_id", "template_id") if key in case},
         "device_hint": {**_device_hint(node, sn, platform, ctx.env_profile, app_id, project_id),
                         **({"app_key": doc["debug_app_key"]} if doc.get("execution_kind") == "debug" else {})},

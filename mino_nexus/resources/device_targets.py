@@ -20,7 +20,10 @@ def target_channel(app: dict, row: dict, *, surface="", profile="", env_doc=None
     owned = [c for c in channels if c.get("app_id") == app.get("id")]
     if owned:
         channels = owned
-    chosen = surface or str(cfg.get("env_surface") or "")
+    default = str(cfg.get("env_surface") or "")
+    if default and any(c.get("id") == default and c.get("platform") != row.get("platform") for c in channels):
+        default = ""  # A Web default does not select the iOS target of a mixed batch.
+    chosen = surface or default
     if chosen:
         channel = next((c for c in channels if c.get("id") == chosen), None)
         if channel is None:
@@ -104,6 +107,15 @@ def evaluate(row: dict, *, app: dict | None = None, surface="", profile="", head
             code, reason = "busy", "设备或共享桌面繁忙，请等待当前任务结束"
     out.update(executable=not bool(code), blocking_code=code, blocked_reason=reason)
     return out
+
+
+def bind_targets(app: dict, targets: dict[str, dict], *, profile: str, env_doc: dict) -> dict[str, dict]:
+    """Freeze each admitted channel's package without resolving a batch platform."""
+    from mino_nexus.resources.app_automation import package_for_app
+    return {sn: {**target, "target_package": package_for_app(
+        app, env_profile=profile, platform=target["platform"],
+        surface=str(target.get("target_surface") or ""), env_doc=env_doc,
+    )} for sn, target in targets.items()}
 
 
 def select(app: dict, sns: list[str], **kwargs) -> tuple[list[str], dict[str, dict]]:

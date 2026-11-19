@@ -15,6 +15,7 @@ from mino_nexus.resources.project_env import (
 
 DEFAULT_AUTOMATION: dict[str, Any] = {
     "env_profile": "test",
+    "env_surface": "",
     "execution_env": {"mode": "fixed", "profile": "test"},
     "skills": {
         "default": {"pre": [], "post": []},
@@ -158,6 +159,7 @@ def get_automation_config(app: dict, *, hydrate_cases: bool = True) -> dict[str,
     out = copy.deepcopy(DEFAULT_AUTOMATION)
     if raw.get("env_profile"):
         out["env_profile"] = raw["env_profile"]
+    out["env_surface"] = str(raw.get("env_surface") or "").strip()
     ex = raw.get("execution_env")
     if isinstance(ex, dict):
         out["execution_env"] = {
@@ -194,6 +196,10 @@ def save_automation_config(app: dict, config: dict[str, Any]) -> dict[str, Any]:
     current = get_automation_config(app, hydrate_cases=False)
     if config.get("env_profile"):
         current["env_profile"] = str(config["env_profile"]).strip() or "test"
+    if "env_surface" in config:
+        if not isinstance(config["env_surface"], str):
+            raise ValueError("env_surface_invalid")
+        current["env_surface"] = config["env_surface"].strip()
     if "execution_env" in config and isinstance(config["execution_env"], dict):
         current["execution_env"] = config["execution_env"]
         if config["execution_env"].get("profile"):

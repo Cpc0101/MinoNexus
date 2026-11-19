@@ -69,8 +69,6 @@ def mark_web_run_devices(
 
         body = run_store.get(rid) or {}
     pkg = str(package or body.get("package") or "").strip()
-    if not pkg:
-        return
     platforms = body.get("platforms_by_sn") if isinstance(body.get("platforms_by_sn"), dict) else {}
     sns = [str(x).strip() for x in (body.get("sns") or []) if str(x).strip()]
     head = str(body.get("sn") or "").strip()
@@ -81,9 +79,12 @@ def mark_web_run_devices(
         plat = str(platforms.get(sn) or "").strip().lower()
         if not is_web_slot(sn, plat or task_plat):
             continue
+        target_package = str(((body.get("device_targets") or {}).get(sn) or {}).get("target_package", pkg) or "")
+        if not target_package:
+            continue
         upsert_session(
             sn,
-            pkg,
+            target_package,
             session=sess,
             clear_binding=True,
             stale=sess == "unknown",

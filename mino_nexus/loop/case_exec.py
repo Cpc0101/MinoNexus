@@ -143,6 +143,9 @@ def _run_case_list(
             break
         cid = str(case.get("case_id") or "")
         sn = str(case.get("sn") or doc.get("sn") or "")
+        from mino_nexus.contract.execution.task_target import for_device
+        target = for_device(doc, sn)
+        package, platform = target["package"], target["platform"]
         from mino_nexus.platform.llm import dispatch_log
         dispatch_log.bind(task_id=run_id, case_id=cid, case_step_index=0,
                           session_id=str(case.get("report_run_id") or run_store.report_run_id(run_id, cid, sn=sn, coverage=str(case.get("coverage") or ""))))
@@ -250,12 +253,6 @@ def _run_case_list(
         if gaps:
 
             SLog.i("CaseRunner", f"resource preflight case={cid} " + "; ".join(gaps[:3]))
-        platform = str(
-            doc.get("platform")
-            or case.get("platform")
-            or (rk.get("platform") if isinstance(rk, dict) else "")
-            or "android"
-        )
         from mino_nexus.resources.device_resource_lease import (
             release_device_lease,
         )

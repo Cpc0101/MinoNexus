@@ -225,23 +225,17 @@ def run_cases(
         _repo = get_repo(project_id)
         repo_public_url, repo_branch = public_url(_repo.get("url") or ""), str(_repo.get("branch") or "")
 
-    plat_for_pkg = task_platform
-    if task_platform == "desktop":
-        native_os = device_targets[device_sns[0]]["os"]
-        plat_for_pkg = {"macos": "mac", "windows": "pc", "linux": "linux"}[native_os]
-        env_surface = device_targets[device_sns[0]].get("target_surface") or env_surface
     resolved_env = resolve_run_env_profile(
         env_doc,
         requested=str(env_profile or "").strip(),
         automation_default=str(cfg.get("env_profile") or "").strip(),
     )
-    env_surface_id = str(env_surface or "").strip()
-    package = aas.package_for_app(
-        app,
-        env_profile=resolved_env,
-        platform=plat_for_pkg,
-        surface=env_surface_id,
-    )
+    from mino_nexus.resources.device_targets import bind_targets
+    device_targets = bind_targets(app, device_targets, profile=resolved_env, env_doc=env_doc)
+    surfaces = {str(target.get("target_surface") or "") for target in device_targets.values()}
+    packages = {target["target_package"] for target in device_targets.values()}
+    env_surface_id = next(iter(surfaces)) if len(surfaces) == 1 else ""
+    package = next(iter(packages)) if len(packages) == 1 else ""
     playbook = aas.get_playbook(app)
     run_id = run_store.new_run_id()
     if targets:
@@ -288,6 +282,8 @@ def run_cases(
             for dsn in device_sns
             for i, c in enumerate(cases)
         ]
+    for seeded_case in seeded:
+        seeded_case["platform"] = platforms_by_sn[seeded_case["sn"]]
 
     from mino_nexus.resources.access_scope import require_owned_device
     for owned_sn in device_sns:
@@ -309,6 +305,8 @@ def run_cases(
         "repo_url": repo_public_url,
         "repo_branch": repo_branch,
         "environment_baseline_digest": digest({"profile": resolved_env, "surface": env_surface_id,
+            "targets": {dsn: {key: target.get(key) for key in ("target_platform", "target_surface", "target_package")}
+                        for dsn, target in device_targets.items()},
             "package": package, "environment": (env_doc.get("profiles") or {}).get(resolved_env),
             "channels": env_doc.get("channels") or []}),
         **({"execution_kind": "debug", "workspace": debug["workspace"], "debug_app_key": debug["app_key"], "debug_node_id": debug["node_id"], "debug_start_request": debug.get("request", {})} if debug else {}),

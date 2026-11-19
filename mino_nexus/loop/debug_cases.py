@@ -110,4 +110,6 @@ def resolve_origin(app_id, reference, revision, env_profile):
     if not summary.get("sealed") or summary.get("execution_stopped") is not True or summary.get("resource_isolated"):
         raise ValueError("debug_origin_stop_required")
     receipt = control(reference["session_id"], "checkpoint_get", {"checkpoint_id": reference["checkpoint_id"]})
+    if receipt.get("validation_contract") != "case_lifecycle.v1":
+        raise ValueError("debug_checkpoint_validation_required")
     return P.validate_debug_origin({key: receipt[key] for key in ("session_id", "checkpoint_id", "script_path", "workspace_hash", "script_hash", "stage")})
