@@ -42,6 +42,8 @@ jobs:
     needs: validate
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v5
+
       - name: Trigger CNB image build
         env:
           CNB_API_TOKEN: ${{ secrets.CNB_API_TOKEN }}
