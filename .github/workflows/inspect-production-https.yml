@@ -94,6 +94,32 @@ jobs:
                   for term in ['SSL_do_handshake', 'no suitable key share', 'no shared cipher', 'certificate', 'upstream', 'bind()', 'emerg']:
                       print('Recent nginx error count:', term, tail.count(term))
           PY
+      - name: Verify deployed frontend login asset integrity
+        run: |
+          ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" 'python3 -' <<'PY'
+          import datetime, hashlib, pathlib, re, subprocess
+          root = pathlib.Path('/var/www/mino-workbench')
+          for relative in ['index.html', 'BUILD.json', 'assets/LoginPage-D4YjBDnT.js']:
+              path = root / relative
+              print('Frontend file:', relative, 'exists:', path.is_file())
+              if path.is_file():
+                  print('Metadata:', path.stat().st_size, datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc).isoformat(), hashlib.sha256(path.read_bytes()).hexdigest())
+          if (root / 'index.html').is_file():
+              html = (root / 'index.html').read_text()
+              entries = re.findall(r'(?:src|href)=["\'](/assets/[^"\']+)["\']', html)
+              print('HTML asset entries:', entries)
+              for entry in entries:
+                  path = root / entry.lstrip('/')
+                  print('Entry exists:', entry, path.is_file())
+                  if path.is_file() and path.suffix == '.js':
+                      text = path.read_text()
+                      login = re.findall(r'LoginPage-[A-Za-z0-9_-]+\.js', text)
+                      print('Entry login imports:', login)
+                      print('Missing relative JS imports:', sorted({name for name in re.findall(r'["\']\./([^"\']+\.js)["\']', text) if not (path.parent / name).is_file()}))
+          for relative in ['/login', '/assets/LoginPage-D4YjBDnT.js']:
+              probe = subprocess.run(['curl', '--silent', '--show-error', '--max-time', '10', '--resolve', 'workbench.minocc.top:443:127.0.0.1', '--output', '/dev/null', '--write-out', '%{http_code} %{content_type} %{size_download}', 'https://workbench.minocc.top'+relative], capture_output=True, text=True)
+              print('Frontend verified TLS:', relative, 'exit:', probe.returncode, 'result:', probe.stdout, 'error:', probe.stderr[:300])
+          PY
       - name: Trace standard HTTPS requests at ingress
         run: |
           set -euo pipefail
