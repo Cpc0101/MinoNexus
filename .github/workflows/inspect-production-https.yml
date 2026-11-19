@@ -54,6 +54,46 @@ jobs:
               probe = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--max-time', '10', '--resolve', host+':443:127.0.0.1', 'https://'+host+path], capture_output=True, text=True)
               print('Local verified TLS:', host, 'exit:', probe.returncode, 'body:', probe.stdout[:1200], 'error:', probe.stderr[:300])
           PY
+      - name: Audit host proxy and filtering configuration
+        run: |
+          ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" 'python3 -' <<'PY'
+          import datetime, hashlib, pathlib, re, subprocess
+          def run(args):
+              result = subprocess.run(args, capture_output=True, text=True, timeout=20)
+              print('Command:', args, 'exit:', result.returncode)
+              print(result.stdout[:16000], result.stderr[:1500])
+              return result
+          config = subprocess.run(['nginx', '-T'], capture_output=True, text=True)
+          allowed = re.compile(r'^\s*(listen |server_name |ssl_|proxy_|return |root |alias |location |map |if |set |rewrite |access_log |error_log )')
+          for line in config.stdout.splitlines():
+              if allowed.search(line):
+                  print('[redacted credential directive]' if re.search(r'authorization|password|token|secret', line, re.I) else line)
+          run(['ss', '-lntp'])
+          run(['systemctl', 'show', 'nginx', '--property=ActiveEnterTimestamp,ExecMainStartTimestamp,ExecStart,FragmentPath'])
+          for args in [['iptables-save'], ['nft', 'list', 'ruleset'], ['ufw', 'status', 'verbose']]:
+              try:
+                  run(args)
+              except FileNotFoundError:
+                  print('Unavailable:', args[0])
+          containers = subprocess.run(['docker', 'ps', '--filter', 'label=com.docker.compose.service=nexus', '--format', '{{.ID}}'], capture_output=True, text=True).stdout.split()
+          for container in containers:
+              run(['docker', 'inspect', '--format', '{{.Config.Image}} {{json .NetworkSettings.Ports}}', container])
+          certificate = '/etc/letsencrypt/live/nexus.minocc.top/fullchain.pem'
+          key = '/etc/letsencrypt/live/nexus.minocc.top/privkey.pem'
+          for path in [certificate, key]:
+              p = pathlib.Path(path).resolve()
+              print('TLS file metadata:', p, datetime.datetime.fromtimestamp(p.stat().st_mtime, datetime.timezone.utc).isoformat())
+          cert_public = subprocess.run(['openssl', 'x509', '-in', certificate, '-pubkey', '-noout'], capture_output=True, check=True).stdout
+          key_public = subprocess.run(['openssl', 'pkey', '-in', key, '-pubout'], capture_output=True, check=True).stdout
+          print('Certificate and private key public components match:', cert_public == key_public)
+          print('TLS public key SHA256:', hashlib.sha256(cert_public).hexdigest())
+          for log in ['/var/log/nginx/error.log']:
+              p = pathlib.Path(log)
+              if p.is_file():
+                  tail = subprocess.run(['tail', '-n', '500', log], capture_output=True, text=True).stdout
+                  for term in ['SSL_do_handshake', 'no suitable key share', 'no shared cipher', 'certificate', 'upstream', 'bind()', 'emerg']:
+                      print('Recent nginx error count:', term, tail.count(term))
+          PY
       - name: Trace standard HTTPS requests at ingress
         run: |
           set -euo pipefail
