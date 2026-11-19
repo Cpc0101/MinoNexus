@@ -17,3 +17,11 @@ Nexus 0.1.90 修复发布检查发现的 20 处延迟导入错误。根因是旧
 五项 Python 构建门禁通过。wheel 与 sdist 在隔离构建环境生成，临时安装 wheel 后再次核验全量延迟导入及应用路由装配。临时回归覆盖退役接口 410、历史用例显示、不修改已存计划、pending 预览不伪装成功，以及前置计划生成拒绝。
 
 账号范围通过 Python HTTP/SQLite 验证：增改查、跨项目拒绝、无目标应用时仅选通用账号、范围不匹配拒绝领取、租约期间拒绝改范围、并发改范围防护、自动生成账号范围。文件数据库验证 schema 12 升级前备份及 schema 13 重复迁移。所有验证使用临时数据；未做线上业务或真实 UI 验收。Workbench 0.0.61 发布检查通过。
+
+## Scout 静态下载分发
+
+Scout 主分支的原生打包全部成功后，在 Scout 仓库运行 `Publish verified native artifacts`，`run_id` 指向该次主分支打包。正式 tag 发布完成后，在 Nexus 仓库运行 `Publish Scout distribution`，传入相同 `release_tag`。该流程复用部署 SSH 身份和固定主机指纹，无需把服务器密钥复制到 Scout 仓库。
+
+`scripts/publish-scout-release.py` 先验证官方清单的版本、源码 SHA、build_id、三平台、应用与运行时/浏览器层依赖及所有 ZIP 的长度与 SHA256，然后发布不可变版本目录。已发布的版本不可更换 build_id，禁止降级；校验完成才原子切换根清单，入口 bootstrap 同步更新。可重复运行同一版本。下载、校验或传输失败不会提前更新根清单，失败的 incoming 目录保留供排查。
+
+部署后核对公开清单版本和 build_id，再通过 MCP `scout_release_meta` 验证 Nexus 返回的安装版本；不能只凭 GitHub 最新 tag 或清单地址返回 200 宣称分发已更新。

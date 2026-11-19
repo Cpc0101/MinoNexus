@@ -1,0 +1,76 @@
+name: Publish Scout distribution
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Verified Scout release tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-scout-distribution
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+      TENCENT_USER: ${{ vars.TENCENT_USER }}
+      TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download and validate complete native release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release download "$RELEASE_TAG" --repo Cpc0101/MinoScout --dir dist \
+            --pattern '*.zip' --pattern manifest.json --pattern bootstrap.sh --pattern bootstrap.ps1
+          python3 scripts/publish-scout-release.py --source dist --release-tag "$RELEASE_TAG"
+          bash -n dist/bootstrap.sh
+      - name: Configure authenticated deployment transport
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$TENCENT_HOST" && test -n "$TENCENT_USER" && test -n "$TENCENT_HOST_KEY_FINGERPRINT"
+          test -n "$DEPLOY_SSH_KEY"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/mino-scout-deploy
+          chmod 600 ~/.ssh/mino-scout-deploy
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
+      - name: Publish immutable packages and switch manifest
+        run: |
+          set -euo pipefail
+          incoming="/var/www/scout-release/.incoming-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          transport=(ssh -i ~/.ssh/mino-scout-deploy -o BatchMode=yes)
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "mkdir -p '$incoming'"
+          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes -r dist/. \
+            "$TENCENT_USER@$TENCENT_HOST:$incoming/"
+          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes scripts/publish-scout-release.py \
+            "$TENCENT_USER@$TENCENT_HOST:$incoming/publish.py"
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
+            "python3 '$incoming/publish.py' --source '$incoming' --release-tag '$RELEASE_TAG' --destination /var/www/scout-release"
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
+            "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:443:127.0.0.1 https://nexus.minocc.top/scout-release/manifest.json" > published.json
+          python3 - <<'PY'
+          import json, os
+          expected = json.load(open('dist/manifest.json'))
+          actual = json.load(open('published.json'))
+          assert actual['version'] == os.environ['RELEASE_TAG'][1:]
+          assert actual['build_id'] == expected['build_id']
+          assert actual['source_commit'] == expected['source_commit']
+          print('Verified Scout distribution:', actual['version'], actual['build_id'])
+          PY
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "rm -rf '$incoming'"

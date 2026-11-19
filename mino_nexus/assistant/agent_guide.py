@@ -19,7 +19,9 @@ def _workbench() -> dict[str, str]:
         url = ""
     return {
         "url": url,
-        "login_failure": "无法连接服务器",
+        "configuration_status": "configured" if url else "unconfigured",
+        "connection_status": "not_checked",
+        "login_failure_message": "无法连接服务器",
     }
 
 
