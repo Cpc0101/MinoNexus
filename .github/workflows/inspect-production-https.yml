@@ -93,6 +93,9 @@ jobs:
                   tail = subprocess.run(['tail', '-n', '500', log], capture_output=True, text=True).stdout
                   for term in ['SSL_do_handshake', 'no suitable key share', 'no shared cipher', 'certificate', 'upstream', 'bind()', 'emerg']:
                       print('Recent nginx error count:', term, tail.count(term))
+                  for line in tail.splitlines():
+                      if 'upstream' in line:
+                          print('Upstream error timestamp and cause:', line.split(', client:', 1)[0])
           PY
       - name: Verify deployed frontend login asset integrity
         run: |
