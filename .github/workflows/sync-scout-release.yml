@@ -56,7 +56,7 @@ jobs:
           incoming="/var/www/scout-release/.incoming-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           transport=(ssh -i ~/.ssh/mino-scout-deploy -o BatchMode=yes)
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "mkdir -p '$incoming'"
-          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes -r dist/. \
+          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes dist/*.zip dist/manifest.json dist/bootstrap.sh dist/bootstrap.ps1 \
             "$TENCENT_USER@$TENCENT_HOST:$incoming/"
           scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes scripts/publish-scout-release.py \
             "$TENCENT_USER@$TENCENT_HOST:$incoming/publish.py"
