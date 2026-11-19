@@ -54,15 +54,14 @@ jobs:
           request=$(jq -n \
             --arg branch main \
             --arg event api_trigger \
-            --arg sha "$sha" \
+            --arg source_sha "$sha" \
             --arg source_ref "refs/tags/v${IMAGE_TAG%-*}" \
             --arg title "Recover MinoNexus $IMAGE_TAG" \
-            --arg sync true \
+            --arg sync false \
             '{
               branch: $branch,
               event: $event,
-              sha: $sha,
-              env: {SOURCE_SHA: $sha, SOURCE_REF: $source_ref},
+              env: {SOURCE_SHA: $source_sha, SOURCE_REF: $source_ref},
               sync: $sync,
               title: $title
             }')
