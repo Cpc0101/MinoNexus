@@ -229,8 +229,7 @@ jobs:
           print(f'Production Nexus is healthy at version {actual}')
           PY
 
-      - name: Probe public endpoints from GitHub runner
-        continue-on-error: true
+      - name: Verify public endpoints from GitHub runner
         run: |
           set -euo pipefail
           for url in "$MINO_NEXUS_HEALTH_URL" "$MINO_SCOUT_MANIFEST_URL" "$MINO_WORKBENCH_URL"; do
