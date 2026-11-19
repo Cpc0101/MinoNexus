@@ -26,13 +26,17 @@ jobs:
       - name: Compare HTTPS configuration and deployment backups
         run: |
           ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" 'python3 -' <<'PY'
-          import difflib, pathlib, re, subprocess
+          import datetime, difflib, hashlib, pathlib, re, subprocess
           result = subprocess.run(['nginx', '-T'], capture_output=True, text=True)
           print('NGINX config exit:', result.returncode)
           allowed = re.compile(r'^\s*(listen |server_name |ssl_(?:certificate |protocols |ciphers |reject_handshake |conf_command )|root |alias |proxy_pass |return |location )')
           for line in result.stdout.splitlines():
               if line.startswith('# configuration file') or allowed.search(line):
                   print(line)
+              if line.startswith('# configuration file '):
+                  path = pathlib.Path(line.removeprefix('# configuration file ').removesuffix(':'))
+                  if path.is_file():
+                      print('Loaded config metadata:', path, 'UTC:', datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc).isoformat(), 'SHA256:', hashlib.sha256(path.read_bytes()).hexdigest())
           config = pathlib.Path('/etc/nginx/sites-enabled/mino').resolve()
           if config.is_file():
               print('Current config:', config, 'mtime:', config.stat().st_mtime)
@@ -56,9 +60,15 @@ jobs:
           client_ip=$(curl --fail --silent --show-error --max-time 10 https://api.ipify.org)
           [[ "$client_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
           ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "timeout 20 tcpdump -l -n -tttt -i any 'tcp port 443 and host $client_ip'" > ingress.txt 2>&1 &
+            "timeout 30 tcpdump -l -n -tttt -i any 'tcp port 443 and host $client_ip'" > ingress.txt 2>&1 &
           capture=$!
-          sleep 2
+          ready=0
+          for attempt in {1..15}; do
+            if grep -q 'listening on' ingress.txt; then ready=1; break; fi
+            if ! kill -0 "$capture" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          test "$ready" = 1 || { cat ingress.txt; echo 'Capture did not start; ingress result is unknown'; exit 1; }
           for host in nexus.minocc.top workbench.minocc.top; do
             echo "Verified public TLS request: $host"
             curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\n' "https://$host/health" || true
