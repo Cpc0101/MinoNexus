@@ -174,43 +174,72 @@ def _account(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, An
 
 def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:
     from mino_nexus.loop.script_runtime import ScriptAbort
-    from mino_nexus.resources.accounts.lease import current_lease_is_active, lease_script_account
+    from mino_nexus.resources.accounts.lease import (
+        account_login_policy,
+        lease_scoped_script_account,
+        validate_account_slot,
+    )
     from mino_nexus.resources.account_data import validate_data_need, record_request
+    from mino_nexus.resources.account_data_match import validate_data_requirements, rank_account_data
+    from mino_nexus.resources.otp_resolve import resolve_otp
 
     data_need = validate_data_need(params.get("data_need", ""))
-    from mino_nexus.resources.account_data_match import validate_data_requirements, rank_account_data
     data_requirements = validate_data_requirements(params.get("data_requirements"))
+    try:
+        wanted_slot = validate_account_slot(params.get("slot"))
+    except ValueError as exc:
+        raise ScriptAbort("account_slot_invalid", reason_code="account_slot_invalid") from exc
 
     explicit = params.get("requirements")
+    prefer = params.get("prefer")
     if explicit is not None and (not isinstance(explicit, dict) or any(
             not isinstance(explicit.get(bucket, []), list) for bucket in ("all", "prefer"))):
         raise ValueError("account_requirements_invalid")
+    if explicit is not None and set(explicit) - {"all", "prefer"}:
+        raise ValueError("account_requirements_invalid")
+    if prefer is not None and not isinstance(prefer, list):
+        raise ValueError("account_requirements_invalid")
+
     selected_case = dict(admission.case)
     selected_case["data_requirements"] = data_requirements
     if explicit is not None:
         selected_case["account_requirements"] = explicit
-    # The allocator validates a restored lease against the requested clauses.
-    row = dict(getattr(admission.ctx, "picked_account", None) or {})
-    if str(row.get("id") or row.get("account_id") or "").strip() and not current_lease_is_active(admission.ctx):
-        raise ScriptAbort("当前账号租约已失效，停止返回缓存凭据", reason_code="resource_account_missing")
-    if explicit is not None or data_requirements or not str(row.get("id") or row.get("account_id") or "").strip():
-        leased, err = lease_script_account(admission.ctx, selected_case)
-        row = dict(leased or {})
-        if not str(row.get("id") or row.get("account_id") or "").strip():
-            raise ScriptAbort(err or "这条用例没有租到账号", reason_code="resource_account_missing")
-    row = rank_account_data(admission.project_id, [row], data_requirements, app_id=admission.app_id)[0]
-    record_request(admission.project_id, str(row.get("id") or row.get("account_id") or ""),
-                   run_id=admission.run_id, session_id=admission.session_id, app_id=admission.app_id,
+    if prefer:
+        filters = dict(selected_case.get("account_requirements") or {})
+        if not isinstance(filters.get("prefer", []), list):
+            raise ValueError("account_requirements_invalid")
+        filters["prefer"] = [*(filters.get("prefer") or []), *prefer]
+        selected_case["account_requirements"] = filters
+
+    row, scoped_ctx, err = lease_scoped_script_account(
+        admission.ctx,
+        selected_case,
+        slot=wanted_slot,
+        app_id=params.get("app_id"),
+        platform=params.get("platform"),
+    )
+    row = dict(row or {})
+    if not str(row.get("id") or row.get("account_id") or "").strip():
+        raise ScriptAbort(err or "这条用例没有租到账号", reason_code=err or "resource_account_missing")
+
+    account_app = str(row.get("app_id") or getattr(scoped_ctx, "app_id", "") or admission.app_id).strip()
+    project_id = str(getattr(scoped_ctx, "project_id", "") or admission.project_id)
+    row = rank_account_data(project_id, [row], data_requirements, app_id=account_app)[0]
+    record_request(project_id, str(row.get("id") or row.get("account_id") or ""),
+                   run_id=admission.run_id, session_id=admission.session_id, app_id=account_app,
                    case_id=admission.case_id, data_need=data_need)
     otp = str(row.get("otp") or row.get("sms_code") or "").strip()
     if not otp:
-        # 账号行没有码时，按 Nexus 项目环境策略给固定码；邮箱收件箱也由 Nexus 策略下发给 Scout。
-        from mino_nexus.resources.otp_resolve import resolve_otp
-
-        otp = str(resolve_otp(getattr(admission, "ctx", None))[0] or "").strip()
+        # 账号行没有码时，按该 slot 的 app/env/surface 策略给固定码。
+        otp = str(resolve_otp(scoped_ctx, row)[0] or "").strip()
+    policy = account_login_policy(scoped_ctx)
     return {
-        "_summary": "已返回本次租到的账号",
-        "project_id": admission.project_id,
+        "_summary": f"已返回 slot={wanted_slot} 的账号",
+        "project_id": project_id,
+        "slot": wanted_slot,
+        "app_id": account_app,
+        "platform": str(row.get("platform") or getattr(scoped_ctx, "platform", "") or ""),
+        "target_package": str(row.get("target_package") or getattr(scoped_ctx, "target_package", "") or ""),
         "data_matches": row.get("data_matches", []),
         "data_match_count": row.get("data_match_count", 0),
         "id": str(row.get("id") or row.get("account_id") or ""),
@@ -220,39 +249,15 @@ def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[st
         "password": str(row.get("password") or ""),
         "otp": otp,
         "ident": str(row.get("ident") or ""),
-        "login_policy": _login_policy(admission),
+        "login_policy": policy,
     }
 
 
-def _login_policy(admission: ScriptAdmission) -> dict[str, Any]:
-    """把这条用例生效的登录策略交给脚本，由脚本按账号决定验证码从哪来。"""
-    from mino_nexus.resources.otp_resolve import otp_context, resolve_gmail_inbox
+def _login_policy(admission: ScriptAdmission, ctx: Any | None = None) -> dict[str, Any]:
+    """把该 slot 的 app/env/surface 生效登录策略交给脚本。"""
+    from mino_nexus.resources.accounts.lease import account_login_policy
 
-    try:
-        env_doc, secrets, otp_slot = otp_context(getattr(admission, "ctx", None))
-    except Exception:
-        return {}
-    slot = otp_slot if isinstance(otp_slot, dict) else {}
-    login = secrets.get("login") if isinstance(secrets, dict) else {}
-    if not slot and not login:
-        return {}
-    login_kind = str((login or {}).get("kind") or "phone")
-    inbox = ""
-    if login_kind == "email":
-        try:
-            inbox = resolve_gmail_inbox(env_doc, getattr(admission, "ctx", None))
-        except Exception:
-            inbox = ""
-    return {
-        "otp_mode": str(slot.get("mode") or "auto"),
-        "otp_fixed": str(slot.get("fixed") or ""),
-        "otp_from_allowlist": [str(x) for x in (slot.get("from_allowlist") or []) if str(x).strip()],
-        "otp_subject_contains": str(slot.get("subject_contains") or ""),
-        "otp_poll_interval_ms": int(slot.get("poll_interval_ms") or 200),
-        "otp_max_wait_ms": int(slot.get("max_wait_ms") or 90000),
-        "login_kind": login_kind,
-        "otp_inbox_address": inbox if login_kind == "email" else "",
-    }
+    return account_login_policy(ctx if ctx is not None else getattr(admission, "ctx", None))
 
 
 def _step_text(case: dict[str, Any], role: str, number: int) -> str:

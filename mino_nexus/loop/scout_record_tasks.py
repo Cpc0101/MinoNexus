@@ -90,8 +90,8 @@ def restore_admission(node_id: str, session_id: str):
             doc = run_store.get(row["task_id"]) or {}
             target = (doc.get("device_targets") or {}).get(row["sn"]) or {}
             ctx.env_surface = str(target.get("target_surface", doc.get("env_surface")) or "")
-        from mino_nexus.resources.accounts.lease import restore_lease_for_run
-        restore_lease_for_run(ctx, row["task_id"])
+        from mino_nexus.resources.accounts.lease import restore_leases_for_run
+        restore_leases_for_run(ctx, row["task_id"])
         admission = ScriptAdmission(run_id=row["task_id"], session_id=session_id, case_id=row["case_id"],
             sn=row["sn"], node_id=node_id, owner_user_id=row["owner_user_id"], ctx=ctx, writer=None,
             project_id=data.get("project_id", ""), app_id=data.get("app_id", ""),

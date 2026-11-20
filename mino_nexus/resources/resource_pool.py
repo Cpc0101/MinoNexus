@@ -559,6 +559,7 @@ def pick_accounts_by_requirements(
     ident_query: str = "",
     ident_hints: list[str] | None = None,
     field_defs: list[dict[str, Any]] | None = None,
+    excluded_account_ids: set[str] | None = None,
 ) -> list[dict]:
     from mino_nexus.resources.account_ident_parse import account_row_matches_hints
 
@@ -574,8 +575,12 @@ def pick_accounts_by_requirements(
         for d in (field_defs or [])
         if str(d.get("key") or "")
     }
+    excluded = {str(value or "").strip() for value in (excluded_account_ids or set())}
+    excluded.discard("")
 
     for row in rows or []:
+        if str(row.get("id") or "").strip() in excluded:
+            continue
         row_env = str(row.get("env") or "")
         if env_key and row_env and row_env != env_key:
             continue
@@ -890,6 +895,11 @@ def new_lease_record(
     ttl_sec: int = DEFAULT_LEASE_TTL_SEC,
     case_id: str = "",
     sn: str = "",
+    slot: str = "",
+    app_id: str = "",
+    platform: str = "",
+    target_package: str = "",
+    env_surface: str = "",
 ) -> dict[str, str]:
     import uuid
     rid = str(run_id or "").strip()
@@ -907,6 +917,21 @@ def new_lease_record(
     device_sn = str(sn or "").strip()
     if device_sn:
         rec["sn"] = device_sn[:64]
+    lease_slot = str(slot or "").strip()
+    if lease_slot:
+        rec["slot"] = lease_slot[:80]
+    lease_app = str(app_id or "").strip()
+    if lease_app:
+        rec["app_id"] = lease_app[:80]
+    lease_platform = str(platform or "").strip()
+    if lease_platform:
+        rec["platform"] = lease_platform[:32]
+    target = str(target_package or "").strip()
+    if target:
+        rec["target_package"] = target[:1000]
+    surface = str(env_surface or "").strip()
+    if surface:
+        rec["env_surface"] = surface[:120]
     return rec
 
 

@@ -553,9 +553,19 @@ def _norm_test_accounts(raw: Any, env_doc: dict | None = None) -> List[dict]:
                 "leased_at": str(lease_raw.get("leased_at") or lease_raw.get("at") or "").strip()[:40],
                 "expires_at": str(lease_raw.get("expires_at") or "").strip()[:40],
             }
-            lease_sn = str(lease_raw.get("sn") or "").strip()
-            if lease_sn:
-                lease["sn"] = lease_sn[:64]
+            optional_lease_text = {
+                "sn": 64,
+                "slot": 80,
+                "app_id": 80,
+                "platform": 32,
+                "target_package": 1000,
+                "env_surface": 120,
+                "lease_id": 80,
+            }
+            for key, limit in optional_lease_text.items():
+                value = str(lease_raw.get(key) or "").strip()
+                if value:
+                    lease[key] = value[:limit]
         normalized = {
             "id": aid,
             "account_id": aid,
@@ -778,19 +788,27 @@ def account_fits_surface(row: dict | None, want: str, channels: Optional[List[di
 def resolve_surface_id(
     env_doc: dict | None, *, surface: str = "", platform: str = "",
     target_id: str = "", prompt: str = "", env_profile: str = "",
+    app_id: str = "",
 ) -> str:
-    """Resolve exactly one channel without changing an explicit identity."""
+    """Resolve exactly one app/platform channel without changing an explicit identity."""
     from mino_nexus.core.platform_contract import target_platform
+
     channels = [c for c in (env_doc or {}).get("channels", []) if isinstance(c, dict) and c.get("id")]
     plat = target_platform(platform) if platform else ""
+    aid = str(app_id or "").strip()
     want = str(surface or "")
     if want:
         matches = [c for c in channels if c["id"] == want]
         if len(matches) != 1:
             raise ValueError("surface_not_found_or_ambiguous")
-        if plat and matches[0].get("platform") != plat:
+        channel = matches[0]
+        if plat and channel.get("platform") != plat:
             raise ValueError("surface_platform_mismatch")
+        if aid and str(channel.get("app_id") or "") != aid:
+            raise ValueError("surface_app_mismatch")
         return want
+    if aid:
+        channels = [c for c in channels if str(c.get("app_id") or "") == aid]
     if plat:
         channels = [c for c in channels if c.get("platform") == plat]
     tid = str(target_id or "").strip()
@@ -800,6 +818,38 @@ def resolve_surface_id(
     if len(channels) != 1:
         raise ValueError("surface_selection_required" if channels else "surface_not_found")
     return str(channels[0]["id"])
+
+
+def resolve_surface_for_app(
+    env_doc: dict | None,
+    *,
+    app_id: str,
+    platform: str = "",
+    target_id: str = "",
+    surface: str = "",
+    env_profile: str = "",
+) -> str:
+    """Resolve a channel only inside one app/platform scope.
+
+    Returning an empty string is a valid inventory miss during allocation; an
+    explicitly supplied surface that belongs to another app/platform is rejected.
+    """
+    aid = str(app_id or "").strip()
+    if not aid:
+        raise ValueError("surface_app_required")
+    try:
+        return resolve_surface_id(
+            env_doc,
+            surface=surface,
+            platform=platform,
+            target_id=target_id,
+            env_profile=env_profile,
+            app_id=aid,
+        )
+    except ValueError as exc:
+        if str(exc) in {"surface_selection_required", "surface_not_found"}:
+            return ""
+        raise
 
 
 def resolve_pick_requirements(
@@ -864,13 +914,20 @@ def pick_test_accounts(
     holder_sn: str = "",
     project_id: str = "",
     observed_by_account: Optional[dict] = None,
+    excluded_account_ids: Optional[set[str]] = None,
 ) -> List[dict]:
     from mino_nexus.resources.resource_pool import pick_accounts_by_requirements
     from mino_nexus.resources.accounts.app_scope import account_matches_app
     if project_id and app_id:
         from mino_nexus.resources.accounts.app_scope import validate_project_apps
         validate_project_apps(project_id, [app_id])
-    rows = [row for row in rows if account_matches_app(row, app_id)]
+    excluded = {str(value or "").strip() for value in (excluded_account_ids or set())}
+    excluded.discard("")
+    rows = [
+        row for row in rows
+        if account_matches_app(row, app_id)
+        and str(row.get("id") or "").strip() not in excluded
+    ]
 
     raw = str(prompt or "").strip()
     req = resolve_pick_requirements(
@@ -905,6 +962,7 @@ def pick_test_accounts(
         ident_query=ident_q,
         ident_hints=ident_hints,
         field_defs=pool_defs,
+        excluded_account_ids=excluded,
     )
 
 

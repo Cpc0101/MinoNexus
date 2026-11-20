@@ -58,10 +58,10 @@ def dispatch_script_case(
     except Exception:
         doc = {}
     try:
-        from mino_nexus.resources.accounts.lease import restore_lease_for_run
+        from mino_nexus.resources.accounts.lease import restore_leases_for_run
 
         if not project_error:
-            restore_lease_for_run(ctx, run_id)
+            restore_leases_for_run(ctx, run_id)
     except Exception as exc:
         SLog.w(TAG, f"restore lease failed case={cid}: {exc!r}")
     # Persist admission before the short ACK. Long execution belongs to Scout.

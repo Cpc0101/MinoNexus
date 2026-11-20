@@ -170,6 +170,11 @@ class RunContext(LoopState):
     accounts_brief: str = ""
     picked_account: dict[str, Any] = field(default_factory=dict)
     resource_lease: dict[str, Any] = field(default_factory=dict)
+    # 一次脚本执行可租多个账号；slot 是账户用途/身份槽，不是“一个用例只能租一次”。
+    # 兼容字段 picked_account/resource_lease 始终指向 default（不存在时指向最近租约）。
+    leased_accounts: list[dict[str, Any]] = field(default_factory=list)
+    leased_account_leases: list[dict[str, Any]] = field(default_factory=list)
+    leased_account_by_slot: dict[str, str] = field(default_factory=dict)
     resource_env: dict[str, Any] = field(default_factory=dict)
     # 开跑前设备预置 / 登录态事实
     keep_permission_prompt: bool = False

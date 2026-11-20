@@ -135,7 +135,9 @@ def claim_in_transaction(db, account_id=""):
                 coarse = "resource_busy"
             return deny_claim(coarse, code, resource_key=row.resource_key, state=row.state,
                               epoch=row.epoch, **_without_code(info))
-    epochs = {}
+    # One run can claim several accounts for different slots/platforms. Preserve
+    # epochs for resources not touched by this claim instead of replacing the map.
+    epochs = dict(request.get("resource_epochs") or {})
     for key in keys:
         old = rows[key]
         epoch = old.epoch if old and old.state == "held" else (old.epoch + 1 if old else 1)

@@ -182,8 +182,11 @@ def phone_seq_account_id(ctx: Any, *, project_id: str, run_id: str) -> str:
     sn = str(getattr(ctx, "sn", "") or "").strip()
     if not rid or not sn:
         return ""
+    from mino_nexus.resources.accounts.lease import normalize_account_slot
+
     identity = [owner, str(project_id), str(getattr(ctx, "app_id", "") or ""), rid,
                 str(getattr(ctx, "case_id", "") or ""), sn,
+                normalize_account_slot(getattr(ctx, "account_slot", "")),
                 str(getattr(ctx, "env_surface", "") or ""),
                 str(getattr(ctx, "env_profile", "") or "test")]
     return "acc" + hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:24]

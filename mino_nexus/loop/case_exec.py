@@ -311,14 +311,15 @@ def _run_case_list(
 
             lease_snap: dict = {}
             try:
-                from mino_nexus.resources.accounts.lease import restore_lease_for_run
+                from mino_nexus.resources.accounts.lease import restore_leases_for_run
 
                 class _LeaseCtx:
                     pass
 
                 lc = _LeaseCtx()
                 lc.app_id, lc.run_id, lc.case_id, lc.sn = app_id, run_id, cid, sn
-                row, _ = restore_lease_for_run(lc, run_id)
+                rows, _ = restore_leases_for_run(lc, run_id)
+                row = next((item for item in rows if str(item.get("slot") or "default") == "default"), rows[0] if rows else None)
                 if isinstance(row, dict):
                     lease_snap = {
                         "account_id": str(row.get("id") or ""),

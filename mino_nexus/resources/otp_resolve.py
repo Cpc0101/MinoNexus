@@ -200,8 +200,10 @@ def otp_context(ctx: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any
         return {}, {}, {}
 
 
-def resolve_otp(ctx: Any) -> tuple[str, str]:
-    acc = getattr(ctx, "picked_account", None) if ctx is not None else None
+def resolve_otp(ctx: Any, account: dict | None = None) -> tuple[str, str]:
+    acc = account if isinstance(account, dict) else (
+        getattr(ctx, "picked_account", None) if ctx is not None else None
+    )
     if isinstance(acc, dict):
         for key in ("otp", "sms_code", "code"):
             val = str(acc.get(key) or "").strip()

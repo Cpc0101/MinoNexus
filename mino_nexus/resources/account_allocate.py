@@ -11,7 +11,15 @@ from mino_nexus.resources.accounts.pool_templates import (
     project_enabled_templates,
     template_facet_extensions,
 )
-from mino_nexus.resources.accounts.lease import _clear_leased, _mark_leased, apply_lease_to_ctx
+from mino_nexus.resources.accounts.lease import (
+    DEFAULT_ACCOUNT_SLOT,
+    _clear_leased,
+    _excluded_accounts_for_slot,
+    _mark_leased,
+    apply_lease_to_ctx,
+    leased_account_for_slot,
+    normalize_account_slot,
+)
 from mino_nexus.resources.project_env import list_test_accounts, pick_test_accounts
 from mino_nexus.resources.resource_pool import empty_requirements
 
@@ -63,14 +71,20 @@ def allocate_by_template(
     if ctx is None or not run_id:
         return None, "缺少执行上下文或 run_id，不能分配凭证"
     holder_sn = str(getattr(ctx, "sn", "") or "")
+    slot = normalize_account_slot(getattr(ctx, "account_slot", "") or DEFAULT_ACCOUNT_SLOT)
+    app_id = str(getattr(ctx, "app_id", "") or "")
+    platform = str(getattr(ctx, "platform", "") or "")
+    target_package = str(getattr(ctx, "target_package", "") or "")
+    env_surface = str(getattr(ctx, "env_surface", "") or "")
     ranked = pick_test_accounts(
         rows,
-        app_id=str(getattr(ctx, "app_id", "") or ""),
+        app_id=app_id,
         env=env_profile,
         env_doc=env_doc,
         requirements=req,
         run_id=run_id,
         holder_sn=holder_sn,
+        excluded_account_ids=_excluded_accounts_for_slot(ctx, slot),
     )
     if not ranked:
         return None, f"没有符合模板「{tpl.get('label')}」的可用账号"
@@ -78,23 +92,42 @@ def allocate_by_template(
     row = None
     for candidate in ranked:
         aid = str(candidate.get("id") or candidate.get("account_id") or "")
-        if aid and _mark_leased(project_id, aid, run_id,
-                               app_id=str(getattr(ctx, "app_id", "") or ""),
-                               case_id=str(getattr(ctx, "case_id", "") or ""),
-                               sn=holder_sn, env=env_profile, requirements=req):
+        if aid and _mark_leased(
+            project_id,
+            aid,
+            run_id,
+            app_id=app_id,
+            case_id=str(getattr(ctx, "case_id", "") or ""),
+            sn=holder_sn,
+            env=env_profile,
+            requirements=req,
+            slot=slot,
+            platform=platform,
+            target_package=target_package,
+            env_surface=env_surface,
+        ):
             row = {**candidate, "facets": merge_account_facets(candidate.get("facets"), ext)}
             break
     if row is None:
         return None, "匹配账号已被占用或状态发生变化，未分配凭证"
-    if not apply_lease_to_ctx(ctx, row, project_id=project_id):
-        _clear_leased(project_id, str(row.get("id") or ""), run_id)
+    if not apply_lease_to_ctx(
+        ctx,
+        row,
+        project_id=project_id,
+        slot=slot,
+        app_id=app_id,
+        platform=platform,
+        target_package=target_package,
+        env_surface=env_surface,
+    ):
+        _clear_leased(project_id, str(row.get("id") or ""), run_id, account_slot=slot)
         return None, "租约凭证读取失败"
 
-    picked = dict(getattr(ctx, "picked_account", None) or {})
+    current_account = leased_account_for_slot(ctx, slot) or row
     grant_row = {
         **row,
-        **picked,
-        "facets": row.get("facets") or picked.get("facets") or {},
+        **current_account,
+        "facets": current_account.get("facets") or row.get("facets") or {},
     }
     grant = credentials_grant(grant_row, tpl)
     grant["template_label"] = str(tpl.get("label") or "")

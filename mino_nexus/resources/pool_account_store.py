@@ -298,10 +298,13 @@ def read_leased_account_credentials(
         from mino_nexus.resources.resource_pool import lease_expired
         if lease_expired(lease):
             return None
-        if not app_id:
-            return None
         from mino_nexus.resources.accounts.app_scope import account_matches_app
-        if not account_matches_app({"app_ids": row.app_ids or []}, app_id):
+        # 多账号租约中调用方 ctx.app_id 可能属于另一个 slot；凭证应按租约
+        # 自身声明的应用范围校验，旧租约没有该字段时才回退到调用参数。
+        scope_app_id = str(lease.get("app_id") or app_id or "").strip()
+        if not scope_app_id:
+            return None
+        if not account_matches_app({"app_ids": row.app_ids or []}, scope_app_id):
             return None
         return _read_credentials(row, fields=requested)
 

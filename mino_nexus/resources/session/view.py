@@ -34,9 +34,16 @@ def build_session_json(ctx: Any, slot_block: str = "") -> dict[str, Any]:
 
 
 def build_accounts_json(ctx: Any) -> dict[str, Any]:
+    from mino_nexus.resources.accounts.lease import DEFAULT_ACCOUNT_SLOT, leased_account_entries
+
     brief = str(getattr(ctx, "accounts_brief", "") or "").strip()
     picked = dict(getattr(ctx, "picked_account", None) or {})
-    leased = bool(picked) or bool(getattr(ctx, "prep_lease_account_done", False))
+    rows = leased_account_entries(ctx)
+    if not rows and picked:
+        legacy = dict(picked)
+        legacy["slot"] = DEFAULT_ACCOUNT_SLOT
+        rows = [legacy]
+    leased = bool(rows) or bool(getattr(ctx, "prep_lease_account_done", False))
     out: dict[str, Any] = {
         "leased": leased,
         "brief_legacy": brief[:500] if brief else "",
@@ -47,6 +54,19 @@ def build_accounts_json(ctx: Any) -> dict[str, Any]:
         ident = account_ident(picked) or ""
         if ident:
             out["identity_hint"] = ident[:120]
+    items: list[dict[str, str]] = []
+    for row in rows:
+        ident = account_ident(row) or ""
+        items.append({
+            "slot": str(row.get("slot") or DEFAULT_ACCOUNT_SLOT),
+            "account_id": str(row.get("account_id") or row.get("id") or "").strip(),
+            "identity_hint": ident[:120],
+            "app_id": str(row.get("app_id") or "").strip(),
+            "platform": str(row.get("platform") or "").strip(),
+            "target_package": str(row.get("target_package") or "").strip(),
+            "env": str(row.get("env") or "").strip(),
+        })
+    out["items"] = items
     try:
         out["login_channel"] = "email_web" if is_web_email_login(ctx) else ""
     except Exception:

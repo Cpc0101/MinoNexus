@@ -197,21 +197,39 @@ def precondition_wants_unregistered(prompt: str) -> bool:
 
 
 def ensure_ctx_env_surface(ctx: Any, env_doc: dict | None) -> str:
-    from mino_nexus.resources.project_env import resolve_surface_id
+    """Resolve a channel inside this account slot's app/platform scope only."""
+    from mino_nexus.resources.project_env import resolve_surface_for_app
 
+    doc = env_doc if isinstance(env_doc, dict) else {}
+    app_id = str(getattr(ctx, "app_id", "") or "").strip()
+    if not app_id:
+        raise ValueError("account_surface_app_required")
+    platform = str(getattr(ctx, "platform", "") or "android").strip()
+    env_profile = str(getattr(ctx, "env_profile", "") or "test").strip() or "test"
     surface = str(getattr(ctx, "env_surface", "") or "").strip()
     if surface:
+        channel = next(
+            (
+                row for row in (doc.get("channels") or [])
+                if isinstance(row, dict) and str(row.get("id") or "") == surface
+            ),
+            None,
+        )
+        if channel is None:
+            raise ValueError("account_surface_not_found")
+        if str(channel.get("app_id") or "") != app_id:
+            raise ValueError("account_surface_app_mismatch")
+        if platform and str(channel.get("platform") or "") != platform:
+            raise ValueError("account_surface_platform_mismatch")
         return surface
-    doc = env_doc if isinstance(env_doc, dict) else {}
-    env_profile = str(getattr(ctx, "env_profile", "") or "test").strip() or "test"
-    surface = resolve_surface_id(
+    surface = resolve_surface_for_app(
         doc,
-        platform=str(getattr(ctx, "platform", "") or "android"),
+        app_id=app_id,
+        platform=platform,
         target_id=str(getattr(ctx, "target_package", "") or ""),
-        prompt="",
         env_profile=env_profile,
     )
-    if surface and ctx is not None:
+    if surface:
         ctx.env_surface = surface
     return surface
 

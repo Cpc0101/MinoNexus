@@ -444,31 +444,123 @@ class CaseRuntime:
         self._record("hierarchy", result, started=started)
         return result
 
-    def account(self) -> SimpleNamespace:
-        self._guard()
-        row = dict(getattr(self.ctx, "picked_account", None) or {})
-        if not str(row.get("id") or row.get("account_id") or "").strip():
-            from mino_nexus.resources.accounts.lease import lease_script_account
+    def account(
+        self,
+        requirements: dict[str, Any] | None = None,
+        prefer: list[dict[str, Any]] | None = None,
+        data_need: str | None = None,
+        data_requirements: list[dict[str, Any]] | None = None,
+        *,
+        slot: str = "default",
+        app_id: str | None = None,
+        platform: str | None = None,
+    ) -> SimpleNamespace:
+        """Idempotently lease one account for a script-defined slot."""
+        from mino_nexus.resources.accounts.lease import (
+            account_login_policy,
+            lease_scoped_script_account,
+            validate_account_slot,
+        )
 
-            leased, err = lease_script_account(self.ctx, self.case)
-            row = dict(leased or getattr(self.ctx, "picked_account", None) or {})
-            if not str(row.get("id") or row.get("account_id") or "").strip():
-                raise ScriptAbort(err or "这条用例没有租到账号", reason_code="resource_account_missing")
+        self._guard()
+        selected_case = dict(self.case)
+        if requirements is not None:
+            if not isinstance(requirements, dict):
+                raise ScriptAbort("requirements 必须是 all/prefer 对象", reason_code="account_requirements_invalid")
+            if set(requirements) - {"all", "prefer"}:
+                raise ScriptAbort("requirements 只允许 all/prefer", reason_code="account_requirements_invalid")
+            filters = dict(requirements)
+            if prefer is not None:
+                if not isinstance(prefer, list) or not isinstance(filters.get("prefer", []), list):
+                    raise ScriptAbort("prefer 必须是条件列表", reason_code="account_requirements_invalid")
+                filters["prefer"] = [*(filters.get("prefer") or []), *prefer]
+            selected_case["account_requirements"] = filters
+        elif prefer is not None:
+            if not isinstance(prefer, list):
+                raise ScriptAbort("prefer 必须是条件列表", reason_code="account_requirements_invalid")
+            filters = dict(selected_case.get("account_requirements") or {})
+            filters["prefer"] = [*(filters.get("prefer") or []), *prefer]
+            selected_case["account_requirements"] = filters
+        if data_need is not None and not isinstance(data_need, str):
+            raise ScriptAbort("data_need 必须是字符串", reason_code="account_data_invalid")
+        if data_requirements is not None:
+            selected_case["data_requirements"] = list(data_requirements)
+
+        try:
+            wanted_slot = validate_account_slot(slot)
+        except ValueError as exc:
+            raise ScriptAbort("account_slot_invalid", reason_code="account_slot_invalid") from exc
+        row, scoped_ctx, err = lease_scoped_script_account(
+            self.ctx,
+            selected_case,
+            slot=wanted_slot,
+            app_id=app_id,
+            platform=platform,
+        )
+        row = dict(row or {})
+        if not str(row.get("id") or row.get("account_id") or "").strip():
+            raise ScriptAbort(err or "这条用例没有租到账号", reason_code=err or "resource_account_missing")
+        policy = account_login_policy(scoped_ctx)
         return SimpleNamespace(
             id=str(row.get("id") or row.get("account_id") or ""),
+            project_id=str(getattr(scoped_ctx, "project_id", "") or ""),
+            slot=wanted_slot,
+            app_id=str(row.get("app_id") or getattr(scoped_ctx, "app_id", "") or ""),
+            platform=str(row.get("platform") or getattr(scoped_ctx, "platform", "") or ""),
+            target_package=str(row.get("target_package") or getattr(scoped_ctx, "target_package", "") or ""),
             email=str(row.get("email") or ""),
             phone=str(row.get("phone") or ""),
             username=str(row.get("username") or ""),
             password=str(row.get("password") or ""),
             otp=str(row.get("otp") or ""),
             ident=str(row.get("ident") or ""),
+            login_policy=policy,
+            otp_policy=policy,
         )
 
-    def otp_mail(self) -> str:
-        result = self.event("get_otp")
+    def otp_mail(self, *, slot: str = "default") -> str:
+        from mino_nexus.resources.accounts.lease import (
+            DEFAULT_ACCOUNT_SLOT,
+            _seed_legacy_account_views,
+            lease_scoped_script_account,
+            leased_account_entries,
+            leased_account_for_slot,
+            validate_account_slot,
+        )
+        from mino_nexus.resources.otp_resolve import resolve_otp
+
+        self._guard()
+        try:
+            wanted_slot = validate_account_slot(slot)
+        except ValueError as exc:
+            raise ScriptAbort("account_slot_invalid", reason_code="account_slot_invalid") from exc
+
+        _seed_legacy_account_views(self.ctx)
+        existing = leased_account_for_slot(self.ctx, wanted_slot)
+        if not existing:
+            if wanted_slot != DEFAULT_ACCOUNT_SLOT or leased_account_entries(self.ctx):
+                raise ScriptAbort(
+                    f"账号 slot={wanted_slot} 尚未租用，请先调用 case.nexus.account(slot=...)",
+                    reason_code="resource_account_missing",
+                )
+            # Preserve old scripts that never leased an account and rely on the
+            # run context/environment OTP policy. Do not lease implicitly.
+            result = self.event("get_otp")
+            if not result.ok:
+                raise ScriptAbort(result.summary or "没有取到验证码", reason_code="otp_environment_unavailable")
+            return str((getattr(self.ctx, "picked_account", None) or {}).get("otp") or "")
+
+        row, scoped_ctx, err = lease_scoped_script_account(self.ctx, self.case, slot=wanted_slot)
+        row = dict(row or {})
+        if not str(row.get("id") or row.get("account_id") or "").strip():
+            raise ScriptAbort(err or "这条用例没有租到账号", reason_code=err or "resource_account_missing")
+        result = self.event("get_otp", _ctx=scoped_ctx, slot=wanted_slot)
         if not result.ok:
             raise ScriptAbort(result.summary or "没有取到验证码", reason_code="otp_environment_unavailable")
-        return str((getattr(self.ctx, "picked_account", None) or {}).get("otp") or "")
+        code, _source = resolve_otp(scoped_ctx)
+        if not code:
+            code = str((getattr(scoped_ctx, "picked_account", None) or {}).get("otp") or "")
+        return str(code or row.get("otp") or "")
 
     def llm(self, prompt: str, *, text: str = "", schema: dict[str, Any] | None = None) -> Any:
         started = time.perf_counter()
@@ -549,7 +641,7 @@ class CaseRuntime:
             raise ScriptAbort(summary or "视觉断言未通过", reason_code="vlm_failed")
         return summary
 
-    def event(self, name: str, **params: Any) -> ActionResult:
+    def event(self, name: str, *, _ctx: Any | None = None, **params: Any) -> ActionResult:
         started = time.perf_counter()
         self._guard()
         self._seq += 1
@@ -568,7 +660,7 @@ class CaseRuntime:
             event,
             run_id=self.stream_id,
             step_idx=self._seq,
-            ctx=self.ctx,
+            ctx=_ctx or self.ctx,
             shot=self._shot,
         )
         status = str(getattr(result.status, "value", result.status) or "")
