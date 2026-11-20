@@ -8,11 +8,14 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO = "https://github.com/Cpc0101/MinoScout/releases/download/"
 PLATFORMS = {("darwin", "arm64"), ("linux", "x64"), ("win32", "x64")}
+PUBLIC_RELEASE_PATH = "/scout-release"
 
 
 def version(value):
@@ -29,7 +32,29 @@ def digest(path):
     return result.hexdigest()
 
 
-def validate(source, tag):
+def validate_public_url(value):
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid_public_release_url") from exc
+    if (parsed.scheme != "https" or not parsed.hostname or port != 8443
+            or parsed.path != PUBLIC_RELEASE_PATH or parsed.query or parsed.fragment):
+        raise ValueError("invalid_public_release_url")
+    return value
+
+
+def fetch_asset(path, url):
+    partial = path.with_name(path.name + ".part")
+    subprocess.run(
+        ["curl", "--fail", "--location", "--silent", "--show-error", "--retry", "4",
+         "--retry-all-errors", "--output", str(partial), url],
+        check=True,
+    )
+    partial.replace(path)
+
+
+def validate(source, tag, *, fetch_missing=False):
     source = Path(source).resolve()
     want = tag.removeprefix("v")
     version(want)
@@ -62,6 +87,8 @@ def validate(source, tag):
                     or not re.fullmatch(r"[0-9a-f]{64}", expected)):
                 raise ValueError("release_asset_invalid")
             path = source / name
+            if fetch_missing and not path.exists():
+                fetch_asset(path, str(row["url"]))
             if path.is_symlink() or not path.is_file() or path.stat().st_size != row.get("bytes") or digest(path) != expected:
                 raise ValueError("release_asset_checksum_mismatch: " + name)
             if name in files and files[name] != expected:
@@ -75,10 +102,9 @@ def validate(source, tag):
 
 
 def publish(source, destination, tag, public_url):
-    manifest, files = validate(source, tag)
+    manifest, files = validate(source, tag, fetch_missing=True)
     source, destination = Path(source).resolve(), Path(destination).resolve()
-    if not re.fullmatch(r"https://[A-Za-z0-9.-]+/scout-release", public_url):
-        raise ValueError("invalid_public_release_url")
+    validate_public_url(public_url)
     destination.mkdir(parents=True, exist_ok=True)
     current = destination / "manifest.json"
     if current.exists():
