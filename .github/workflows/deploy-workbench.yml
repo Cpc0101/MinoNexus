@@ -32,7 +32,7 @@ jobs:
 
       - name: Download and validate published Workbench package
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.WORKBENCH_RELEASE_TOKEN || github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
