@@ -4,6 +4,11 @@ on:
   push:
     branches: [deploy/workbench-inspect]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: MinoWorkbench release tag
+        required: true
+        default: v0.0.65
 
 permissions:
   contents: read
@@ -19,6 +24,7 @@ jobs:
       TENCENT_HOST: ${{ vars.TENCENT_HOST }}
       TENCENT_USER: ${{ vars.TENCENT_USER }}
       TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'v0.0.65' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -35,54 +41,84 @@ jobs:
           actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 {print $2}')
           test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
 
+      - name: Download and verify Workbench release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          install -d .deploy
+          gh release download "$RELEASE_TAG" \
+            --repo Cpc0101/MinoWorkbench \
+            --pattern "workbench-web-${version}.tar.gz" \
+            --pattern SHA256SUMS.txt \
+            --dir .deploy \
+            --clobber
+          cd .deploy
+          sha256sum --check SHA256SUMS.txt
+
       - name: Upload Workbench release
         run: |
           set -euo pipefail
+          version="${RELEASE_TAG#v}"
           scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
-            .deploy/workbench-web-0.0.61.tar.gz scripts/deploy-workbench-remote.py \
+            ".deploy/workbench-web-${version}.tar.gz" scripts/deploy-workbench-remote.py \
             "$TENCENT_USER@$TENCENT_HOST:/tmp/"
 
-      - name: Deploy and verify
+      - name: Deploy and verify over port 8443
         run: |
           set -euo pipefail
-          expected_asset=$(tar -xOf .deploy/workbench-web-0.0.61.tar.gz ./index.html | sed -n 's#.*src="/assets/\([^"]*\)".*#\1#p' | head -n 1)
+          version="${RELEASE_TAG#v}"
+          archive=".deploy/workbench-web-${version}.tar.gz"
+          expected_asset=$(tar -xOf "$archive" ./index.html | sed -n 's#.*src="/assets/\([^" ]*\.js\)".*#\1#p' | head -n 1)
           test -n "$expected_asset"
           case "$expected_asset" in
             *[!A-Za-z0-9._-]*) echo "Unsafe asset name: $expected_asset" >&2; exit 1 ;;
           esac
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "python3 /tmp/deploy-workbench-remote.py /tmp/workbench-web-0.0.61.tar.gz '$expected_asset'"
-          # Verify from the production host so a transient GitHub-runner route to
-          # the Tencent edge does not turn a successful deployment into a false failure.
+            "python3 /tmp/deploy-workbench-remote.py '/tmp/workbench-web-${version}.tar.gz' '$expected_asset'"
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "set -e
-            asset='$expected_asset'
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
-              if curl --fail --silent --show-error --max-time 15 \"https://workbench.minocc.top/assets/\$asset\" --output /dev/null; then
-                break
-              fi
-              test \"\$attempt\" -lt 10
-              sleep 3
-            done
-            body=\$(curl --fail --silent --show-error --retry 5 --retry-delay 3 'https://workbench.minocc.top/')
-            printf '%s' \"\$body\" | grep -F \"/assets/\$asset\" > /dev/null
-            ! printf '%s' \"\$body\" | grep -F 'nexus.minocc.top:8443'
-            echo \"WORKBENCH_ASSET=\$asset\""
-
-      - name: Verify Nexus is loopback-only
-        run: |
+            "bash -s -- '$expected_asset' '$version'" <<'REMOTE'
           set -euo pipefail
-          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" '
-            set -e
-            container=$(docker ps --filter label=com.docker.compose.service=nexus --format "{{.ID}}" | head -n 1)
-            test -n "$container"
-            mapping=$(docker port "$container" 50104/tcp)
-            echo "NEXUS_PORT_MAPPING=$mapping"
-            test "$mapping" = "127.0.0.1:50104"
-            deploy_dir=$(docker inspect --format "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}" "$container")
-            if grep -q "^MINO_BIND_ADDRESS=" "$deploy_dir/.env"; then
-              grep "^MINO_BIND_ADDRESS=" "$deploy_dir/.env"
-            else
-              echo "MINO_BIND_ADDRESS is unset; Compose default is loopback-only"
-            fi
-          '
+          asset=$1
+          version=$2
+          workbench_base=https://workbench.minocc.top:8443
+          nexus_base=https://nexus.minocc.top:8443
+          headers=$(mktemp)
+          trap 'rm -f "$headers"' EXIT
+
+          curl --fail --silent --show-error --max-time 20 \
+            --resolve workbench.minocc.top:8443:127.0.0.1 \
+            "$workbench_base/assets/$asset" --output /dev/null
+          body=$(curl --fail --silent --show-error --max-time 20 \
+            --resolve workbench.minocc.top:8443:127.0.0.1 \
+            "$workbench_base/")
+          printf '%s' "$body" | grep -F "/assets/$asset" > /dev/null
+
+          build=$(curl --fail --silent --show-error --max-time 20 \
+            --resolve workbench.minocc.top:8443:127.0.0.1 \
+            "$workbench_base/BUILD.json")
+          python3 - "$build" "$version" <<'PY'
+          import json
+          import sys
+          data = json.loads(sys.argv[1])
+          if data.get("version") != sys.argv[2]:
+              raise SystemExit(f"BUILD.json version mismatch: {data.get('version')} != {sys.argv[2]}")
+          print(f"WORKBENCH_VERSION={data['version']}")
+          PY
+
+          curl --fail --silent --show-error --max-time 20 \
+            --resolve nexus.minocc.top:8443:127.0.0.1 \
+            "$nexus_base/health" --output /dev/null
+          curl --fail --silent --show-error --max-time 20 \
+            --request OPTIONS \
+            --header "Origin: $workbench_base" \
+            --header 'Access-Control-Request-Method: GET' \
+            --dump-header "$headers" \
+            --output /dev/null \
+            "$nexus_base/health"
+          tr -d '\r' < "$headers" | grep -Fxi "access-control-allow-origin: $workbench_base" > /dev/null
+          echo "WORKBENCH_ASSET=$asset"
+          echo "WORKBENCH_BASE=$workbench_base"
+          echo "NEXUS_BASE=$nexus_base"
+          REMOTE

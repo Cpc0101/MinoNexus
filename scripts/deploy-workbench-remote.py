@@ -126,15 +126,13 @@ def verify_local(expected_asset: str) -> str:
             "--max-time",
             "20",
             "--resolve",
-            f"{HOST}:443:127.0.0.1",
-            f"https://{HOST}/",
+            f"{HOST}:8443:127.0.0.1",
+            f"https://{HOST}:8443/",
         ],
         capture=True,
     ).stdout
     if expected_asset not in html:
         raise RuntimeError(f"Live index does not reference expected asset {expected_asset}")
-    if f"{HOST}:8443" in html:
-        raise RuntimeError("Live index still references the legacy :8443 endpoint")
     return html
 
 
@@ -156,8 +154,6 @@ def main() -> int:
     built_index = (extracted / "index.html").read_text()
     if expected_asset not in built_index:
         raise RuntimeError(f"Archive index does not reference {expected_asset}")
-    if f"{HOST}:8443" in built_index:
-        raise RuntimeError("Archive index still references the legacy :8443 endpoint")
 
     prefix = privileged_prefix(root)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
