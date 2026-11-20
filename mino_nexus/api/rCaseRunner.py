@@ -15,7 +15,7 @@ from mino_nexus.loop.observe.agent_stream import emit_testing_task
 from mino_nexus.loop.web.web_env import release_devices_for_run
 from mino_nexus.api.deps import current_session, require_project_write
 from mino_nexus.resources.ui_devices import ui_devices
-from mino_nexus.runtime.run_context import WEB_PLAYWRIGHT_PARALLEL_LANES
+from mino_nexus.core.slots import web_lane_snapshot
 
 router = APIRouter(prefix="/case-runner", tags=["CaseRunner"])
 
@@ -181,9 +181,22 @@ def list_devices(only_online: bool = Query(False), compatible_only: bool = False
 
         ids = running.get(sn) or []
         if is_web_slot(sn, plat):
-            row["active_run_count"] = len(ids)
-            row["web_parallel_max"] = WEB_PLAYWRIGHT_PARALLEL_LANES
-            row["web_parallel_full"] = len(ids) >= WEB_PLAYWRIGHT_PARALLEL_LANES
+            from mino_nexus.resources.node_registry import get_registry
+
+            node, _ = get_registry().resolve(sn)
+            workload = next(
+                (item for item in (node.device_workload if node else [])
+                 if item.sn == sn and item.lanes_total is not None),
+                None,
+            )
+            pool = web_lane_snapshot(workload, fallback_active=len(ids))
+            row["active_run_count"] = pool["active"]
+            row["web_parallel_max"] = pool["usable"]
+            row["web_parallel_free"] = pool["free"]
+            row["web_lanes_total"] = pool["total"]
+            row["web_lanes_quarantined"] = pool["quarantined"]
+            row["web_lanes_reported"] = pool["reported"]
+            row["web_parallel_full"] = pool["full"]
             row["busy_task_id"] = ""
         else:
             row["active_run_count"] = 0

@@ -7,19 +7,19 @@ from typing import Any
 from mino_nexus.core import protocol as P
 from mino_nexus.resources.device_store import list_devices as stored_devices
 from mino_nexus.resources.node_registry import NodeSession, get_registry
-from mino_nexus.core.slots import WEB_PLAYWRIGHT_PARALLEL_LANES
+from mino_nexus.core.slots import web_lane_snapshot
 from mino_nexus.contract.execution.device import is_web_slot
 from mino_nexus.contract.runs import get, running_run_ids_for_sn
 
 
 def scout_workload_busy(workload: P.DeviceWorkload | None) -> bool:
-    """A Web lane capacity announcement is not itself an executing step."""
+    """Whether a non-Web workload row represents an executing step."""
     if workload is None:
         return False
     if workload.run_id or workload.capability_id or workload.step_idx >= 0:
         return True
     total, free, quarantined = workload.lanes_total, workload.lanes_free, workload.lanes_quarantined
-    # Missing or invalid capacity must not release an uncertain device.
+    # Missing or invalid capacity must not release an uncertain non-Web device.
     if (type(total) is not int or type(free) is not int or type(quarantined) is not int
             or total <= 0 or not 0 <= free <= total or not 0 <= quarantined <= total - free):
         return True
@@ -32,12 +32,21 @@ def build_node_workload(node: NodeSession) -> dict[str, Any]:
         if str(workload.sn or "").strip():
             scout_by_sn.setdefault(workload.sn, []).append(workload)
     devices_out: list[dict[str, Any]] = []
+    web_sn = ""
+    web_pool: dict[str, Any] = web_lane_snapshot()
     for sn in sorted(node.devices):
         dev = node.devices[sn]
         reported = scout_by_sn.get(sn, [])
         scout = next((item for item in reported if item.run_id or item.capability_id or item.step_idx >= 0),
                      reported[-1] if reported else None)
         run_ids = running_run_ids_for_sn(sn)
+        is_web = is_web_slot(sn, dev.platform or "web")
+        pool = None
+        if is_web:
+            capacity = next((item for item in reported if item.lanes_total is not None), None)
+            pool = web_lane_snapshot(capacity, fallback_active=len(run_ids))
+            if not web_sn:
+                web_sn, web_pool = sn, pool
         nexus_runs: list[dict[str, Any]] = []
         for rid in run_ids:
             doc = get(rid) or {}
@@ -46,27 +55,29 @@ def build_node_workload(node: NodeSession) -> dict[str, Any]:
                 "app_id": doc.get("app_id") or "",
                 "status": doc.get("status") or "",
             })
+        busy = pool["full"] if pool is not None else (
+            any(scout_workload_busy(item) for item in reported) or bool(run_ids))
         devices_out.append({
             "sn": sn,
             "platform": dev.platform,
             "scout_step": asdict(scout) if scout else None,
             "nexus_run_ids": run_ids,
             "nexus_runs": nexus_runs,
-            "busy": any(scout_workload_busy(item) for item in reported) or bool(run_ids),
+            "busy": busy,
             **(
                 {
-                    "web_parallel_active": len(run_ids),
-                    "web_parallel_max": WEB_PLAYWRIGHT_PARALLEL_LANES,
-                    "web_parallel_full": len(run_ids) >= WEB_PLAYWRIGHT_PARALLEL_LANES,
+                    "web_parallel_active": pool["active"],
+                    "web_parallel_max": pool["usable"],
+                    "web_parallel_full": pool["full"],
+                    "web_parallel_free": pool["free"],
+                    "web_lanes_total": pool["total"],
+                    "web_lanes_quarantined": pool["quarantined"],
+                    "web_lanes_reported": pool["reported"],
                 }
-                if is_web_slot(sn, dev.platform or "web")
+                if pool is not None
                 else {}
             ),
         })
-    web_sn = next((d["sn"] for d in devices_out if is_web_slot(d["sn"], d.get("platform") or "web")), "")
-    web_active = 0
-    if web_sn:
-        web_active = len(running_run_ids_for_sn(web_sn, limit=WEB_PLAYWRIGHT_PARALLEL_LANES + 1))
     return {
         "node_id": node.node_id,
         "alive": node.alive,
@@ -75,9 +86,12 @@ def build_node_workload(node: NodeSession) -> dict[str, Any]:
         "scout_version": node.scout_version or "",
         "web_playwright_parallel": {
             "sn": web_sn,
-            "active": web_active,
-            "max": WEB_PLAYWRIGHT_PARALLEL_LANES,
-            "full": web_active >= WEB_PLAYWRIGHT_PARALLEL_LANES,
+            "active": web_pool["active"],
+            "max": web_pool["usable"],
+            "free": web_pool["free"],
+            "quarantined": web_pool["quarantined"],
+            "reported": web_pool["reported"],
+            "full": bool(web_sn) and web_pool["full"],
         },
         "devices": devices_out,
     }

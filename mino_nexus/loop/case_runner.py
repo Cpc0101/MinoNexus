@@ -407,15 +407,6 @@ def _run_in_background(**kwargs):
 
 
 
-def _ensure_web_parallel_capacity(sn: str) -> None:
-    from mino_nexus.runtime.run_context import WEB_PLAYWRIGHT_PARALLEL_LANES
-
-    ids = run_store.running_run_ids_for_sn(sn, limit=WEB_PLAYWRIGHT_PARALLEL_LANES + 1)
-    active = len(ids)
-    if active >= WEB_PLAYWRIGHT_PARALLEL_LANES:
-        raise WebSlotFull(sn, active, WEB_PLAYWRIGHT_PARALLEL_LANES)
-
-
 class UiNotCoverable(Exception):
     def __init__(self, blocked: list[dict[str, Any]], *, compilation_jobs: list[dict[str, Any]] | None = None,
                  report: dict[str, Any] | None = None):

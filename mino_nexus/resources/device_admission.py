@@ -11,6 +11,11 @@ class ResourceBusy(ValueError):
 
 
 def resource_group(row: dict, *, headless=True) -> str:
+    """Return the one admission group for a target.
+
+    ``headless`` is retained in the public call shape for compatibility, but it
+    never changes grouping. Web run/debug/headed/headless share one SN pool.
+    """
     sn, platform = str(row.get("sn") or ""), str(row.get("platform") or row.get("type") or "")
     node = str(row.get("node_id") or row.get("current_scout_id") or "")
     if platform in ("mac", "win"):
@@ -19,7 +24,7 @@ def resource_group(row: dict, *, headless=True) -> str:
             raise ValueError("native_identity_conflict")
         # Device identities change; host desktop contention never splits.
         return f"desktop:{node}:console"
-    if platform in {"desktop", "mac", "win"} or (platform == "web" and not headless):
+    if platform in {"desktop", "mac", "win"}:
         return f"desktop:{node}:console"
     return f"web:{sn}" if platform == "web" else f"device:{sn}"
 
@@ -36,6 +41,35 @@ def _recorded_target(db, payload: dict, sn: str) -> dict:
     if not row["node_id"] and row.get("platform") in {"desktop", "mac", "win"} and str(sn).startswith(("desktop:", "mac:", "win:")):
         row["node_id"] = str(sn).split(":")[1]
     return row
+
+
+def _web_pool_context(sn: str, legacy_ids: set[str]) -> tuple[dict, int]:
+    """Combine Nexus reservations with lanes claimed outside Nexus.
+
+    Scout reports both aggregate lane counts and the run ID on each claimed
+    lane. Union the two ID sets so a formal reservation that has not reached
+    Scout still counts, while the same run observed by both sides counts once.
+    """
+    from mino_nexus.core.slots import web_lane_snapshot
+    from mino_nexus.resources.node_registry import get_registry
+
+    node, _ = get_registry().resolve(sn)
+    workloads = list(node.device_workload or []) if node else []
+    capacity = next((item for item in workloads
+                     if item.sn == sn and item.lanes_total is not None), None)
+    pool = web_lane_snapshot(capacity, fallback_active=len(legacy_ids))
+    if not pool["reported"]:
+        # Without a heartbeat, Nexus reservations are the only trustworthy
+        # evidence. fallback_active already equals this count, so subtracting
+        # the overlap again would turn one run into two.
+        return pool, len(legacy_ids)
+    scout_ids = {str(item.run_id) for item in workloads
+                 if item.sn == sn and item.run_id}
+    # ``active`` covers unnamed/transient lane holders. The union covers Nexus
+    # reservations made between Scout heartbeats. Taking the larger value avoids
+    # double-counting a run that appears in both snapshots.
+    committed = max(int(pool["active"]), len(legacy_ids | scout_ids))
+    return pool, committed
 
 
 def busy_for(row: dict, *, headless=True) -> str:
@@ -57,7 +91,12 @@ def busy_for(row: dict, *, headless=True) -> str:
                 if resource_group(target, headless=payload.get("playwright_headless", True)) == group:
                     owners.add(run.run_id)
                     break
-        return next(iter(owners), "") if len(owners) >= (4 if group.startswith("web:") else 1) else ""
+        if group.startswith("web:"):
+            pool, committed = _web_pool_context(group.removeprefix("web:"), owners)
+            if pool["free"] == 0 or committed >= pool["usable"]:
+                return next(iter(owners), "") or f"web-lane-full:{group.removeprefix('web:')}"
+            return ""
+        return next(iter(owners), "") if owners else ""
 
 
 def _reservation_in_group(key: str, group: str) -> bool:
@@ -123,22 +162,7 @@ def admit_in_transaction(db, doc: dict) -> None:
         if group in acquired:
             continue
         acquired.add(group)
-        if group.startswith("web:"):
-            from mino_nexus.resources.node_registry import get_registry
-            node, _ = get_registry().resolve(sn)
-            capacity = next((w for w in (node.device_workload if node else []) if w.sn == sn and w.lanes_total is not None), None)
-            same_group = [run for run in live if participates(run, group)
-                          and sn in ((run.payload or {}).get("sns") or [(run.payload or {}).get("sn")])]
-            if any((run.payload or {}).get("execution_mode") != doc.get("execution_mode") for run in same_group):
-                raise ResourceBusy(sn, same_group[0].run_id)
-            if doc.get("execution_mode") == "v5":
-                if capacity is None or capacity.lanes_total <= (capacity.lanes_quarantined or 0):
-                    raise ResourceBusy(sn, "")
-                # This is a queued task reservation, not a guessed browser lane.
-                # Scout grants an exclusive lane within the request's setup deadline.
-                db.add(DeviceReservation(resource_key=f"{group}:v5-queue:{rid}", run_id=rid))
-                continue
-        legacy_count = 0
+        legacy_ids: set[str] = set()
         legacy_id = ""
         for run in live:
             if not participates(run, group):
@@ -147,19 +171,23 @@ def admit_in_transaction(db, doc: dict) -> None:
             for other_sn in payload.get("sns") or [payload.get("sn")]:
                 old_row = _recorded_target(db, payload, other_sn)
                 if resource_group(old_row, headless=payload.get("playwright_headless", True)) == group:
-                    legacy_count += 1
+                    legacy_ids.add(run.run_id)
                     legacy_id = run.run_id
                     break
-        limit = max(0, (capacity.lanes_total - (capacity.lanes_quarantined or 0))) if group.startswith("web:") and capacity else (4 if group.startswith("web:") else 1)
-        if legacy_count >= limit:
-            raise ResourceBusy(sn, legacy_id)
         if group.startswith("web:"):
+            pool, committed = _web_pool_context(sn, legacy_ids)
+            limit = int(pool["usable"])
+            if pool["free"] == 0 or committed >= limit:
+                raise ResourceBusy(sn, legacy_id)
             occupied = {r.resource_key for r in db.query(DeviceReservation).filter(DeviceReservation.resource_key.like(group + ":lane:%"))}
             free = next((f"{group}:lane:{i}" for i in range(limit) if f"{group}:lane:{i}" not in occupied), "")
             if not free:
                 raise ResourceBusy(sn, "")
             group = free
         else:
+            limited = 1
+            if len(legacy_ids) >= limited:
+                raise ResourceBusy(sn, legacy_id)
             occupied = db.get(DeviceReservation, group)
             if occupied and occupied.run_id != rid:
                 raise ResourceBusy(sn, occupied.run_id)

@@ -10,7 +10,7 @@ from mino_nexus.resources.device_store import get_device, list_devices as stored
 from mino_nexus.resources.node_registry import NodeRegistry, NodeSession, get_registry
 from mino_nexus.resources.node_store import list_nodes as stored_nodes
 from mino_nexus.resources.node_store import list_studios as stored_studios
-from mino_nexus.core.slots import WEB_PLAYWRIGHT_PARALLEL_LANES
+from mino_nexus.core.slots import web_lane_snapshot
 from mino_nexus.contract.execution.device import is_web_slot
 from mino_nexus.contract import runs as run_store
 
@@ -239,14 +239,18 @@ def _web_parallel_snapshot(session: NodeSession) -> dict[str, Any]:
         if is_web_slot(str(sn), str(getattr(dev, "platform", "") or "web")):
             web_sn = str(sn)
             break
-    active = 0
-    if web_sn:
-        active = len(run_store.running_run_ids_for_sn(web_sn, limit=WEB_PLAYWRIGHT_PARALLEL_LANES + 1))
+    run_ids = run_store.running_run_ids_for_sn(web_sn) if web_sn else []
+    workload = next((item for item in (session.device_workload or [])
+                     if item.sn == web_sn and item.lanes_total is not None), None)
+    pool = web_lane_snapshot(workload, fallback_active=len(run_ids))
     return {
         "sn": web_sn,
-        "active": active,
-        "max": WEB_PLAYWRIGHT_PARALLEL_LANES,
-        "full": bool(web_sn) and active >= WEB_PLAYWRIGHT_PARALLEL_LANES,
+        "active": pool["active"],
+        "max": pool["usable"],
+        "free": pool["free"],
+        "quarantined": pool["quarantined"],
+        "reported": pool["reported"],
+        "full": bool(web_sn) and pool["full"],
     }
 
 

@@ -437,7 +437,7 @@ def _looks_ios_token(value: str) -> bool:
     return "ios" in t or "iphone" in t or "ipad" in t
 
 
-# 单 Scout 节点 Web 槽 Playwright 并行上限（与 MinoScout PLAYWRIGHT_PARALLEL_LANES 一致）
+# 单 Scout 节点共享 Web lane 的兼容默认值；运行时以 Scout 心跳为准。
 from mino_nexus.core.slots import WEB_PLAYWRIGHT_PARALLEL_LANES, version_string_looks_invalid  # noqa: F401,E402
 
 
