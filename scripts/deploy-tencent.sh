@@ -81,9 +81,16 @@ set_public_env() {
   printf '%s=%s\n' "$key" "$value" >> .env.next
 }
 
-set_public_env MINO_NEXUS_PUBLIC_URL "${MINO_NEXUS_PUBLIC_URL:-https://nexus.minocc.top}"
-set_public_env MINO_WORKBENCH_PUBLIC_URL "${MINO_WORKBENCH_PUBLIC_URL:-https://workbench.minocc.top}"
-set_public_env MINO_SCOUT_MANIFEST_URL "${MINO_SCOUT_MANIFEST_URL:-https://nexus.minocc.top/scout-release/manifest.json}"
+public_origin=${MINO_PUBLIC_ORIGIN:-https://workbench.minocc.top}
+public_origin=${public_origin%/}
+case "$public_origin" in
+  https://*/*) echo "MINO_PUBLIC_ORIGIN must be an origin without a path: $public_origin" >&2; exit 1 ;;
+  https://*) ;;
+  *) echo "MINO_PUBLIC_ORIGIN must use https://: $public_origin" >&2; exit 1 ;;
+esac
+set_public_env MINO_NEXUS_PUBLIC_URL "${MINO_NEXUS_PUBLIC_URL:-$public_origin}"
+set_public_env MINO_WORKBENCH_PUBLIC_URL "${MINO_WORKBENCH_PUBLIC_URL:-$public_origin}"
+set_public_env MINO_SCOUT_MANIFEST_URL "${MINO_SCOUT_MANIFEST_URL:-$public_origin/scout-release/manifest.json}"
 
 MINO_NEXUS_IMAGE_TAG="$image_tag" docker compose --env-file .env.next -f docker-compose.yml.next.validated config > /dev/null
 if [ "${MINO_DEPLOY_SKIP_PULL:-0}" = "1" ]; then
