@@ -1,4 +1,4 @@
-"""Remove obsolete Mino server listeners while preserving standard HTTP/HTTPS."""
+"""Remove obsolete Mino listeners while preserving HTTP and the public HTTPS port."""
 import pathlib
 import re
 import sys
@@ -37,7 +37,8 @@ def block_end(opening):
 
 
 changes = []
-standard = set()
+public_https_port = 8443
+public_https = set()
 for match in re.finditer(r'(?m)^[ \t]*server\s*\{', text):
     end = block_end(match.end() - 1)
     block = text[match.start():end]
@@ -51,10 +52,12 @@ for match in re.finditer(r'(?m)^[ \t]*server\s*\{', text):
         port = address.rsplit(':', 1)[-1]
         if not port.isdecimal():
             raise SystemExit('Unsupported listener address; refusing rewrite')
-        if int(port) not in {80, 443}:
+        if int(port) not in {80, public_https_port}:
             obsolete.append(listener)
-        elif int(port) == 443:
-            standard.update(set(names.group(1).split()) & {'nexus.minocc.top', 'workbench.minocc.top'})
+        elif int(port) == public_https_port:
+            public_https.update(
+                set(names.group(1).split()) & {'nexus.minocc.top', 'workbench.minocc.top'}
+            )
     if obsolete:
         if len(obsolete) == len(listeners):
             updated = ''
@@ -64,8 +67,10 @@ for match in re.finditer(r'(?m)^[ \t]*server\s*\{', text):
                 updated = updated[:listener.start()] + updated[listener.end():]
         changes.append((match.start(), end, updated))
 
-if standard != {'nexus.minocc.top', 'workbench.minocc.top'}:
-    raise SystemExit('Both standard HTTPS virtual hosts must remain configured')
+if public_https != {'nexus.minocc.top', 'workbench.minocc.top'}:
+    raise SystemExit(
+        f'Both public HTTPS virtual hosts must listen on {public_https_port}'
+    )
 for start, end, updated in reversed(changes):
     text = text[:start] + updated + text[end:]
 path.write_text(text)

@@ -42,11 +42,11 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/repair -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "curl --fail --silent --show-error --max-time 15 --resolve nexus.minocc.top:443:127.0.0.1 https://nexus.minocc.top/health > /dev/null && curl --fail --silent --show-error --max-time 15 --resolve workbench.minocc.top:443:127.0.0.1 https://workbench.minocc.top/BUILD.json > /dev/null && ss -lnt '( sport = :443 )'"
+            "curl --fail --silent --show-error --max-time 15 --resolve nexus.minocc.top:8443:127.0.0.1 https://nexus.minocc.top:8443/health > /dev/null && curl --fail --silent --show-error --max-time 15 --resolve workbench.minocc.top:8443:127.0.0.1 https://workbench.minocc.top:8443/BUILD.json > /dev/null && ss -lnt '( sport = :8443 )'"
       - name: Verify real public domain
         run: |
           set -euo pipefail
-          for url in https://nexus.minocc.top/health https://workbench.minocc.top/BUILD.json; do
+          for url in https://nexus.minocc.top:8443/health https://workbench.minocc.top:8443/BUILD.json; do
             curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 \
               --max-time 20 "$url" > /dev/null
             echo "Reachable: $url"

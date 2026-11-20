@@ -4,6 +4,7 @@ set -Eeuo pipefail
 config_arg=${1:-/etc/nginx/sites-enabled/mino}
 server_name=${2:-nexus.minocc.top}
 alias_path=${3:-/var/www/scout-release}
+https_port=${4:-8443}
 config=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$config_arg")
 nginx_bin=${NGINX_BIN:-nginx}
 reload_command=${NGINX_RELOAD_COMMAND:-}
@@ -18,6 +19,13 @@ esac
 case "$alias_path" in
   /|*/|*[!A-Za-z0-9._/-]*) echo "Unsafe release asset path: $alias_path" >&2; exit 1 ;;
 esac
+case "$https_port" in
+  ''|*[!0-9]*) echo "Unsafe HTTPS port: $https_port" >&2; exit 1 ;;
+esac
+if [ "$https_port" -lt 1 ] || [ "$https_port" -gt 65535 ]; then
+  echo "Unsafe HTTPS port: $https_port" >&2
+  exit 1
+fi
 
 test -f "$config" || { echo "Nginx config not found: $config" >&2; exit 1; }
 test -d "$alias_path" || { echo "Scout release directory not found: $alias_path" >&2; exit 1; }
@@ -47,7 +55,7 @@ trap cleanup EXIT
 
 candidate=$(mktemp "${config}.next.XXXXXX")
 cp -p "$config" "$candidate"
-python3 - "$candidate" "$server_name" "${alias_path%/}/" <<'PY'
+python3 - "$candidate" "$server_name" "${alias_path%/}/" "$https_port" <<'PY'
 import pathlib
 import re
 import sys
@@ -55,6 +63,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 server_name = sys.argv[2]
 alias_path = sys.argv[3]
+https_port = sys.argv[4]
 text = path.read_text(encoding="utf-8")
 
 
@@ -95,13 +104,16 @@ for match in re.finditer(r"(?m)^[ \t]*server\s*\{", text):
     end = matching_brace(text, match.end() - 1)
     block = text[match.start():end + 1]
     names = re.search(r"(?m)^[ \t]*server_name\s+([^;]+);", block)
-    listen = re.search(r"(?m)^[ \t]*listen\s+(?:\[::\]:)?443\s+ssl(?:\s+[^;]*)?;", block)
+    listen = re.search(
+        rf"(?m)^[ \t]*listen\s+(?:\[::\]:)?{re.escape(https_port)}\s+ssl(?:\s+[^;]*)?;",
+        block,
+    )
     if names and listen and server_name in names.group(1).split():
         targets.append((match.start(), end, block))
 
 if len(targets) != 1:
     raise SystemExit(
-        f"Expected one HTTPS server block for {server_name}, found {len(targets)}"
+        f"Expected one HTTPS server block for {server_name}:{https_port}, found {len(targets)}"
     )
 
 start, end, block = targets[0]
@@ -121,7 +133,9 @@ if locations:
 
 root_location = re.search(r"(?m)^[ \t]*location\s+/\s*\{", block)
 if not root_location:
-    raise SystemExit(f"HTTPS server block for {server_name} has no root location")
+    raise SystemExit(
+        f"HTTPS server block for {server_name}:{https_port} has no root location"
+    )
 
 indent = re.match(r"[ \t]*", root_location.group(0)).group(0)
 snippet = (
@@ -134,7 +148,7 @@ snippet = (
 absolute_insert = start + root_location.start()
 updated = text[:absolute_insert] + snippet + text[absolute_insert:]
 path.write_text(updated, encoding="utf-8")
-print("Added /scout-release/ to the standard HTTPS server block")
+print(f"Added /scout-release/ to the HTTPS server block on port {https_port}")
 PY
 
 if cmp -s "$config" "$candidate"; then

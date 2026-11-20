@@ -63,7 +63,7 @@ jobs:
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
             "python3 '$incoming/publish.py' --source '$incoming' --release-tag '$RELEASE_TAG' --destination /var/www/scout-release"
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
-            "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:443:127.0.0.1 https://nexus.minocc.top/scout-release/manifest.json" > published.json
+            "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:8443:127.0.0.1 https://nexus.minocc.top:8443/scout-release/manifest.json" > published.json
           python3 - <<'PY'
           import json, os
           expected = json.load(open('dist/manifest.json'))

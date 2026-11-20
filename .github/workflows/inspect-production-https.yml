@@ -51,7 +51,7 @@ jobs:
                   subprocess.run(['openssl', 'x509', '-in', path, '-noout', '-subject', '-issuer', '-dates', '-fingerprint', '-sha256', '-ext', 'subjectAltName'])
           print('TCP capture available:', subprocess.run(['sh', '-c', 'command -v tcpdump'], capture_output=True, text=True).stdout.strip())
           for host, path in [('nexus.minocc.top', '/health'), ('workbench.minocc.top', '/BUILD.json')]:
-              probe = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--max-time', '10', '--resolve', host+':443:127.0.0.1', 'https://'+host+path], capture_output=True, text=True)
+              probe = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--max-time', '10', '--resolve', host+':8443:127.0.0.1', 'https://'+host+':8443'+path], capture_output=True, text=True)
               print('Local verified TLS:', host, 'exit:', probe.returncode, 'body:', probe.stdout[:1200], 'error:', probe.stderr[:300])
           PY
       - name: Audit host proxy and filtering configuration
@@ -120,7 +120,7 @@ jobs:
                       print('Entry login imports:', login)
                       print('Missing relative JS imports:', sorted({name for name in re.findall(r'["\']\./([^"\']+\.js)["\']', text) if not (path.parent / name).is_file()}))
           for relative in ['/login', '/assets/LoginPage-D4YjBDnT.js']:
-              probe = subprocess.run(['curl', '--silent', '--show-error', '--max-time', '10', '--resolve', 'workbench.minocc.top:443:127.0.0.1', '--output', '/dev/null', '--write-out', '%{http_code} %{content_type} %{size_download}', 'https://workbench.minocc.top'+relative], capture_output=True, text=True)
+              probe = subprocess.run(['curl', '--silent', '--show-error', '--max-time', '10', '--resolve', 'workbench.minocc.top:8443:127.0.0.1', '--output', '/dev/null', '--write-out', '%{http_code} %{content_type} %{size_download}', 'https://workbench.minocc.top:8443'+relative], capture_output=True, text=True)
               print('Frontend verified TLS:', relative, 'exit:', probe.returncode, 'result:', probe.stdout, 'error:', probe.stderr[:300])
           PY
       - name: Trace standard HTTPS requests at ingress
@@ -129,7 +129,7 @@ jobs:
           client_ip=$(curl --fail --silent --show-error --max-time 10 https://api.ipify.org)
           [[ "$client_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
           ssh -i ~/.ssh/inspect -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "timeout 30 tcpdump -l -n -tttt -i any 'tcp port 443 and host $client_ip'" > ingress.txt 2>&1 &
+            "timeout 30 tcpdump -l -n -tttt -i any 'tcp port 8443 and host $client_ip'" > ingress.txt 2>&1 &
           capture=$!
           ready=0
           for attempt in {1..15}; do
@@ -138,15 +138,15 @@ jobs:
             sleep 1
           done
           test "$ready" = 1 || { cat ingress.txt; echo 'Capture did not start; ingress result is unknown'; exit 1; }
-          for host in nexus.minocc.top workbench.minocc.top; do
-            echo "Verified public TLS request: $host"
-            curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\n' "https://$host/health" || true
+          for url in https://nexus.minocc.top:8443/health https://workbench.minocc.top:8443/BUILD.json; do
+            echo "Verified public TLS request: $url"
+            curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\n' "$url" || true
           done
           python3 - <<'PY'
           import os, socket, ssl
           context = ssl.create_default_context()
           context.check_hostname = False
-          with socket.create_connection((os.environ['TENCENT_HOST'], 443), timeout=8) as raw:
+          with socket.create_connection((os.environ['TENCENT_HOST'], 8443), timeout=8) as raw:
               with context.wrap_socket(raw) as connection:
                   names = connection.getpeercert().get('subjectAltName', ())
                   assert ('DNS', 'nexus.minocc.top') in names

@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--destination")
-    parser.add_argument("--public-url", default="https://nexus.minocc.top/scout-release")
+    parser.add_argument("--public-url", default="https://nexus.minocc.top:8443/scout-release")
     args = parser.parse_args()
     if args.destination:
         publish(args.source, args.destination, args.release_tag, args.public_url)

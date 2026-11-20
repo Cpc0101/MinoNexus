@@ -41,14 +41,13 @@ env:
   TENCENT_USER: ${{ vars.TENCENT_USER }}
   TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
   TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
-  # One public origin serves Workbench, /api/*, /node and /scout-release/*.
-  MINO_PUBLIC_ORIGIN: ${{ vars.MINO_PUBLIC_ORIGIN || 'https://workbench.minocc.top' }}
-  # Optional overrides are normalized and must stay under MINO_PUBLIC_ORIGIN.
-  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL }}
-  MINO_WORKBENCH_URL: ${{ vars.MINO_WORKBENCH_URL }}
-  MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL }}
-  MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL }}
-  MINO_SCOUT_MANIFEST_URL: ${{ vars.MINO_SCOUT_MANIFEST_URL }}
+  # Public HTTPS uses the unblocked :8443 port. Workbench and Nexus remain separate origins.
+  MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL || 'https://nexus.minocc.top:8443' }}
+  MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top:8443' }}
+  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top:8443/health' }}
+  MINO_WORKBENCH_URL: ${{ vars.MINO_WORKBENCH_URL || 'https://workbench.minocc.top:8443/BUILD.json' }}
+  MINO_SCOUT_MANIFEST_URL: ${{ vars.MINO_SCOUT_MANIFEST_URL || 'https://nexus.minocc.top:8443/scout-release/manifest.json' }}
+  MINO_WORKBENCH_ORIGINS: ${{ vars.MINO_WORKBENCH_ORIGINS || 'https://workbench.minocc.top:8443' }}
   TCR_REGISTRY: hkccr.ccs.tencentyun.com
   TCR_IMAGE: hkccr.ccs.tencentyun.com/mino/mino-nexus
 
@@ -93,45 +92,40 @@ jobs:
           fi
           test -n "$TENCENT_HOST_KEY_FINGERPRINT" || { echo 'Missing repository variable TENCENT_HOST_KEY_FINGERPRINT' >&2; exit 1; }
 
-          public_origin=${MINO_PUBLIC_ORIGIN%/}
-          case "$public_origin" in
-            https://*/*) echo "MINO_PUBLIC_ORIGIN must be an origin without a path: $public_origin" >&2; exit 1 ;;
-            https://*) ;;
-            *) echo "MINO_PUBLIC_ORIGIN must use https://: $public_origin" >&2; exit 1 ;;
-          esac
-          public_host=${public_origin#https://}
-          case "$public_host" in
-            ''|*/*|*[!A-Za-z0-9.:-]*) echo "Invalid MINO_PUBLIC_ORIGIN host: $public_host" >&2; exit 1 ;;
-          esac
-
-          nexus_public_url=${MINO_NEXUS_PUBLIC_URL:-$public_origin}
-          workbench_public_url=${MINO_WORKBENCH_PUBLIC_URL:-$public_origin}
-          nexus_health_url=${MINO_NEXUS_HEALTH_URL:-$public_origin/api/health}
-          workbench_url=${MINO_WORKBENCH_URL:-$public_origin/BUILD.json}
-          scout_manifest_url=${MINO_SCOUT_MANIFEST_URL:-$public_origin/scout-release/manifest.json}
-          test "$nexus_public_url" = "$public_origin" || {
-            echo "MINO_NEXUS_PUBLIC_URL must equal MINO_PUBLIC_ORIGIN in one-domain mode: $nexus_public_url" >&2
-            exit 1
-          }
-          test "$workbench_public_url" = "$public_origin" || {
-            echo "MINO_WORKBENCH_PUBLIC_URL must equal MINO_PUBLIC_ORIGIN in one-domain mode: $workbench_public_url" >&2
-            exit 1
-          }
-          for url in "$nexus_health_url" "$workbench_url" "$scout_manifest_url"; do
-            case "$url" in
-              "$public_origin"/*) ;;
-              *) echo "Public verification URL must stay under $public_origin: $url" >&2; exit 1 ;;
+          nexus_public_url=${MINO_NEXUS_PUBLIC_URL%/}
+          workbench_public_url=${MINO_WORKBENCH_PUBLIC_URL%/}
+          nexus_health_url=${MINO_NEXUS_HEALTH_URL}
+          workbench_url=${MINO_WORKBENCH_URL}
+          scout_manifest_url=${MINO_SCOUT_MANIFEST_URL}
+          workbench_origins=${MINO_WORKBENCH_ORIGINS%/}
+          for origin in "$nexus_public_url" "$workbench_public_url"; do
+            case "$origin" in
+              https://*/*) echo "Public origin must not contain a path: $origin" >&2; exit 1 ;;
+              https://*:8443) ;;
+              *) echo "Public origin must use https:// and :8443: $origin" >&2; exit 1 ;;
+            esac
+            host=${origin#https://}
+            case "$host" in
+              ''|*/*|*[!A-Za-z0-9.:-]*) echo "Invalid public origin host: $host" >&2; exit 1 ;;
             esac
           done
+          case "$nexus_health_url" in "$nexus_public_url"/*) ;; *) echo "Nexus health URL is outside $nexus_public_url: $nexus_health_url" >&2; exit 1 ;; esac
+          case "$workbench_url" in "$workbench_public_url"/*) ;; *) echo "Workbench URL is outside $workbench_public_url: $workbench_url" >&2; exit 1 ;; esac
+          case "$scout_manifest_url" in "$nexus_public_url"/*) ;; *) echo "Scout manifest URL is outside $nexus_public_url: $scout_manifest_url" >&2; exit 1 ;; esac
+          test "$workbench_origins" = "$workbench_public_url" || {
+            echo "MINO_WORKBENCH_ORIGINS must contain only $workbench_public_url: $workbench_origins" >&2
+            exit 1
+          }
           echo "NEXUS_VERSION=$version" >> "$GITHUB_ENV"
           echo "NEXUS_IMAGE_TAG=$image_tag" >> "$GITHUB_ENV"
-          echo "MINO_PUBLIC_ORIGIN=$public_origin" >> "$GITHUB_ENV"
-          echo "MINO_PUBLIC_HOST=$public_host" >> "$GITHUB_ENV"
           echo "MINO_NEXUS_PUBLIC_URL=$nexus_public_url" >> "$GITHUB_ENV"
           echo "MINO_WORKBENCH_PUBLIC_URL=$workbench_public_url" >> "$GITHUB_ENV"
           echo "MINO_NEXUS_HEALTH_URL=$nexus_health_url" >> "$GITHUB_ENV"
           echo "MINO_WORKBENCH_URL=$workbench_url" >> "$GITHUB_ENV"
           echo "MINO_SCOUT_MANIFEST_URL=$scout_manifest_url" >> "$GITHUB_ENV"
+          echo "MINO_WORKBENCH_ORIGINS=$workbench_origins" >> "$GITHUB_ENV"
+          echo "NEXUS_PUBLIC_HOST=${nexus_public_url#https://}" >> "$GITHUB_ENV"
+          echo "WORKBENCH_PUBLIC_HOST=${workbench_public_url#https://}" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -214,18 +208,18 @@ jobs:
           scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes scripts/deploy-tencent.sh \
             "$TENCENT_USER@$TENCENT_HOST:$TENCENT_DEPLOY_DIR/.deploy-tencent.sh"
 
-      - name: Verify same-origin reverse proxy on Tencent
+      - name: Verify production HTTPS endpoints on Tencent
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "curl --fail --silent --show-error --max-time 20 -H 'Host: $MINO_PUBLIC_HOST' http://127.0.0.1/api/health > /dev/null && curl --fail --silent --show-error --max-time 20 -H 'Host: $MINO_PUBLIC_HOST' http://127.0.0.1/BUILD.json > /dev/null && curl --fail --silent --show-error --max-time 20 -H 'Host: $MINO_PUBLIC_HOST' http://127.0.0.1/scout-release/manifest.json > /dev/null"
-          echo "Verified same-origin Nginx routes for $MINO_PUBLIC_ORIGIN"
+            "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_NEXUS_HEALTH_URL' > /dev/null && curl --fail --silent --show-error --max-time 20 --resolve '$WORKBENCH_PUBLIC_HOST:127.0.0.1' '$MINO_WORKBENCH_URL' > /dev/null && curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_SCOUT_MANIFEST_URL' > /dev/null"
+          echo "Verified production HTTPS routes on port 8443"
 
       - name: Deploy with backup and rollback
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "MINO_DEPLOY_SKIP_PULL=1 MINO_PUBLIC_ORIGIN='$MINO_PUBLIC_ORIGIN' MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$NEXUS_IMAGE_TAG' '$TENCENT_DEPLOY_DIR'"
+            "MINO_DEPLOY_SKIP_PULL=1 MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' MINO_WORKBENCH_ORIGINS='$MINO_WORKBENCH_ORIGINS' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$NEXUS_IMAGE_TAG' '$TENCENT_DEPLOY_DIR'"
 
       - name: Verify deployment from Tencent
         run: |
@@ -241,16 +235,17 @@ jobs:
           grep -Fx "MINO_NEXUS_PUBLIC_URL=$MINO_NEXUS_PUBLIC_URL" /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_WORKBENCH_PUBLIC_URL=$MINO_WORKBENCH_PUBLIC_URL" /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_SCOUT_MANIFEST_URL=$MINO_SCOUT_MANIFEST_URL" /tmp/nexus-runtime-env.txt
+          grep -Fx "MINO_WORKBENCH_ORIGINS=$MINO_WORKBENCH_ORIGINS" /tmp/nexus-runtime-env.txt
           echo 'Verified Nexus runtime public URLs'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "curl --fail --silent --show-error --max-time 20 -H 'Host: $MINO_PUBLIC_HOST' http://127.0.0.1/api/health" > /tmp/nexus-health.json
-          echo 'Verified Nexus /api/health through the Tencent Nginx entry'
+            "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_NEXUS_HEALTH_URL'" > /tmp/nexus-health.json
+          echo 'Verified Nexus /health through the Tencent :8443 entry'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "curl --fail --silent --show-error --max-time 20 -H 'Host: $MINO_PUBLIC_HOST' http://127.0.0.1/scout-release/manifest.json" > /tmp/nexus-scout-manifest.json
-          echo 'Verified Scout manifest through the Tencent Nginx entry'
+            "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_SCOUT_MANIFEST_URL'" > /tmp/nexus-scout-manifest.json
+          echo 'Verified Scout manifest through the Tencent :8443 entry'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "curl --fail --silent --show-error --max-time 20 -H 'Host: $MINO_PUBLIC_HOST' http://127.0.0.1/BUILD.json" > /tmp/workbench-build.json
-          echo 'Verified Workbench build metadata through the Tencent Nginx entry'
+            "curl --fail --silent --show-error --max-time 20 --resolve '$WORKBENCH_PUBLIC_HOST:127.0.0.1' '$MINO_WORKBENCH_URL'" > /tmp/workbench-build.json
+          echo 'Verified Workbench build metadata through the Tencent :8443 entry'
           python3 - <<'PY'
           import json
           import os
@@ -278,3 +273,11 @@ jobs:
               --max-time 20 "$url" > /dev/null
             echo "Reachable from GitHub runner: $url"
           done
+          curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 5 \
+            --max-time 20 --request OPTIONS \
+            --header "Origin: $MINO_WORKBENCH_PUBLIC_URL" \
+            --header 'Access-Control-Request-Method: GET' \
+            --dump-header /tmp/nexus-cors.headers \
+            "$MINO_NEXUS_PUBLIC_URL/health" > /dev/null
+          tr -d '\r' < /tmp/nexus-cors.headers | grep -Fxi "access-control-allow-origin: $MINO_WORKBENCH_PUBLIC_URL"
+          echo 'Verified Workbench CORS through the public :8443 Nexus entry'
