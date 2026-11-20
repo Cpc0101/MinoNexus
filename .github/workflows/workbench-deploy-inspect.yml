@@ -41,18 +41,11 @@ jobs:
           actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 {print $2}')
           test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
 
-      - name: Download and verify Workbench release
+      - name: Verify Workbench release
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          release_base="https://github.com/Cpc0101/MinoWorkbench/releases/download/${RELEASE_TAG}"
-          install -d .deploy
-          curl --fail --location --silent --show-error \
-            "$release_base/workbench-web-${version}.tar.gz" \
-            --output ".deploy/workbench-web-${version}.tar.gz"
-          curl --fail --location --silent --show-error \
-            "$release_base/SHA256SUMS.txt" \
-            --output .deploy/SHA256SUMS.txt
+          test -f ".deploy/workbench-web-${version}.tar.gz"
           cd .deploy
           sha256sum --check SHA256SUMS.txt
 
