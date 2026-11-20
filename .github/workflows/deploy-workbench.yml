@@ -1,0 +1,112 @@
+name: Deploy Workbench static release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published Workbench release tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-workbench-static
+  cancel-in-progress: false
+
+env:
+  TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+  TENCENT_USER: ${{ vars.TENCENT_USER }}
+  TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+  WORKBENCH_RELEASES_DIR: /var/www/mino-workbench-releases
+  WORKBENCH_ROOT: /var/www/mino-workbench
+  WORKBENCH_PUBLIC_URL: https://workbench.minocc.top:8443
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download and validate published Workbench package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version=${RELEASE_TAG#v}
+          mkdir -p workbench-package
+          gh release download "$RELEASE_TAG" --repo Cpc0101/MinoWorkbench \
+            --pattern "workbench-web-$version.tar.gz" \
+            --pattern SHA256SUMS.txt \
+            --dir workbench-package
+          cd workbench-package
+          sha256sum -c SHA256SUMS.txt
+          tar -xOzf "workbench-web-$version.tar.gz" ./BUILD.json > BUILD.json
+          python3 - "$version" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          payload = json.loads(Path("BUILD.json").read_text(encoding="utf-8"))
+          if payload.get("version") != version:
+              raise SystemExit(f"BUILD.json version mismatch: {payload.get('version')} != {version}")
+          if not re.fullmatch(r"workbench-" + re.escape(version) + r"-[0-9a-f]{40}", str(payload.get("build_id") or "")):
+              raise SystemExit("BUILD.json contains an invalid build_id")
+          if not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("source_commit") or "")):
+              raise SystemExit("BUILD.json contains an invalid source_commit")
+          Path(os.environ["GITHUB_ENV"]).open("a").write(f"WORKBENCH_VERSION={version}\n")
+          print(json.dumps(payload, sort_keys=True))
+          PY
+
+      - name: Configure authenticated deployment transport
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$TENCENT_HOST" && test -n "$TENCENT_USER" && test -n "$TENCENT_HOST_KEY_FINGERPRINT"
+          test -n "$DEPLOY_SSH_KEY"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/mino-workbench-deploy
+          chmod 600 ~/.ssh/mino-workbench-deploy
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          actual=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          test "$actual" = "$TENCENT_HOST_KEY_FINGERPRINT"
+
+      - name: Deploy and verify on Tencent Cloud
+        run: |
+          set -euo pipefail
+          remote_dir="/tmp/mino-workbench-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          package="workbench-package/workbench-web-$WORKBENCH_VERSION.tar.gz"
+          transport=(ssh -i ~/.ssh/mino-workbench-deploy -o BatchMode=yes)
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "mkdir -p '$remote_dir'"
+          scp -i ~/.ssh/mino-workbench-deploy -o BatchMode=yes "$package" \
+            "$TENCENT_USER@$TENCENT_HOST:$remote_dir/package.tar.gz"
+          scp -i ~/.ssh/mino-workbench-deploy -o BatchMode=yes scripts/deploy-workbench-static.sh \
+            "$TENCENT_USER@$TENCENT_HOST:$remote_dir/deploy.sh"
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
+            "bash '$remote_dir/deploy.sh' '$WORKBENCH_VERSION' '$remote_dir/package.tar.gz' '$WORKBENCH_RELEASES_DIR' '$WORKBENCH_ROOT'"
+          "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "rm -rf '$remote_dir'"
+
+      - name: Verify public Workbench entry
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
+            --max-time 20 "$WORKBENCH_PUBLIC_URL/BUILD.json" > /tmp/workbench-build.json
+          python3 - "$WORKBENCH_VERSION" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path("/tmp/workbench-build.json").read_text(encoding="utf-8"))
+          if payload.get("version") != sys.argv[1]:
+              raise SystemExit(f"Public Workbench version mismatch: {payload.get('version')} != {sys.argv[1]}")
+          print(f"Production Workbench verified at version {payload['version']} ({payload['build_id']})")
+          PY
