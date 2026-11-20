@@ -85,7 +85,7 @@ jobs:
           test -n "$TCR_USERNAME" || { echo 'Missing repository secret TCR_USERNAME' >&2; exit 1; }
           test -n "$TCR_PASSWORD" || { echo 'Missing repository secret TCR_PASSWORD' >&2; exit 1; }
           test -n "$CREDENTIAL_MASTER_KEY" || { echo 'Missing repository secret MINO_NEXUS_CREDENTIAL_MASTER_KEY' >&2; exit 1; }
-          CREDENTIAL_MASTER_KEY="$CREDENTIAL_MASTER_KEY" python3 -c 'import base64, os; value = os.environ["MINO_NEXUS_CREDENTIAL_MASTER_KEY"].strip(); raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)); assert len(raw) == 32, "MINO_NEXUS_CREDENTIAL_MASTER_KEY must decode to exactly 32 bytes"'
+          MINO_NEXUS_CREDENTIAL_MASTER_KEY="$CREDENTIAL_MASTER_KEY" python3 -c 'import base64, os; value = os.environ["MINO_NEXUS_CREDENTIAL_MASTER_KEY"].strip(); raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)); assert len(raw) == 32, "MINO_NEXUS_CREDENTIAL_MASTER_KEY must decode to exactly 32 bytes"'
           test -n "$TENCENT_HOST" || { echo 'Missing repository variable TENCENT_HOST' >&2; exit 1; }
           test -n "$TENCENT_USER" || { echo 'Missing repository variable TENCENT_USER' >&2; exit 1; }
           if [ -n "$TENCENT_DEPLOY_DIR" ]; then
