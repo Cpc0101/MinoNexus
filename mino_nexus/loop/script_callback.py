@@ -224,7 +224,10 @@ def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[st
 
     account_app = str(row.get("app_id") or getattr(scoped_ctx, "app_id", "") or admission.app_id).strip()
     project_id = str(getattr(scoped_ctx, "project_id", "") or admission.project_id)
-    row = rank_account_data(project_id, [row], data_requirements, app_id=account_app)[0]
+    ranked = rank_account_data(project_id, [row], data_requirements, app_id=account_app)
+    if not ranked:
+        raise ScriptAbort("租到的账号不属于当前应用", reason_code="account_scope_mismatch")
+    row = ranked[0]
     record_request(project_id, str(row.get("id") or row.get("account_id") or ""),
                    run_id=admission.run_id, session_id=admission.session_id, app_id=account_app,
                    case_id=admission.case_id, data_need=data_need)

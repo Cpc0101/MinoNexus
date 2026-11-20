@@ -581,7 +581,10 @@ def apply_lease_to_ctx(
     env_surface: str = "",
 ) -> bool:
     """Add or replace one slot while retaining every other leased account."""
-    from mino_nexus.resources.accounts.app_scope import validate_project_apps
+    from mino_nexus.resources.accounts.app_scope import (
+        normalize_app_ids,
+        validate_project_apps,
+    )
     from mino_nexus.resources.gmail_alias_lease import enrich_gmail_alias_account_row
     from mino_nexus.resources.pool_account_store import read_leased_account_credentials
 
@@ -710,6 +713,9 @@ def apply_lease_to_ctx(
         "profile_id": lease_meta["profile_id"],
         "env": lease_meta["env"],
         "label": account_label(row),
+        # App scope is a lease invariant and is consumed again by callbacks.
+        # Dropping it made a successfully leased row look out of scope later.
+        "app_ids": normalize_app_ids(row.get("app_ids", [resolved_app])),
         "slot": resolved_slot,
         "app_id": resolved_app,
         "platform": resolved_platform,

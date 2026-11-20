@@ -55,6 +55,7 @@ def check():
     assert report["formal"]["pass_rate"] is None
     print("PASS: default channel, mixed targets, frozen recovery, incompatible channel, legacy target, blocked statistics")
     check_cached_account()
+    check_account_callback_preserves_app_scope()
     check_multi_slot_accounts()
     check_template_allocation_slots()
     check_lease_scope_validation()
@@ -88,6 +89,51 @@ def check_cached_account():
         result = callback._account_impl(admission, {})
         assert result["id"] == "cached" and requested.call_count == 1
     print("PASS: cached account lease is checked; lost lease blocks without reallocating or returning credentials")
+
+
+def check_account_callback_preserves_app_scope():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from mino_nexus.loop import script_callback as callback
+    from mino_nexus.resources import account_data
+    from mino_nexus.resources.accounts import app_scope, lease
+    from mino_nexus.resources import gmail_alias_lease, pool_account_store
+
+    ctx = SimpleNamespace(
+        run_id="r", case_id="c", sn="s", env_profile="test", project_id="p",
+        app_id="app-a", platform="web", target_package="pkg:app-a:web",
+        env_surface="surface:app-a:web", account_slot="default",
+        leased_accounts=[], leased_account_leases=[],
+        leased_account_by_slot={}, picked_account={}, resource_lease={},
+        resource_env={}, accounts_brief="",
+    )
+    row = {
+        "id": "acct-a", "account_id": "acct-a", "app_ids": ["app-a"],
+        "email": "acct-a@example.invalid", "password": "fixture-password",
+        "otp": "fixture-otp", "platform": "web",
+        "target_package": "pkg:app-a:web", "env_surface": "surface:app-a:web",
+    }
+    with patch.object(lease.ps, "project_env", return_value={"channels": []}), \
+         patch.object(app_scope, "validate_project_apps"), \
+         patch.object(gmail_alias_lease, "enrich_gmail_alias_account_row", side_effect=lambda src, *a, **kw: dict(src)), \
+         patch.object(pool_account_store, "read_leased_account_credentials", return_value={"password": "fixture-password", "otp": "fixture-otp"}), \
+         patch.object(lease, "current_lease_is_active", return_value=True), \
+         patch.object(account_data, "record_request"), \
+         patch.object(lease, "account_login_policy", return_value={}):
+        assert lease.apply_lease_to_ctx(
+            ctx, row, project_id="p", slot="default", app_id="app-a", platform="web",
+            target_package="pkg:app-a:web", env_surface="surface:app-a:web",
+        )
+        assert lease.leased_account_for_slot(ctx, "default")["app_ids"] == ["app-a"]
+        admission = SimpleNamespace(
+            ctx=ctx, case={}, project_id="p", app_id="app-a", run_id="r",
+            session_id="s", case_id="c",
+        )
+        result = callback._account_impl(
+            admission, {"slot": "default", "app_id": "app-a", "platform": "web"}
+        )
+        assert result["id"] == "acct-a" and result["app_id"] == "app-a"
+    print("PASS: account callbacks preserve and re-check app scope without IndexError")
 
 
 def check_debug_case_target_resolution():
