@@ -18,7 +18,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       TENCENT_HOST: ${{ vars.TENCENT_HOST }}
