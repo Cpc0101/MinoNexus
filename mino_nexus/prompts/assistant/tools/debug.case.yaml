@@ -10,31 +10,40 @@
     "additionalProperties": false,
     "properties": {
       "app_id": {
-        "type": "string"
+        "type": "string",
+        "description": "项目中的应用记录 id 或应用名"
       },
       "sn": {
-        "type": "string"
+        "type": "string",
+        "description": "设备序列号或别名"
       },
       "node_id": {
-        "type": "string"
+        "type": "string",
+        "description": "本地 Scout 节点 id"
       },
       "app_key": {
-        "type": "string"
+        "type": "string",
+        "description": "脚本仓库 config.yaml 中的应用 key"
       },
       "workspace": {
-        "type": "string"
+        "type": "string",
+        "description": "本地 Scout 的编写工作区绝对路径"
       },
       "client_request_id": {
-        "type": "string"
+        "type": "string",
+        "description": "本次调试会话的稳定标识"
       },
       "project_id": {
-        "type": "string"
+        "type": "string",
+        "description": "项目 id 或名称"
       },
       "env_profile": {
-        "type": "string"
+        "type": "string",
+        "description": "本次运行环境，例如 test/pre/prod"
       },
       "env_surface": {
-        "type": "string"
+        "type": "string",
+        "description": "应用渠道 id 或别名；未传时按应用和设备自动选择唯一渠道"
       }
     },
     "required": [
@@ -46,7 +55,12 @@
       "client_request_id"
     ]
   },
-  "param_resolvers": {},
+  "param_resolvers": {
+    "project_id": "project.by_name",
+    "app_id": "app.by_name",
+    "env_surface": "channel.by_name",
+    "sn": "device.by_alias"
+  },
   "result_pick": [
     "data"
   ],

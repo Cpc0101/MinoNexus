@@ -168,6 +168,9 @@ class RunContext(LoopState):
     playbook: dict[str, Any] = field(default_factory=dict)
     # 本条用例开跑前租到的测试资源
     accounts_brief: str = ""
+    # 账号回调按 slot 取账号时，副本上下文显式带上当前 slot。
+    # RunContext 是 slots dataclass，未声明字段不能动态赋值。
+    account_slot: str = ""
     picked_account: dict[str, Any] = field(default_factory=dict)
     resource_lease: dict[str, Any] = field(default_factory=dict)
     # 一次脚本执行可租多个账号；slot 是账户用途/身份槽，不是“一个用例只能租一次”。

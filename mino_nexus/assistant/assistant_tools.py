@@ -264,11 +264,16 @@ def _resolve_one(resolver: str, value: str, *, user_id: str = "", scope: dict[st
         definitions = [{"id": channel.get("id"), "name": channel.get("alias") or channel.get("label") or channel.get("id"),
                         "alias": channel.get("alias"), "label": channel.get("label"), "app_identifier": channel.get("app_identifier")}
                        for channel in ps.project_env(pid).get("channels") or []]
+        if scope.get("app_id"):
+            # 应用上下文下先限定到该应用自己的渠道，再匹配名称。
+            # 否则通用名称 web 会先命中项目全局 channel，但它不是可执行的
+            # web.app_<APP> 渠道，后续 device_list/debug_case 会把设备全部过滤掉。
+            valid = {row["id"] for row in channel_candidates(scope, user_id, require_available=False)["items"]}
+            definitions = [row for row in definitions if row["id"] in valid]
         explicit = _match_name(definitions, text, "id", "name", "alias", "label", "app_identifier")
         if len(explicit) == 1:
             return str(explicit[0]["id"]), str(explicit[0]["name"]), [], False
-        valid = {row["id"] for row in channel_candidates(scope, user_id, require_available=False)["items"]}
-        rows = [row for row in definitions if row["id"] in valid]
+        rows = definitions
     elif resolver == "device.by_alias":
         from mino_nexus.assistant.assistant_targets import compatible_devices, device_brief
 

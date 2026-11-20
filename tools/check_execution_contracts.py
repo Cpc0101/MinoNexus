@@ -58,6 +58,7 @@ def check():
     check_multi_slot_accounts()
     check_template_allocation_slots()
     check_lease_scope_validation()
+    check_debug_case_target_resolution()
 
 
 def check_cached_account():
@@ -89,6 +90,52 @@ def check_cached_account():
     print("PASS: cached account lease is checked; lost lease blocks without reallocating or returning credentials")
 
 
+def check_debug_case_target_resolution():
+    from unittest.mock import patch
+    from mino_nexus.assistant import assistant_targets
+    from mino_nexus.assistant.assistant_tools import _resolve_one, get_tool
+    from mino_nexus.resources import project_store as ps
+    from mino_nexus.resources.device_targets import target_channel
+    from mino_nexus.resources.project_env import default_project_env
+
+    spec = get_tool("debug.case")
+    assert spec is not None
+    resolvers = spec.get("param_resolvers") or {}
+    assert resolvers.get("project_id") == "project.by_name"
+    assert resolvers.get("app_id") == "app.by_name"
+    assert resolvers.get("env_surface") == "channel.by_name"
+    assert resolvers.get("sn") == "device.by_alias"
+
+    project_id = "PRJ001"
+    app_id = "APP003"
+    env_surface = "web.app_APP003"
+    app = {"id": app_id, "project_id": project_id}
+    env = default_project_env()
+    env["channels"] = [
+        {"id": "web", "kind": "web", "platform": "web", "field": "base_url"},
+        {"id": env_surface, "app_id": app_id, "kind": "web", "platform": "web",
+         "alias": "hi3d_overseas", "field": "base_url"},
+    ]
+    env["profiles"]["test"] = {env_surface: {"base_url": "https://example.invalid"}}
+    candidates = {"items": [{"id": env_surface, "label": "hi3d_overseas"}],
+                  "unavailable": [], "env_profile": "test"}
+    scope = {"project_id": project_id, "app_id": app_id, "env_profile": "test"}
+    with patch.object(ps, "require_app", return_value=app), \
+         patch.object(ps, "project_env", return_value=env), \
+         patch.object(assistant_targets, "channel_candidates", return_value=candidates):
+        for raw in ("web", env_surface, "hi3d_overseas"):
+            ident, _label, options, ambiguous = _resolve_one(
+                "channel.by_name", raw, user_id="fixture-user", scope=scope
+            )
+            assert ident == env_surface, (raw, ident, options, ambiguous)
+
+    channel = target_channel(
+        app, {"platform": "web"}, surface=env_surface, profile="test", env_doc=env
+    )
+    assert channel["id"] == env_surface
+    print("PASS: debug.case resolves app-scoped channels before global channels")
+
+
 def _account_row(account_id: str, *, slot: str, app_id: str, platform: str, project_id: str = "p") -> tuple[dict, dict]:
     account = {
         "id": account_id,
@@ -118,15 +165,14 @@ def _account_row(account_id: str, *, slot: str, app_id: str, platform: str, proj
 def check_multi_slot_accounts():
     from types import SimpleNamespace
     from unittest.mock import patch
+    from mino_nexus.runtime.run_context import RunContext
     from mino_nexus.resources import app_automation, project_env
     from mino_nexus.resources.accounts import app_scope, lease
 
-    ctx = SimpleNamespace(
+    ctx = RunContext(
         run_id="r", case_id="c", sn="s", env_profile="test", project_id="p",
         app_id="app-a", platform="web", target_package="pkg:app-a:web",
-        env_surface="surface:app-a:web", purposed="case",
-        leased_accounts=[], leased_account_leases=[], leased_account_by_slot={},
-        picked_account={}, resource_lease={}, resource_env={}, accounts_brief="",
+        env_surface="surface:app-a:web",
     )
     apps = {
         "app-a": {"id": "app-a", "project_id": "p", "platforms": ["web", "android"]},
