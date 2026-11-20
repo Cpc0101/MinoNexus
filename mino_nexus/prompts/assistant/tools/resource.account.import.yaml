@@ -1,6 +1,6 @@
 id: resource.account.import
 title: 批量导入测试账号
-description: 批量导入 Nexus 测试账号。preview=true 时只返回匹配与变更预览，不写入。
+description: 批量导入 Nexus 测试账号。每行必须给出属于当前项目的非空生效应用范围，可多选。凭据字段只允许写入，预览、结果、错误和日志绝不回显密码或固定验证码。preview=true 时只返回匹配与变更预览，不写入。
 route: POST /project/{project_id}/accounts/import/commit
 risk: write
 async: false

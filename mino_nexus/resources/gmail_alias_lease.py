@@ -361,6 +361,11 @@ def provision_gmail_alias_account(
         return None
 
     pid = str(project_id or "").strip()
+    scoped_app_id = str(getattr(ctx, "app_id", "") or "").strip()
+    if not scoped_app_id:
+        raise ValueError("account_app_ids_required")
+    from mino_nexus.resources.accounts.app_scope import validate_project_apps
+    validate_project_apps(pid, [scoped_app_id])
     with _project_lock(pid):
         existing_emails = {
             str(row.get("email") or "").strip().lower()
@@ -398,7 +403,7 @@ def provision_gmail_alias_account(
         row = {
             "id": aid,
             "account_id": aid,
-            "app_ids": [str(getattr(ctx, "app_id", ""))] if getattr(ctx, "app_id", "") else [],
+            "app_ids": [scoped_app_id],
             "display_name": display,
             "email": email,
             "env": env_profile,

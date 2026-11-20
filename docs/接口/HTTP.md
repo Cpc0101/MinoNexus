@@ -2,9 +2,9 @@
 
 ## 测试账号生效应用
 
-`POST /project/{project_id}/accounts` 与 `PATCH /project/{project_id}/accounts/{account_id}` 接受 `app_ids: string[]`：空列表为全部应用，非空为指定应用多选。服务端校验应用属于当前项目，最多 100 项，去重保存；省略字段保留原范围，新账号省略时默认全部应用。占用期间不可变更范围。账号列表、详情与分配结果返回保存的 `app_ids`。项目账号列表默认返回完整号池；按 `app_id` 读取和应用账号列表过滤到项目通用及对应范围账号。
+`POST /project/{project_id}/accounts` 要求非空 `app_ids: string[]`；`PATCH /project/{project_id}/accounts/{account_id}` 可省略该字段以保留原范围，但显式空数组会被拒绝。范围是应用多选，服务端校验应用属于当前项目，最多 100 项，去重保存。占用期间不可变更范围。账号列表、详情与分配结果返回保存的 `app_ids`，但绝不返回密码或验证码值。`GET /project/{project_id}/accounts` 要求 `app_id`，Workbench 账号管理固定读取当前应用范围，不存在省略后读取全部应用的降级路径。
 
-`POST /project/{project_id}/accounts/pick`、`POST /project/{project_id}/resources/accounts/select` 以及账号预约接受目标 `app_id`；指定账号同样执行范围检查，不能因传入账号 ID 绕过。预约未指定应用时只选择全部应用账号。运行环境与登录方式校验继续执行；自动补号保存本次目标应用范围。
+`POST /project/{project_id}/accounts/pick`、`POST /project/{project_id}/resources/accounts/select`、账号详情、预约和取码都要求目标 `app_id`；指定账号同样执行范围检查，不能因传入账号 ID 绕过。历史空范围账号不匹配任何应用。运行环境与登录方式校验继续执行；自动补号保存本次目标应用范围。
 
 ## 部署与来源
 
@@ -448,13 +448,13 @@ Workbench 入口：项目配置 → 「项目维护者」。
 
 ## MCP 安全读模型与预约
 
-前缀 `/project/{project_id}/resources`；应用逻辑读模型在 `/project/{project_id}/apps/{app_id}/logic` 与 `/project/{project_id}/logic`。这些路由是为 MCP 新加的返回字段受控模型；账号接口返回明文账号密码，日志/环境/设备仍脱敏。不登记 Workbench 现有的账号/环境/设备/控件路由（MCP token 的 HTTP 白名单是路由级，登记旧路由等于放行明文）。读接口要求登录；写接口沿用 `project_maintainer`。详细设计与工具表见 [测试资源与应用逻辑的 MCP 暴露方案](../排查/MCP与LLM响应.md)。转给 Scout 的那一类调用另有统一入口，见下文「转给 Scout 的统一入口」。
+前缀 `/project/{project_id}/resources`；应用逻辑读模型在 `/project/{project_id}/apps/{app_id}/logic` 与 `/project/{project_id}/logic`。这些路由是为 MCP 新加的返回字段受控模型；账号接口只返回账号元数据和凭据配置状态，日志/环境/设备继续脱敏。不登记 Workbench 现有的账号/环境/设备/控件路由（MCP token 的 HTTP 白名单是路由级；旧路由也不能作为凭据明文通道）。读接口要求登录；写接口沿用 `project_maintainer`。详细设计与工具表见 [测试资源与应用逻辑的 MCP 暴露方案](../排查/MCP与LLM响应.md)。转给 Scout 的那一类调用另有统一入口，见下文「转给 Scout 的统一入口」。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/resources/overview` | 账号/设备/租约计数、最近资源日志、告警；不含 ident |
-| GET | `/resources/accounts` | 账号列表；`env`、`state`（`free`/`occupied`/`locked`）、`lifecycle`、`q`、`limit≤200`、`offset`；返回账号/密码/OTP/手机号/邮箱明文、租约、`has_password/has_otp` |
-| GET | `/resources/accounts/{account_id}` | 账号详情 + 租约 + 机态 + 最近日志；账号/密码/OTP 明文，日志 `detail` 递归脱敏 |
+| GET | `/resources/accounts` | 账号列表；`app_id` 必填，另支持 `env`、`state`（`free`/`occupied`/`locked`）、`lifecycle`、`q`、`limit≤200`、`offset`；只返回账号元数据、租约与 `has_password/has_otp`，不回传密码/OTP |
+| GET | `/resources/accounts/{account_id}` | 账号详情 + 租约 + 机态 + 最近日志；`app_id` 必填且账号必须在该应用范围内；只返回凭据配置状态，不回传密码/OTP，日志 `detail` 递归脱敏 |
 | POST | `/resources/accounts/{account_id}/otp` | 统一取码；body `{env_profile?, env_surface?, node_id?, sn?, since_ts?, max_wait_ms?, ...}`；返回 `code/source/requires_human/hint`，固定码优先，Gmail 其次，真实短信人工兜底 |
 | GET | `/resources/devices` | 设备台账；`include_sessions=true` 时带最多 5 条机态（掩码 `identity_hint`） |
 | GET | `/resources/logs` | 资源分配日志；`account_ident` 掩码、`detail` 递归脱敏、`page_size≤100` |
@@ -466,7 +466,7 @@ Workbench 入口：项目配置 → 「项目维护者」。
 | POST | `/assistant/workflows/{workflow_id}/finish` | MCP agent_workflow_finish；outcome/evidence/blocker/task_id/write_outcome/note，固定结果，同内容幂等 |
 | POST | `/assistant/workflows/{workflow_id}/resolve` | MCP agent_workflow_resolve；只追加同一原 task_id 的核对证据，保留未知写入历史 |
 | GET | `/resources/script-guide` | MCP `script.guide`。返回 `workspace`（本机工作目录根、检出目录、虚拟环境）、仓库公开地址和分支，以及 `case.*` 基础指令。不含仓库凭据 |
-| POST | `/resources/accounts/reserve` | MCP 预约；body `{account_id?, env?, lifecycle?, run_id?, ttl_sec?}`；写号池 lease，账号立刻算 `occupied`；返回账号/密码/OTP 明文 |
+| POST | `/resources/accounts/reserve` | MCP 预约；body `{app_id, account_id?, env?, lifecycle?, run_id?, ttl_sec?}`；账号必须匹配应用范围；写号池 lease，账号立刻算 `occupied`；只返回账号元数据和 `has_password/has_otp` |
 | POST | `/resources/accounts/{account_id}/release` | body `{run_id}`；必须与当前 lease 一致，否则 409 |
 | GET | `/apps/{app_id}/logic/overview` | 页面/控件/入口/缺口覆盖度 |
 | GET | `/apps/{app_id}/logic/pages` | 页面列表；`q`、`status`、`limit≤200`、`offset` |
@@ -480,7 +480,7 @@ Workbench 入口：项目配置 → 「项目维护者」。
 | GET | `/logic/flow-blocks` | 流程块目录；只返回块定义、步骤数、用例引用，不返回步骤正文 |
 | GET | `/logic/flow-blocks/{block_id}` | 流程块详情；最多 100 步，凭证键丢弃、自由文本掩码 |
 
-注意：`/resources/accounts` 与 `/resources/env` **不是** Workbench 旧接口的别名；旧 `/project/{id}/accounts`、`/project/{id}/env` 仍可能返回明文/密钥，禁止登记到 MCP 工具表。`logic.control.update` 复用 `PUT /project/{id}/controls/{control_id}`（新增 `platform`）；`logic.entry.extract` 走新的 `POST /project/{id}/apps/{app_id}/logic/entries/extract`，先校验 app 归属、只回计数。旧 `POST /nav-fsm/{app_id}/entries/extract` 仍服务 Workbench，但不登记 MCP。页面评审的 `decide` 也未登记 MCP，避免模型自批。
+注意：`/resources/accounts` 与 `/resources/env` **不是** Workbench 旧接口的别名。旧 `/project/{id}/accounts` 已使用凭据安全读模型，只返回 `has_password/has_otp`；旧 `/project/{id}/env` 仍可能包含环境密钥，禁止登记到 MCP 工具表。凭据值不得进入 MCP 读结果、模型上下文或普通日志。`logic.control.update` 复用 `PUT /project/{id}/controls/{control_id}`（新增 `platform`）；`logic.entry.extract` 走新的 `POST /project/{id}/apps/{app_id}/logic/entries/extract`，先校验 app 归属、只回计数。旧 `POST /nav-fsm/{app_id}/entries/extract` 仍服务 Workbench，但不登记 MCP。页面评审的 `decide` 也未登记 MCP，避免模型自批。
 
 ### 应用平台写入边界
 
@@ -686,14 +686,14 @@ Workbench 的完整恢复仍是这三条，助手和 MCP 调用同一路由。`t
 
 ## 账号数据记录
 
-Nexus 提供 `GET /project/{project_id}/resources/accounts/{account_id}/data`（app_id/kind/limit/offset 过滤，默认 50、上限 200），返回 `{items, total, requests, requests_total, advisory:true}`。申请需求使用独立的 request_limit/request_offset 分页（默认 20、上限 200），按 app_id 过滤，不受资产 kind 筛选影响。两个列表按 updated_at 倒序及稳定主键排序。空列表只说明未记录，不阻塞选号。Workbench 账号管理提供台账查看、新增、编辑、删除及申请需求历史，来源任务链接使用已记录的 app_id/run_id。
+Nexus 提供 `GET /project/{project_id}/resources/accounts/{account_id}/data`（app_id/kind/limit/offset 过滤，默认 50、上限 200），返回 `{items, total, requests, requests_total, advisory:true}`。申请需求使用独立的 request_limit/request_offset 分页（默认 20、上限 200），按 app_id 过滤，不受资产 kind 筛选影响。两个列表按 updated_at 倒序及稳定主键排序。空列表只说明未记录，不阻塞选号。Workbench 账号管理按当前应用过滤，提供台账查看、新增、生效应用多选编辑、删除及申请需求历史，来源任务链接使用已记录的 app_id/run_id。
 
 `PUT .../data` 接收 data_id（账号内稳定标识）、kind、object_ref，及可选 app_id、title、attributes、source_task_id。整条 upsert，未传可选字段使用空值；返回 `{item}`。attributes 最多 8192 UTF-8 字节。`DELETE .../data/{data_id}` 返回 `{deleted}`，仅删除记忆。项目访问、账号归属和 app_id 的项目归属由服务端校验；账号持有租约不阻止更新记忆。密码、OTP、令牌及签名下载凭据不得作为对象数据写入。
 
 MCP 对应 `resource_account_data_list/save/delete`。业务标签仅在脚本选号路径中作为偏好，身份/环境/项目和租约仍约束分配。申请 `data_need` 是数据描述，实际缺口由 Agent 选择准备路径。
 
 
-运行时数据：POST `/case-runner/run` 新增 `case_inputs`（按用例 ID/脚本路径传业务字典）及 `source_context`（parent_task_id、purpose=prepare/resume、data_need）。GET 任务返回 source_context、每例 data_outputs/data_missing。POST `/project/{project_id}/resources/accounts/select` 接受 env/app_id/data_requirements，返回按独立资产记忆排序的空闲 accounts，无记忆匹配不会排除候选，也不预约账号。
+运行时数据：POST `/case-runner/run` 新增 `case_inputs`（按用例 ID/脚本路径传业务字典）及 `source_context`（parent_task_id、purpose=prepare/resume、data_need）。GET 任务返回 source_context、每例 data_outputs/data_missing。POST `/project/{project_id}/resources/accounts/select` 要求 `app_id`，并接受 env/data_requirements；返回该应用范围内按独立资产记忆排序的空闲账号，不含凭据值，无记忆匹配不会排除候选，也不预约账号。
 
 
 ## 任务统计与报告

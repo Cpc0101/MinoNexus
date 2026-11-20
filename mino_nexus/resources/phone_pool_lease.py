@@ -242,7 +242,11 @@ def provision_phone_seq_account(
             raise ValueError("phone_seq_channel_missing")
         if env_profile not in {str(e.get("key") or "") for e in doc.get("environments") or []}:
             raise ValueError("phone_seq_environment_missing")
-        app_id = str(getattr(ctx, "app_id", "") or "")
+        app_id = str(getattr(ctx, "app_id", "") or "").strip()
+        if not app_id:
+            raise ValueError("account_app_ids_required")
+        from mino_nexus.resources.accounts.app_scope import validate_project_apps
+        validate_project_apps(pid, [app_id])
         slot = get_channel_phone_seq(doc, env_surface=surface, env_profile=env_profile, app_id=app_id)
         start = slot.get("start") or _DEFAULT_PHONE_START
         number = max(int(start), int(slot.get("next") or start))
@@ -273,7 +277,7 @@ def provision_phone_seq_account(
         project.env = doc
         now = int(time.time())
         account = PoolAccount(id=aid, project_id=pid, env=env_profile, phone=phone,
-            app_ids=[app_id] if app_id else [],
+            app_ids=[app_id],
             display_name=f"{_channel_stem(doc, surface)}+{phone}"[:80], profile_id="",
             note=f"phone_seq candidate {surface}+{phone}; pending business verification", lease={}, locked=0,
             created_at=now, updated_at=now)

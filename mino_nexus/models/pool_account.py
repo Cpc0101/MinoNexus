@@ -17,8 +17,9 @@ class PoolAccount(Base):
     phone = Column(String, default="")
     email = Column(String, default="")
     username = Column(String, default="")
-    password = Column(String, default="")
-    otp = Column(String, default="")
+    # 保存 AES-GCM 密文；明文只在 Store 的单个字段读取边界出现。
+    password = Column(Text, default="")
+    otp = Column(Text, default="")
     kind = Column(String, default="mixed")
     profile_id = Column(String, default="")
     app_ids = Column(JSON, nullable=False, default=list, server_default="[]")

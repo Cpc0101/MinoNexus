@@ -14,6 +14,7 @@ dependencies = [
   "fastapi>=0.124,<0.130",
   "uvicorn>=0.38",
   "sqlalchemy>=2.0",
+  "cryptography>=50.0.2",  # 测试账号凭据字段级 AES-GCM 加密
   "pydantic>=2.12",
   "certifi>=2024.2.2",    # bundled trust store for native GitHub updater
   "httpx>=0.28",          # 打 LLM endpoint

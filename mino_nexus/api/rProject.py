@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mino_nexus.core.http_util import ok
 from mino_nexus.resources.project_env import (
@@ -74,6 +74,10 @@ class TestAccountPatchBody(BaseModel):
     facets: Optional[dict[str, Any]] = None
 
 
+class TestAccountCreateBody(TestAccountPatchBody):
+    app_ids: list[str] = Field(..., min_length=1, max_length=100)
+
+
 class AccountTemplateStateBody(BaseModel):
     """执行任务或 Console 写回号池模板状态（facets + 参数字段）。"""
 
@@ -95,7 +99,7 @@ class AccountTemplateStateBody(BaseModel):
 
 
 class TestAccountPickBody(BaseModel):
-    app_id: str = ""
+    app_id: str = Field(..., min_length=1, max_length=80)
     prompt: str = ""
     env: str = ""
     surface: str = ""
@@ -175,7 +179,7 @@ def restore_project_account_from_log(
     if not saved:
         raise HTTPException(status_code=400, detail=err or "恢复失败")
     doc = ps.project_env(project_id)
-    public = _public_accounts([saved], doc, include_password=True)[0]
+    public = _public_accounts([saved], doc)[0]
     return ok({"account": public, "log_id": log_id}, msg="已从资源日志恢复账号模板状态")
 
 
@@ -229,7 +233,7 @@ def patch_account_template_state(
     if not saved:
         raise HTTPException(status_code=400, detail=errors[0] if errors else "保存失败")
     doc = ps.project_env(project_id)
-    public = _public_accounts([saved], doc, include_password=True)[0]
+    public = _public_accounts([saved], doc)[0]
     return ok({"account": public, "warnings": errors}, msg="模板状态已同步到号池")
 
 
@@ -266,15 +270,11 @@ def _facet_extensions(doc: dict) -> list:
     return extensions_from_env(doc)
 
 
-def _public_accounts(rows: list, doc: dict, *, include_password: bool = False) -> list:
+def _public_accounts(rows: list, doc: dict) -> list:
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
 
     pool_defs = merged_pool_field_defs(doc)
-    return public_test_accounts(
-        rows,
-        include_password=include_password,
-        pool_field_defs=pool_defs,
-    )
+    return public_test_accounts(rows, pool_field_defs=pool_defs)
 
 
 def _missing(exc: KeyError) -> None:
@@ -534,7 +534,12 @@ def list_app_accounts(app_id: str, env: str = "", _sess: dict = Depends(current_
 
 
 @router.get("/{project_id}/accounts")
-def list_project_accounts(project_id: str, env: str = "", app_id: str = "", _sess: dict = Depends(current_session)):
+def list_project_accounts(
+    project_id: str,
+    env: str = "",
+    app_id: str = Query(..., min_length=1, max_length=80),
+    _sess: dict = Depends(current_session),
+):
     project_id = _resolve_project_id(project_id)
     try:
         doc = ps.project_env(project_id)
@@ -554,7 +559,7 @@ def list_project_accounts(project_id: str, env: str = "", app_id: str = "", _ses
 
     pool_defs = merged_pool_field_defs(doc)
     return ok({
-        "accounts": _public_accounts(rows, doc, include_password=True),
+        "accounts": _public_accounts(rows, doc),
         "pool_field_defs": pool_defs,
         "account_facet_extensions": _facet_extensions(doc),
         "environments": doc.get("environments") or [],
@@ -577,7 +582,7 @@ def save_project_accounts(project_id: str, body: TestAccountSaveBody, _sess: dic
     return ok(
         {
             "accounts": _public_accounts(
-                list_test_accounts(doc, project_id=project_id), doc, include_password=True
+                list_test_accounts(doc, project_id=project_id), doc
             ),
         },
         msg="已保存",
@@ -646,14 +651,14 @@ def patch_project_account(
     if saved is None:
         raise HTTPException(status_code=400, detail="无变更")
     doc = ps.project_env(project_id)
-    public = _public_accounts([saved], doc, include_password=True)[0]
+    public = _public_accounts([saved], doc)[0]
     return ok({"account": public, "warnings": errors}, msg="已保存")
 
 
 @router.post("/{project_id}/accounts", dependencies=[Depends(project_maintainer)])
 def create_project_account(
     project_id: str,
-    body: TestAccountPatchBody,
+    body: TestAccountCreateBody,
     _sess: dict = Depends(current_session),
 ):
     from mino_nexus.resources.accounts.pool_templates import new_account_id
@@ -670,7 +675,7 @@ def create_project_account(
         saved = save_one_test_account(doc, row, project_id=project_id, account_id=aid)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    public = _public_accounts([saved], doc, include_password=True)[0]
+    public = _public_accounts([saved], doc)[0]
     return ok({"account": public}, msg="已保存")
 
 
@@ -699,6 +704,7 @@ def download_accounts_import_template(
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
 
     cols = [
+        "生效应用ID",
         "手机号",
         "展示名",
         "邮箱",
@@ -716,7 +722,7 @@ def download_accounts_import_template(
     line = ",".join(cols) + "\n"
     body = (
         line
-        + "13800000001,示例账号A,,,secret,logged_out,available,批量导入,test\n"
+        + "app_demo,13800000001,示例账号A,,,,logged_out,available,批量导入,test\n"
     ).encode("utf-8-sig")
     return Response(
         content=body,
@@ -1137,7 +1143,7 @@ def pick_project_accounts(project_id: str, body: TestAccountPickBody, _sess: dic
         requirements=req,
     )
     return ok({
-        "accounts": _public_accounts(ranked, doc, include_password=False),
+        "accounts": _public_accounts(ranked, doc),
         "requirements": req,
     })
 

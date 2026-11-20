@@ -1,7 +1,8 @@
 """测试资源安全读模型 + MCP 预约/释放。
 
 这个模块只服务「测试资源」模块的对外读模型：
-- 账号列表/详情/预约返回明文账号、密码、OTP、手机号/邮箱；
+- 账号列表/详情/预约只返回账号元数据和凭据配置状态，绝不回传密码/OTP；
+- 账号读取、预约、选择与取码都必须显式绑定 app_id；
 - 设备台账去掉 session_key/session_generation 等会话凭据；
 - 环境只返回 secret 槽位名，不返回值；
 - 日志的 account_ident/detail/自由文本统一掩码；
@@ -20,6 +21,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from mino_nexus.core.redact import is_secret_key, mask_ident, redact, scrub_text, text
 from mino_nexus.resources import project_store as ps
 from mino_nexus.resources.accounts.lease import _clear_leased, _mark_leased, _lease_ttl_sec
+from mino_nexus.resources.credential_safety import sanitize_credentials, scrub_credential_text
 from mino_nexus.resources.device_app_session_catalog import list_project_device_app_matrix
 from mino_nexus.resources.project_env import (
     account_ident,
@@ -36,6 +38,22 @@ DEFAULT_PAGE = 50
 
 def _env_doc(project_id: str) -> dict[str, Any]:
     return ps.project_env(str(project_id or "").strip())
+
+
+def _require_app_scope(project_id: str, app_id: str) -> str:
+    from mino_nexus.resources.accounts.app_scope import validate_project_apps
+
+    value = str(app_id or "").strip()
+    if not value:
+        raise ValueError("account_app_id_required")
+    validate_project_apps(project_id, [value])
+    return value
+
+
+def _account_matches_app(row: dict[str, Any], app_id: str) -> bool:
+    from mino_nexus.resources.accounts.app_scope import account_matches_app
+
+    return account_matches_app(row, app_id)
 
 
 def _lease(row: dict[str, Any]) -> dict[str, Any]:
@@ -72,10 +90,7 @@ def _public_account(row: dict[str, Any], env_doc: dict[str, Any]) -> dict[str, A
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
 
     defs = merged_pool_field_defs(env_doc)
-    # 账号接口按调用方要求返回可直接登录的明文账号/密码；不再做标识或密码掩码。
-    base = public_test_accounts(
-        [row], include_password=True, pool_field_defs=defs
-    )[0]
+    base = public_test_accounts([row], pool_field_defs=defs)[0]
     ident = str(account_ident(row) or "")
     display = str(base.get("display_name") or ident)
     lease = _lease(row)
@@ -99,8 +114,6 @@ def _public_account(row: dict[str, Any], env_doc: dict[str, Any]) -> dict[str, A
         "username": text(base.get("username"), 160),
         "phone": text(base.get("phone"), 40),
         "email": text(base.get("email"), 160),
-        "password": text(base.get("password"), 300),
-        "otp": text(base.get("otp"), 40),
         "lifecycle": text(facets.get("lifecycle"), 24),
         "facets": redact(facets),
         "facets_brief": scrub_text(base.get("facets_brief"), 300),
@@ -158,6 +171,7 @@ def _filter_accounts(
 def accounts(
     project_id: str,
     *,
+    app_id: str,
     env: str = "",
     state: str = "",
     lifecycle: str = "",
@@ -166,7 +180,11 @@ def accounts(
     offset: int = 0,
 ) -> dict[str, Any]:
     doc = _env_doc(project_id)
-    rows = list_test_accounts(doc, project_id=project_id)
+    app_id = _require_app_scope(project_id, app_id)
+    rows = [
+        row for row in list_test_accounts(doc, project_id=project_id)
+        if _account_matches_app(row, app_id)
+    ]
     raw_idents = {
         str(row.get("id") or row.get("account_id") or ""): str(account_ident(row) or "")
         for row in rows
@@ -196,15 +214,16 @@ def accounts(
     }
 
 
-def account_detail(project_id: str, account_id: str) -> dict[str, Any] | None:
+def account_detail(project_id: str, account_id: str, *, app_id: str) -> dict[str, Any] | None:
     doc = _env_doc(project_id)
-    rows = list_test_accounts(doc, project_id=project_id)
-    row = next(
-        (item for item in rows
-         if str(item.get("id") or item.get("account_id") or "") == str(account_id or "")),
-        None,
+    app_id = _require_app_scope(project_id, app_id)
+    from mino_nexus.resources.pool_account_store import (
+        get_account,
+        read_account_credentials,
     )
-    if row is None:
+
+    row = get_account(project_id, account_id)
+    if row is None or not _account_matches_app(row, app_id):
         return None
     out = _public_account(row, doc)
     out["bound_sessions"] = _bound_sessions(account_id)
@@ -216,7 +235,7 @@ def account_otp(
     project_id: str,
     account_id: str,
     *,
-    app_id: str = "",
+    app_id: str,
     env_profile: str = "",
     env_surface: str = "",
     node_id: str = "",
@@ -229,7 +248,11 @@ def account_otp(
     from mino_nexus.resources.otp_resolve import gmail_inbox_address, resolve_effective_secrets
 
     doc = _env_doc(project_id)
-    rows = list_test_accounts(doc, project_id=project_id)
+    app_id = _require_app_scope(project_id, app_id)
+    rows = [
+        row for row in list_test_accounts(doc, project_id=project_id)
+        if _account_matches_app(row, app_id)
+    ]
     row = next(
         (item for item in rows
          if str(item.get("id") or item.get("account_id") or "") == str(account_id or "")),
@@ -244,12 +267,20 @@ def account_otp(
         doc,
         env_profile=env_key,
         env_surface=surface,
-        app_id=str(app_id or ""),
+        app_id=app_id,
     )
     otp = secrets.get("otp") if isinstance(secrets.get("otp"), dict) else {}
     mode = str(otp.get("mode") or "auto").strip().lower()
     fixed = str(otp.get("fixed") or "").strip()
-    account_code = str(row.get("otp") or row.get("sms_code") or "").strip()
+    credentials = read_account_credentials(
+        project_id,
+        account_id,
+        fields=("otp",),
+        app_id=app_id,
+    )
+    if credentials is None:
+        return None
+    account_code = str(credentials.get("otp") or "").strip()
     phone = str(row.get("phone") or "").strip()
     mail = str(row.get("email") or "").strip()
     recipient = mail or phone
@@ -356,12 +387,12 @@ def _account_logs(project_id: str, account_id: str) -> list[dict[str, Any]]:
                 "id": row.id,
                 "created_at": text(row.created_at, 40),
                 "action": text(row.action, 40),
-                "message": scrub_text(row.message, 200),
+                "message": scrub_credential_text(scrub_text(row.message, 200)),
                 "account_ident_masked": masked,
                 "run_id": text(row.run_id, 80),
                 "case_id": text(row.case_id, 80),
                 "sn": text(row.sn, 80),
-                "detail": redact(row.detail_json if isinstance(row.detail_json, dict) else {}, scrub=True),
+                "detail": sanitize_credentials(row.detail_json if isinstance(row.detail_json, dict) else {}),
             })
         return out
 
@@ -396,8 +427,8 @@ def logs(
         item = dict(row)
         item["account_ident_masked"] = masked
         item.pop("account_ident", None)
-        item["message"] = scrub_text(item.get("message"), 300)
-        item["detail"] = redact(item.get("detail") if isinstance(item.get("detail"), dict) else {}, scrub=True)
+        item["message"] = scrub_credential_text(scrub_text(item.get("message"), 300))
+        item["detail"] = sanitize_credentials(item.get("detail") if isinstance(item.get("detail"), dict) else {})
         items.append(item)
     return {
         "items": items,
@@ -668,7 +699,7 @@ def reserve_account(
     project_id: str,
     *,
     account_id: str = "",
-    app_id: str = "",
+    app_id: str,
     env: str = "",
     lifecycle: str = "",
     run_id: str = "",
@@ -676,9 +707,7 @@ def reserve_account(
 ) -> tuple[dict[str, Any] | None, str, str]:
     """占用一个账号给 MCP 调用方。返回 (账号, 错误, run_id)。不返回凭证。"""
     doc = _env_doc(project_id)
-    from mino_nexus.resources.accounts.app_scope import account_matches_app, validate_project_apps
-    if app_id:
-        validate_project_apps(project_id, [app_id])
+    app_id = _require_app_scope(project_id, app_id)
     rows = list_test_accounts(doc, project_id=project_id)
     rid = _reserve_run_id(run_id)
     if str(run_id or "").strip():
@@ -687,7 +716,7 @@ def reserve_account(
             None,
         )
         if existing is not None:
-            if not account_matches_app(existing, app_id):
+            if not _account_matches_app(existing, app_id):
                 return None, "账号不满足生效应用条件，未占用", rid
             if str(_lease(existing).get("case_id") or "") != "mcp-reserve":
                 return None, "run_id 已被其它租约使用，未占用", rid
@@ -707,7 +736,7 @@ def reserve_account(
         if wanted and aid == wanted:
             seen_wanted = True
             target_row = row
-        if not account_matches_app(row, app_id):
+        if not _account_matches_app(row, app_id):
             continue
         if env_q and str(row.get("env") or "").lower() != env_q:
             continue
@@ -781,14 +810,16 @@ def release_account(project_id: str, account_id: str, *, run_id: str = "") -> tu
     return True, ""
 
 
-def select_accounts(project_id: str, *, env: str = "", app_id: str = "", data_requirements=None):
+def select_accounts(project_id: str, *, app_id: str, env: str = "", data_requirements=None):
     """Advisory shortlist; leasing still enforces the actual identity and scope."""
     from mino_nexus.resources.account_data_match import rank_account_data
     doc = _env_doc(project_id)
-    if app_id:
-        from mino_nexus.resources.accounts.app_scope import validate_project_apps
-        validate_project_apps(project_id, [app_id])
-    items = [_public_account(row, doc) for row in list_test_accounts(doc, project_id=project_id)]
+    app_id = _require_app_scope(project_id, app_id)
+    rows = [
+        row for row in list_test_accounts(doc, project_id=project_id)
+        if _account_matches_app(row, app_id)
+    ]
+    items = [_public_account(row, doc) for row in rows]
     items = _filter_accounts(items, env=env, state="free", lifecycle="", q="", raw_idents={}, raw_displays={})
     for item in items:
         for key in ("password", "otp", "sms_code"):

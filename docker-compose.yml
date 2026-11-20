@@ -8,11 +8,13 @@ services:
       - "${MINO_BIND_ADDRESS:-127.0.0.1}:50104:50104"
     volumes:
       - mino-data:/data
+      - ${MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE:?Set MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE}:/run/secrets/credential-master.key:ro
     environment:
       MINO_NEXUS_PUBLIC_URL: ${MINO_NEXUS_PUBLIC_URL:-}
       MINO_WORKBENCH_PUBLIC_URL: ${MINO_WORKBENCH_PUBLIC_URL:-}
       MINO_SCOUT_MANIFEST_URL: ${MINO_SCOUT_MANIFEST_URL:-}
       MINO_WORKBENCH_ORIGINS: ${MINO_WORKBENCH_ORIGINS:-}
+      MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE: /run/secrets/credential-master.key
       # Trust forwarded scheme only from explicitly configured reverse-proxy IPs.
       FORWARDED_ALLOW_IPS: ${MINO_PROXY_IPS:-127.0.0.1}
     restart: unless-stopped

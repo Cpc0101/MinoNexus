@@ -115,18 +115,18 @@
 
 ## 2026-10-27：测试资源与应用逻辑工具
 
-新增 20 个工具：`resource_*` 9 个、`logic_*` 11 个。它们指向新的安全读模型，不复用 Workbench 的旧账号/环境/设备路由；账号列表/详情/预约返回账号、密码、OTP 明文；日志/环境仍按原脱敏。
+新增 20 个工具：`resource_*` 9 个、`logic_*` 11 个。它们指向新的安全读模型，不复用 Workbench 的旧账号/环境/设备路由；账号列表、详情和预约只返回元数据与凭据配置状态，密码/OTP 不进入模型上下文。日志和环境继续脱敏。
 
 | 工具名 | 用途 |
 |---|---|
 | `resource_overview` | 项目资源全景：账号/设备/租约计数、最近日志 |
-| `resource_account_list` | 账号列表；`state=free\|occupied\|locked`、`lifecycle`、`env`、`q` |
-| `resource_account_get` | 单账号：账号/密码/OTP 明文、租约、机态、最近日志 |
+| `resource_account_list` | 按必填 `app_id` 列账号；`state=free\|occupied\|locked`、`lifecycle`、`env`、`q` |
+| `resource_account_get` | 单账号：必填 `app_id`；返回元数据、凭据配置状态、租约、机态、最近日志 |
 | `resource_device_list` | 设备台账；`include_sessions` 带机态 App |
 | `resource_log_list` | 资源分配日志 |
 | `resource_env_get` | 环境/渠道/号池结构；只给 `configured` 和 `secret_slots` |
-| `resource_account_reserve` | 预约账号；写 lease，立刻算 `occupied`；返回 `run_id` 和账号/密码/OTP 明文 |
-| `resource_account_otp` | 统一取码；账号固定码 → 环境 fixed → Gmail → 人工；`requires_human=true` 时让用户读真实短信 |
+| `resource_account_reserve` | 按必填 `app_id` 预约账号；写 lease，立刻算 `occupied`；只返回 `run_id`、元数据与凭据配置状态 |
+| `resource_account_otp` | 必填 `app_id`；统一取本次码（账号固定码 → 环境 fixed → Gmail → 人工）；`requires_human=true` 时让用户读真实短信，不返回账号密码 |
 | `resource_account_release` | 用 `account_id + run_id` 释放 |
 | `logic_overview` | 页面/控件/入口/缺口覆盖度 |
 | `logic_page_list` / `logic_page_get` | 页面列表/详情（控件、用例引用、入口、缺口；`include=reviews` 看评审摘要） |

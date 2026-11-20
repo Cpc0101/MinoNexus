@@ -1,7 +1,8 @@
 """测试资源 MCP 读模型、预约/释放与统一取码。
 
-账号列表/详情/预约返回明文账号密码；环境 secret 值和设备 session_key 仍不
-直接回传。取码路由聚合账号固定码、环境固定码、Gmail 和人工兜底。
+账号列表/详情/预约只返回元数据和凭据配置状态，绝不回传密码/OTP；账号读取、
+预约、选择与取码都必须显式绑定应用范围。取码路由聚合账号固定码、环境固定码、
+Gmail 和人工兜底。
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/project/{project_id}/resources", tags=["Resources"])
 
 class SelectAccountBody(BaseModel):
     env: str = ""
-    app_id: str = ""
+    app_id: str = Field(..., min_length=1, max_length=80)
     data_requirements: list[dict] = Field(default_factory=list, max_length=20)
 
 
@@ -31,7 +32,7 @@ def select_accounts(project_id: str, body: SelectAccountBody):
 
 
 class ReserveAccountBody(BaseModel):
-    app_id: str = ""
+    app_id: str = Field(..., min_length=1, max_length=80)
     account_id: str = ""
     env: str = ""
     lifecycle: str = ""
@@ -83,7 +84,7 @@ def resource_account_data_delete(project_id: str, account_id: str, data_id: str,
 
 
 class AccountOtpBody(BaseModel):
-    app_id: str = ""
+    app_id: str = Field(..., min_length=1, max_length=80)
     env_profile: str = ""
     env_surface: str = ""
     node_id: str = ""
@@ -115,6 +116,7 @@ def resource_overview(
 @router.get("/accounts")
 def resource_accounts(
     project_id: str,
+    app_id: str = Query(..., min_length=1, max_length=80),
     env: str = "",
     state: str = "",
     lifecycle: str = "",
@@ -125,22 +127,28 @@ def resource_accounts(
 ):
     try:
         return ok(resource_view.accounts(
-            project_id, env=env, state=state, lifecycle=lifecycle, q=q, limit=limit, offset=offset,
+            project_id, app_id=app_id, env=env, state=state, lifecycle=lifecycle,
+            q=q, limit=limit, offset=offset,
         ))
     except KeyError as exc:
         raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": "account_scope_invalid", "message": str(exc)}) from exc
 
 
 @router.get("/accounts/{account_id}")
 def resource_account_detail(
     project_id: str,
     account_id: str,
+    app_id: str = Query(..., min_length=1, max_length=80),
     _sess: dict = Depends(current_session),
 ):
     try:
-        data = resource_view.account_detail(project_id, account_id)
+        data = resource_view.account_detail(project_id, account_id, app_id=app_id)
     except KeyError as exc:
         raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": "account_scope_invalid", "message": str(exc)}) from exc
     if data is None:
         raise HTTPException(status_code=404, detail={"reason_code": "account_not_found", "message": "账号不存在"})
     return ok(data)
@@ -164,6 +172,8 @@ def resource_account_reserve(
         )
     except KeyError as exc:
         raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": "account_scope_invalid", "message": str(exc)}) from exc
     if error:
         status = 409 if any(
             key in error for key in ("占用", "锁定", "状态发生", "不可用", "不满足", "已被", "读取失败")
@@ -192,6 +202,8 @@ def resource_account_otp(
         )
     except KeyError as exc:
         raise _not_found() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"reason_code": "account_scope_invalid", "message": str(exc)}) from exc
     if data is None:
         raise HTTPException(status_code=404, detail={"reason_code": "account_not_found", "message": "账号不存在"})
     if data.get("source") != "gmail":

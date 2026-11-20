@@ -86,6 +86,21 @@ set_public_env MINO_WORKBENCH_PUBLIC_URL "${MINO_WORKBENCH_PUBLIC_URL:-https://w
 set_public_env MINO_SCOUT_MANIFEST_URL "${MINO_SCOUT_MANIFEST_URL:-https://nexus.minocc.top:8443/scout-release/manifest.json}"
 set_public_env MINO_WORKBENCH_ORIGINS "${MINO_WORKBENCH_ORIGINS:-https://workbench.minocc.top:8443}"
 
+credential_key_file=${MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE:-$deploy_dir/.secrets/credential-master.key}
+case "$credential_key_file" in
+  /*) ;;
+  *) echo "MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE must be an absolute path" >&2; exit 1 ;;
+ esac
+case "$credential_key_file" in
+  *[[:space:]]*|*[\"\']*) echo "Unsafe credential key file path" >&2; exit 1 ;;
+esac
+if [ ! -r "$credential_key_file" ]; then
+  echo "Credential key file is missing or unreadable: $credential_key_file" >&2
+  exit 1
+fi
+sed -i '/^MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE=/d' .env.next
+printf 'MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE=%s\n' "$credential_key_file" >> .env.next
+
 MINO_NEXUS_IMAGE_TAG="$image_tag" docker compose --env-file .env.next -f docker-compose.yml.next.validated config > /dev/null
 if [ "${MINO_DEPLOY_SKIP_PULL:-0}" = "1" ]; then
   docker image inspect "$image" > /dev/null

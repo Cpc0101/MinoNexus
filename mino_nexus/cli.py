@@ -85,7 +85,7 @@ def _otp_cli(argv: list[str]) -> int:
     p.add_argument("project_id")
     p.add_argument("account_id")
     p.add_argument("--user-id", default="", help="Gmail 插件归属用户；不填则不走 Gmail")
-    p.add_argument("--app-id", default="")
+    p.add_argument("--app-id", required=True, help="账号所属应用；取码前校验生效应用范围")
     p.add_argument("--env-profile", default="")
     p.add_argument("--env-surface", default="")
     p.add_argument("--node-id", default="")
@@ -407,6 +407,82 @@ def _migrate_cli(argv: list[str]) -> int:
     return 0
 
 
+def _credential_cli(argv: list[str]) -> int:
+    """检查或迁移测试账号凭据；迁移前自动做 SQLite 一致备份。"""
+    import json
+    import os
+
+    ap = argparse.ArgumentParser(prog="mino-nexus credential")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    status = sub.add_parser("status", help="统计密码/OTP 密文状态，不输出凭据")
+    migrate = sub.add_parser("migrate", help="把历史明文凭据原地加密")
+    for parser in (status, migrate):
+        parser.add_argument("--data-dir", required=True, help="Explicit offline data directory")
+        parser.add_argument(
+            "--mode",
+            choices=("development", "production"),
+            default="development" if not getattr(sys, "frozen", False) else "production",
+        )
+    migrate.add_argument("--dry-run", action="store_true", help="只统计待迁移字段，不写库")
+    args = ap.parse_args(argv)
+    if not args.data_dir.strip():
+        ap.error("--data-dir must not be empty")
+
+    target = Path(args.data_dir).expanduser().resolve()
+    os.environ["MINO_NEXUS_MODE"] = args.mode
+    os.environ["MINO_NEXUS_DEV_DATA_DIR" if args.mode == "development" else "MINO_NEXUS_DATA_DIR"] = str(target)
+    os.environ["MINO_NEXUS_MDNS"] = "0"
+
+    # paths/database 必须在设置 data root 之后导入。
+    from mino_nexus.core.paths import get_app_data_dir
+    from mino_nexus.core.platform_runtime import file_lock
+
+    data_root = get_app_data_dir()
+    try:
+        with file_lock(data_root / ".nexus-server.lock", blocking=False):
+            from mino_nexus.core.database import ensure_db
+            from mino_nexus.resources.credential_cipher import credential_encryption_status
+            from mino_nexus.resources.credential_migration import (
+                backup_sqlite_database,
+                credential_database_status,
+                migrate_plaintext_credentials,
+            )
+
+            encryption = credential_encryption_status()
+            if args.cmd == "status":
+                ensure_db()
+                print(json.dumps({
+                    "encryption": encryption,
+                    "database": credential_database_status(),
+                }, ensure_ascii=False, indent=2))
+                return 0
+
+            backup = None if args.dry_run else backup_sqlite_database(data_root)
+            ensure_db()
+            before = credential_database_status()
+            result = migrate_plaintext_credentials(dry_run=args.dry_run)
+            after = credential_database_status()
+            print(json.dumps({
+                "encryption": encryption,
+                "backup": str(backup) if backup else "",
+                "before": before,
+                "result": result,
+                "after": after,
+            }, ensure_ascii=False, indent=2))
+            return 0
+    except BlockingIOError:
+        print(json.dumps({"ok": False, "error": "server_running", "message": "请先停止 Nexus 再迁移凭据"}, ensure_ascii=False), file=sys.stderr)
+        return 2
+    except Exception as exc:
+        from mino_nexus.resources.credential_cipher import CredentialCipherError
+        if isinstance(exc, CredentialCipherError):
+            print(json.dumps({"ok": False, "error": exc.code}, ensure_ascii=False), file=sys.stderr)
+            return 2
+        SLog.e(TAG, f"credential command failed: {type(exc).__name__}")
+        print(json.dumps({"ok": False, "error": "credential_command_failed"}, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "service":
@@ -417,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
         return probe_main(argv[1:])
     if argv and argv[0] == "migrate":
         return _migrate_cli(argv[1:])
+    if argv and argv[0] == "credential":
+        return _credential_cli(argv[1:])
     if argv and argv[0] == "catalog":
         return _catalog_cli(argv[1:])
     if argv and argv[0] == "session":

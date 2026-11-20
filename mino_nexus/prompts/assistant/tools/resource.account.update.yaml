@@ -1,6 +1,6 @@
 id: resource.account.update
 title: 修改测试账号
-description: 修改 Nexus 测试账号池中的账号；仅传要修改的字段。参数齐全且用户已要求该操作时直接调用，无需再次确认。
+description: 修改 Nexus 测试账号池中的账号；仅传要修改的字段。app_ids 可多选且不能为空，占用期间不能修改。请求不得携带密码或固定验证码，响应只返回凭据配置状态。参数齐全且用户已要求该操作时直接调用，无需再次确认。
 route: PATCH /project/{project_id}/accounts/{account_id}
 risk: write
 async: false
@@ -15,6 +15,16 @@ params_schema:
     account_id:
       type: string
       minLength: 1
+    app_ids:
+      type: array
+      minItems: 1
+      maxItems: 100
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        maxLength: 80
+      description: 生效应用，可多选；显式传空数组会被拒绝，省略则保留原范围
     env:
       type: string
     display_name:
@@ -24,10 +34,6 @@ params_schema:
     email:
       type: string
     username:
-      type: string
-    password:
-      type: string
-    otp:
       type: string
     kind:
       type: string

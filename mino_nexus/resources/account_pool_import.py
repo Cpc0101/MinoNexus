@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from typing import Any, Literal
 
 from mino_nexus.resources.account_ident_parse import _norm_phone
+from mino_nexus.resources.credential_safety import sanitize_credentials
 
 OnDuplicate = Literal["skip", "merge", "overwrite_credentials"]
 
@@ -43,6 +45,12 @@ _HEADER_ALIASES: dict[str, str] = {
     "手动占用": "locked",
     "account_id": "account_id",
     "id": "account_id",
+    "app_ids": "app_ids",
+    "app_id": "app_ids",
+    "生效应用id": "app_ids",
+    "生效应用": "app_ids",
+    "应用范围": "app_ids",
+    "应用": "app_ids",
     "lifecycle": "facet:lifecycle",
     "注册": "facet:lifecycle",
     "session": "facet:session",
@@ -167,6 +175,34 @@ def _parse_bool(val: str) -> bool | None:
     return None
 
 
+def _parse_app_ids_cell(value: Any) -> list[str] | None:
+    """解析 CSV/API 中的应用范围；显式空值视为无效，不能退化成全部应用。"""
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        if raw.startswith("["):
+            try:
+                decoded = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("account_app_ids_invalid") from exc
+            if not isinstance(decoded, list):
+                raise ValueError("account_app_ids_invalid")
+            raw_items = decoded
+        else:
+            raw_items = re.split(r"[,;|、]+", raw)
+    ids: list[str] = []
+    for item in raw_items:
+        aid = str(item or "").strip()
+        if aid and aid not in ids:
+            ids.append(aid)
+    if len(ids) > 100:
+        raise ValueError("account_app_ids_invalid")
+    return ids
+
+
 def row_dict_from_cells(
     cells: list[str],
     col_map: dict[int, str],
@@ -188,6 +224,9 @@ def row_dict_from_cells(
             b = _parse_bool(val)
             if b is not None:
                 out["locked"] = b
+            continue
+        if target == "app_ids":
+            out["app_ids"] = _parse_app_ids_cell(val)
             continue
         out[target] = val
     return out
@@ -225,6 +264,11 @@ def _is_leased(acc: dict[str, Any]) -> bool:
     return bool(str(lease.get("run_id") or "").strip())
 
 
+def _safe_preview_row(row: dict[str, Any]) -> dict[str, Any]:
+    """导入预览可展示字段，但密码/OTP/Token 等只显示是否已配置。"""
+    return sanitize_credentials(dict(row or {}))
+
+
 def _validate_row(row: dict[str, Any]) -> str:
     if not (
         str(row.get("display_name") or "").strip()
@@ -233,6 +277,29 @@ def _validate_row(row: dict[str, Any]) -> str:
         or str(row.get("username") or "").strip()
     ):
         return "至少填写展示名、手机、邮箱或用户名之一"
+    return ""
+
+
+def _normalize_row_app_scope(
+    row: dict[str, Any],
+    project_id: str,
+    *,
+    existing: dict[str, Any] | None = None,
+) -> str:
+    """规范化应用范围；新建必填，更新显式空数组仍拒绝。"""
+    from mino_nexus.resources.accounts.app_scope import normalize_app_ids, validate_project_apps
+
+    if "app_id" in row and "app_ids" not in row:
+        row["app_ids"] = row.pop("app_id")
+    if "app_ids" in row:
+        try:
+            app_ids = normalize_app_ids(_parse_app_ids_cell(row.get("app_ids")), required=True)
+            validate_project_apps(project_id, app_ids)
+        except ValueError as exc:
+            return str(exc)
+        row["app_ids"] = app_ids
+    elif not existing:
+        return "account_app_ids_required"
     return ""
 
 
@@ -294,14 +361,11 @@ def _apply_duplicate_policy(
             payload[field] = new_v or old_v
         if str(incoming.get("password") or "").strip():
             payload["password"] = incoming["password"]
-        elif str(old.get("password") or "").strip():
-            payload["password"] = old["password"]
         if str(incoming.get("otp") or "").strip():
             payload["otp"] = incoming["otp"]
-        elif str(old.get("otp") or "").strip():
-            payload["otp"] = old["otp"]
         if incoming.get("locked") is not None:
             payload["locked"] = incoming["locked"]
+        payload["app_ids"] = list(incoming.get("app_ids") or old.get("app_ids") or [])
         facets = dict(old.get("facets") or {})
         for k, v in (incoming.get("facets") or {}).items():
             if str(v or "").strip():
@@ -310,21 +374,17 @@ def _apply_duplicate_policy(
         return payload, ""
 
     # overwrite_credentials
-    for field in (
-        "display_name",
-        "phone",
-        "email",
-        "username",
-        "password",
-        "otp",
-        "note",
-        "env",
-        "locked",
-    ):
+    for field in ("display_name", "phone", "email", "username", "note", "env", "locked"):
         if field in incoming and incoming.get(field) not in (None, ""):
             payload[field] = incoming[field]
         elif field in old:
             payload[field] = old[field]
+    # 导入空单元格表示「没有新凭据」，不能用脱敏旧值的空串覆盖密文。
+    if str(incoming.get("password") or "").strip():
+        payload["password"] = incoming["password"]
+    if str(incoming.get("otp") or "").strip():
+        payload["otp"] = incoming["otp"]
+    payload["app_ids"] = list(incoming.get("app_ids") or old.get("app_ids") or [])
     facets = dict(old.get("facets") or {})
     facets.update({k: v for k, v in (incoming.get("facets") or {}).items() if str(v or "").strip()})
     payload["facets"] = facets
@@ -345,7 +405,7 @@ def _load_parsed_account_rows(
     doc = env_doc if isinstance(env_doc, dict) else {}
     defs = merged_pool_field_defs(doc)
     if rows:
-        return [dict(r) for r in rows if isinstance(r, dict)], [], {}, ""
+        return [dict(r) for r in rows if isinstance(r, dict)][:_MAX_ROWS], [], {}, ""
 
     headers: list[str] = []
     body: list[list[str]] = []
@@ -435,8 +495,11 @@ def preview_import(
         if not err:
             err = _normalize_row_env(raw, doc, default_env=default_env)
         mk = _match_key(raw)
+        hit = by_key.get(mk) if mk else None
+        if not err:
+            err = _normalize_row_app_scope(raw, pid, existing=hit)
         if err:
-            preview.append({"row": row_num, "action": "error", "error": err, "incoming": raw})
+            preview.append({"row": row_num, "action": "error", "error": err, "incoming": _safe_preview_row(raw)})
             stats["error"] += 1
             continue
         if mk and mk in file_keys:
@@ -445,7 +508,7 @@ def preview_import(
                     "row": row_num,
                     "action": "error",
                     "error": "本文件内重复标识",
-                    "incoming": raw,
+                    "incoming": _safe_preview_row(raw),
                 }
             )
             stats["error"] += 1
@@ -453,7 +516,6 @@ def preview_import(
         if mk:
             file_keys.add(mk)
 
-        hit = by_key.get(mk) if mk else None
         if hit:
             payload, pol_err = _apply_duplicate_policy(raw, hit, on_duplicate=on_duplicate)
             if pol_err:
@@ -463,7 +525,7 @@ def preview_import(
                         "action": "skip",
                         "reason": pol_err,
                         "account_id": hit.get("id"),
-                        "incoming": raw,
+                        "incoming": _safe_preview_row(raw),
                     }
                 )
                 stats["skip"] += 1
@@ -474,7 +536,7 @@ def preview_import(
                         "action": "skip",
                         "reason": "已存在（跳过）",
                         "account_id": hit.get("id"),
-                        "incoming": raw,
+                        "incoming": _safe_preview_row(raw),
                     }
                 )
                 stats["skip"] += 1
@@ -484,12 +546,12 @@ def preview_import(
                         "row": row_num,
                         "action": "update",
                         "account_id": hit.get("id"),
-                        "incoming": raw,
+                        "incoming": _safe_preview_row(raw),
                     }
                 )
                 stats["update"] += 1
         else:
-            preview.append({"row": row_num, "action": "create", "incoming": raw})
+            preview.append({"row": row_num, "action": "create", "incoming": _safe_preview_row(raw)})
             stats["create"] += 1
 
     return {
@@ -563,11 +625,13 @@ def commit_import(
         err = _validate_row(raw)
         if not err:
             err = _normalize_row_env(raw, doc, default_env=default_env)
+        mk = _match_key(raw)
+        hit = by_key.get(mk) if mk else None
+        if not err:
+            err = _normalize_row_app_scope(raw, pid, existing=hit)
         if err:
             errors.append({"row": row_num, "error": err})
             continue
-        mk = _match_key(raw)
-        hit = by_key.get(mk) if mk else None
         try:
             if hit:
                 payload, pol_err = _apply_duplicate_policy(raw, hit, on_duplicate=on_duplicate)

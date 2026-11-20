@@ -556,27 +556,29 @@ def _norm_test_accounts(raw: Any, env_doc: dict | None = None) -> List[dict]:
             lease_sn = str(lease_raw.get("sn") or "").strip()
             if lease_sn:
                 lease["sn"] = lease_sn[:64]
-        out.append(
-            {
-                "id": aid,
-                "account_id": aid,
-                "display_name": display_name or ident[:40],
-                "name": display_name or ident[:40],
-                "env": _slug(item.get("env") or "test", "test"),
-                "kind": str(item.get("kind") or "mixed").strip() or "mixed",
-                "phone": phone,
-                "email": email,
-                "username": username,
-                "password": str(item.get("password") or "").strip()[:120],
-                "otp": str(item.get("otp") or item.get("sms_code") or "").strip()[:32],
-                "facets": facets,
-                "profile_id": profile_id,
-                "app_ids": app_ids,
-                "note": str(item.get("note") or "").strip()[:200],
-                "locked": bool(item.get("locked")),
-                "lease": lease,
-            }
-        )
+        normalized = {
+            "id": aid,
+            "account_id": aid,
+            "display_name": display_name or ident[:40],
+            "name": display_name or ident[:40],
+            "env": _slug(item.get("env") or "test", "test"),
+            "kind": str(item.get("kind") or "mixed").strip() or "mixed",
+            "phone": phone,
+            "email": email,
+            "username": username,
+            "facets": facets,
+            "profile_id": profile_id,
+            "app_ids": app_ids,
+            "note": str(item.get("note") or "").strip()[:200],
+            "locked": bool(item.get("locked")),
+            "lease": lease,
+        }
+        # 缺席表示「不修改已有凭据」；显式空串才表示清空。
+        if "password" in item:
+            normalized["password"] = str(item.get("password") or "").strip()[:120]
+        if "otp" in item or "sms_code" in item:
+            normalized["otp"] = str(item.get("otp") or item.get("sms_code") or "").strip()[:32]
+        out.append(normalized)
     return out
 
 
@@ -587,14 +589,16 @@ def public_test_accounts(
     facet_extensions: Optional[List[dict]] = None,
     pool_field_defs: Optional[List[dict]] = None,
 ) -> List[dict]:
-    """列表给前端看。筛号 / 环境接口默认不带明文；账号管理页需要带上才能展示。"""
+    """账号对外读模型：只返回凭据是否已配置，绝不返回凭据值。
+
+    ``include_password`` 仅为兼容旧调用保留，不再改变输出。
+    """
     from mino_nexus.resources.account_facet_schema import extension_display_rows, merge_account_facets
     from mino_nexus.resources.resource_pool import account_facets, lease_display
 
     tpl_ext = pool_field_defs if pool_field_defs is not None else (facet_extensions or [])
     out = []
     for row in rows or []:
-        pwd = str(row.get("password") or "")
         item = dict(row)
         item.pop("tags", None)
         item.pop("template_id", None)
@@ -607,15 +611,10 @@ def public_test_accounts(
         ext_rows = extension_display_rows(facets, tpl_ext, configured_only=True)
         item["facets_brief"] = " · ".join(f"{r['title']}:{r['label']}" for r in ext_rows)
         item["lease_display"] = lease_display(item.get("lease"))
-        item["has_password"] = bool(pwd)
-        item["password_masked"] = ("••••" + pwd[-2:]) if len(pwd) >= 4 else ("••••" if pwd else "")
-        otp = str(item.get("otp") or "")
-        item["has_otp"] = bool(otp)
-        if include_password:
-            item["password"] = pwd
-        else:
-            item.pop("password", None)
-            item.pop("otp", None)
+        item["has_password"] = bool(row.get("has_password", row.get("password")))
+        item["has_otp"] = bool(row.get("has_otp", row.get("otp") or row.get("sms_code")))
+        for key in ("password", "otp", "sms_code", "password_masked"):
+            item.pop(key, None)
         out.append(item)
     return out
 
@@ -630,11 +629,11 @@ def list_test_accounts(env_doc: dict, *, project_id: str = "") -> List[dict]:
     return _norm_test_accounts(doc.get("test_accounts"), env_doc=doc)
 
 
-def _merge_account_row(row: dict, old: dict) -> dict:
+def _merge_account_row(row: dict, old: dict, *, preserve_legacy_credentials: bool = False) -> dict:
     out = dict(row)
-    if not out.get("password"):
+    if preserve_legacy_credentials and "password" not in out:
         out["password"] = str(old.get("password") or "")
-    if not out.get("otp"):
+    if preserve_legacy_credentials and "otp" not in out:
         out["otp"] = str(old.get("otp") or "")
     if not out.get("profile_id"):
         out["profile_id"] = str(old.get("profile_id") or "")
@@ -654,17 +653,28 @@ def save_test_accounts(env_doc: dict, rows: List[dict], *, project_id: str = "")
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if "app_ids" in row and pid:
-            validate_project_apps(pid, normalize_app_ids(row["app_ids"]))
         old = prev.get(str(row.get("account_id") or row.get("id") or "")) or {}
+        if "app_ids" in row and pid:
+            app_ids = normalize_app_ids(row["app_ids"], required=True)
+            validate_project_apps(pid, app_ids)
+        elif not old and pid:
+            raise ValueError("account_app_ids_required")
         prepared.append({"app_ids": old.get("app_ids", []), **row})
     incoming = _norm_test_accounts(prepared, env_doc=doc)
-    merged = [_merge_account_row(row, prev.get(row["id"]) or {}) for row in incoming]
     if pid:
         from mino_nexus.resources.pool_account_store import env_without_test_accounts_blob, replace_all
 
-        replace_all(pid, merged)
+        # 数据库路径由 _upsert_row 做字段级更新：缺席字段保持原值，显式空串才清空。
+        replace_all(pid, incoming)
         return env_without_test_accounts_blob(doc)
+    merged = [
+        _merge_account_row(
+            row,
+            prev.get(row["id"]) or {},
+            preserve_legacy_credentials=True,
+        )
+        for row in incoming
+    ]
     doc["test_accounts"] = merged
     return doc
 
@@ -684,11 +694,16 @@ def save_one_test_account(
         raise ValueError("project_id required")
     doc = dict(env_doc or {})
     aid = str(account_id or row.get("account_id") or row.get("id") or "").strip()
-    if "app_ids" in row:
-        from mino_nexus.resources.accounts.app_scope import normalize_app_ids, validate_project_apps
-        validate_project_apps(pid, normalize_app_ids(row["app_ids"]))
     prev = {str(x.get("id")): x for x in list_test_accounts(doc, project_id=pid)}
     old = prev.get(aid) or {}
+    if "app_ids" in row:
+        from mino_nexus.resources.accounts.app_scope import normalize_app_ids, validate_project_apps
+        app_ids = normalize_app_ids(row["app_ids"], required=True)
+        validate_project_apps(pid, app_ids)
+        if (old.get("lease") or {}).get("run_id") and app_ids != list(old.get("app_ids") or []):
+            raise ValueError("account_busy; cannot change app_ids while leased")
+    elif not old:
+        raise ValueError("account_app_ids_required")
     payload = dict(row)
     if aid:
         payload["id"] = aid
@@ -723,7 +738,7 @@ def save_one_test_account(
     normed = _norm_test_accounts([{**old, **payload}], env_doc=doc)
     if not normed:
         raise ValueError("account save failed")
-    merged = _merge_account_row(normed[0], old)
+    merged = dict(normed[0])
     if "app_ids" not in row:
         merged.pop("app_ids", None)
     saved = upsert_one(pid, merged)

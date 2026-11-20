@@ -20,7 +20,7 @@ from mino_nexus.resources.resource_pool import account_facet_values_for_match, a
 TAG = "FacetSync"
 SNAPSHOT_SCHEMA = "account_template_state_v1"
 
-_SCALAR_FIELDS = (
+_WRITABLE_SCALAR_FIELDS = (
     "env",
     "display_name",
     "phone",
@@ -30,6 +30,18 @@ _SCALAR_FIELDS = (
     "otp",
     "note",
 )
+
+# 日志和可恢复快照永远不包含凭据值。
+_SNAPSHOT_SCALAR_FIELDS = (
+    "env",
+    "display_name",
+    "phone",
+    "email",
+    "username",
+    "note",
+)
+_RECOVERABLE_FIELDS = frozenset((*_SNAPSHOT_SCALAR_FIELDS, "app_ids"))
+_CREDENTIAL_FIELDS = ("password", "otp")
 
 
 @dataclass
@@ -64,8 +76,9 @@ def log_context_from_run_ctx(ctx: Any, *, source: str, case_id: str = "") -> Fac
 
 
 def _scalar_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    """返回可审计、可恢复的非凭据快照。"""
     out: dict[str, Any] = {}
-    for key in (*_SCALAR_FIELDS, "app_ids"):
+    for key in (*_SNAPSHOT_SCALAR_FIELDS, "app_ids"):
         if key not in row:
             continue
         val = row.get(key)
@@ -73,10 +86,10 @@ def _scalar_snapshot(row: dict[str, Any]) -> dict[str, Any]:
             out[key] = list(val or [])
         elif val is None:
             out[key] = ""
-        elif key == "password":
-            out[key] = str(val)
         else:
             out[key] = str(val).strip()
+    out["password_configured"] = bool(row.get("has_password"))
+    out["otp_configured"] = bool(row.get("has_otp"))
     return out
 
 
@@ -87,6 +100,7 @@ def _build_log_detail(
     before_fields: dict[str, Any],
     after_fields: dict[str, Any],
     updates: dict[str, str],
+    credential_fields_changed: list[str],
     log_ctx: FacetLogContext,
     project_id: str,
     account_id: str,
@@ -97,13 +111,18 @@ def _build_log_detail(
     changed_field_keys = sorted(
         k for k in set(before_fields) | set(after_fields) if before_fields.get(k) != after_fields.get(k)
     )
-    recover_fields = {k: before_fields.get(k, "") for k in set(before_fields) | set(changed_field_keys)}
+    recover_fields = {
+        key: before_fields.get(key, "")
+        for key in _RECOVERABLE_FIELDS
+        if key in before_fields
+    }
     return {
         "schema": SNAPSHOT_SCHEMA,
         "source": log_ctx.source,
         "updates": dict(updates),
         "changed_facet_keys": changed_facet_keys,
         "changed_field_keys": changed_field_keys,
+        "credential_fields_changed": list(credential_fields_changed),
         "before": {"facets": dict(before_facets), "fields": dict(before_fields)},
         "after": {"facets": dict(after_facets), "fields": dict(after_fields)},
         "recover": {
@@ -170,7 +189,7 @@ def apply_account_template_state(
     save_payload: dict[str, Any] = {}
     if after_facets != before_facets:
         save_payload["facets"] = after_facets
-    for key in (*_SCALAR_FIELDS, "app_ids"):
+    for key in (*_WRITABLE_SCALAR_FIELDS, "app_ids"):
         if key not in patch:
             continue
         save_payload[key] = patch[key]
@@ -182,8 +201,11 @@ def apply_account_template_state(
         return None, [str(exc)]
     after_facets = facets_for_storage(account_facet_values_for_match(saved), defs)
     after_fields = _scalar_snapshot(saved)
+    credential_fields_changed = [key for key in _CREDENTIAL_FIELDS if key in patch]
     if not ctx.skip_log and (
-        after_facets != before_facets or after_fields != before_fields
+        after_facets != before_facets
+        or after_fields != before_fields
+        or credential_fields_changed
     ):
         action = ACTION_FACET_RESTORE if ctx.restored_from_log_id else ACTION_FACET_UPDATE
         msg = ctx.message.strip()
@@ -196,6 +218,8 @@ def apply_account_template_state(
                 parts.append(f"模板字段 {n} 项")
             if after_fields != before_fields:
                 parts.append("参数字段已更新")
+            if credential_fields_changed:
+                parts.append("凭据已更新")
             msg = " · ".join(parts) or "模板状态已更新"
         append_allocation_log(
             project_id=pid,
@@ -214,6 +238,7 @@ def apply_account_template_state(
                 before_fields=before_fields,
                 after_fields=after_fields,
                 updates=updates_applied,
+                credential_fields_changed=credential_fields_changed,
                 log_ctx=ctx,
                 project_id=pid,
                 account_id=aid,
@@ -277,7 +302,11 @@ def restore_account_from_allocation_log(project_id: str, log_id: int) -> tuple[d
         pid,
         aid,
         stored_facets={str(k): str(v).strip().lower() for k, v in facets.items() if str(k).strip()},
-        row_patch=fields if isinstance(fields, dict) else None,
+        row_patch={
+            str(key): value
+            for key, value in fields.items()
+            if str(key) in _RECOVERABLE_FIELDS
+        } if isinstance(fields, dict) else None,
         log_ctx=log_ctx,
     )
     if not saved:

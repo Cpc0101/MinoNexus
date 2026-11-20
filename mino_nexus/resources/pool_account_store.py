@@ -8,6 +8,7 @@ from typing import Any
 from mino_nexus.core.database import session_scope
 from mino_nexus.models.pool_account import PoolAccount, PoolAccountFacet
 from mino_nexus.models.account_data import AccountData, AccountDataRequest
+from mino_nexus.resources.credential_cipher import decrypt_secret, encrypt_secret
 
 
 def _now() -> int:
@@ -39,9 +40,14 @@ def _registered_at_iso(ts: int) -> str:
         return ""
 
 
-def _account_to_dict(row: PoolAccount, facets: dict[str, str]) -> dict[str, Any]:
+def _account_to_dict(
+    row: PoolAccount,
+    facets: dict[str, str],
+    *,
+    include_credentials: bool = False,
+) -> dict[str, Any]:
     created = int(row.created_at or 0)
-    return {
+    out = {
         "id": row.id,
         "account_id": row.id,
         "display_name": row.display_name or "",
@@ -51,8 +57,8 @@ def _account_to_dict(row: PoolAccount, facets: dict[str, str]) -> dict[str, Any]
         "phone": row.phone or "",
         "email": row.email or "",
         "username": row.username or "",
-        "password": row.password or "",
-        "otp": row.otp or "",
+        "has_password": bool(row.password),
+        "has_otp": bool(row.otp),
         "profile_id": row.profile_id or "",
         "app_ids": list(row.app_ids or []),
         "note": row.note or "",
@@ -63,6 +69,39 @@ def _account_to_dict(row: PoolAccount, facets: dict[str, str]) -> dict[str, Any]
         "registered_at": _registered_at_iso(created),
         "updated_at": int(row.updated_at or 0),
     }
+    if include_credentials:
+        out["password"] = decrypt_secret(
+            row.password,
+            project_id=str(row.project_id),
+            account_id=str(row.id),
+            field="password",
+        )
+        out["otp"] = decrypt_secret(
+            row.otp,
+            project_id=str(row.project_id),
+            account_id=str(row.id),
+            field="otp",
+        )
+    return out
+
+
+def _read_credentials(
+    row: PoolAccount,
+    *,
+    fields: tuple[str, ...],
+) -> dict[str, str]:
+    """只解密请求的字段；调用方必须先完成账号范围校验。"""
+    out: dict[str, str] = {}
+    for field in fields:
+        if field not in {"password", "otp"}:
+            raise ValueError("credential_field_invalid")
+        out[field] = decrypt_secret(
+            getattr(row, field),
+            project_id=str(row.project_id),
+            account_id=str(row.id),
+            field=field,
+        )
+    return out
 
 
 def _write_facets(db, project_id: str, account_id: str, facets: dict[str, Any]) -> None:
@@ -85,10 +124,19 @@ def _write_facets(db, project_id: str, account_id: str, facets: dict[str, Any]) 
         )
 
 
-def _upsert_row(db, project_id: str, row: dict[str, Any]) -> None:
+def _upsert_row(
+    db,
+    project_id: str,
+    row: dict[str, Any],
+    *,
+    allow_legacy_empty_scope: bool = False,
+) -> None:
     aid = str(row.get("account_id") or row.get("id") or "").strip()
     if not aid:
         return
+    pid = str(project_id or "").strip()
+    if not pid:
+        raise ValueError("project_id_required")
     now = _now()
     existing = (
         db.query(PoolAccount)
@@ -99,7 +147,11 @@ def _upsert_row(db, project_id: str, row: dict[str, Any]) -> None:
         existing = PoolAccount(id=aid, project_id=project_id, created_at=now)
         db.add(existing)
     from mino_nexus.resources.accounts.app_scope import normalize_app_ids
-    app_ids = normalize_app_ids(row.get("app_ids", existing.app_ids or []))
+    raw_app_ids = row.get("app_ids") if "app_ids" in row else (existing.app_ids or [])
+    if allow_legacy_empty_scope and raw_app_ids == []:
+        app_ids = []
+    else:
+        app_ids = normalize_app_ids(raw_app_ids, required=True)
     if (existing.lease or {}).get("run_id") and app_ids != (existing.app_ids or []):
         raise ValueError("account_busy; cannot change app_ids while leased")
     existing.app_ids = app_ids
@@ -108,8 +160,21 @@ def _upsert_row(db, project_id: str, row: dict[str, Any]) -> None:
     existing.phone = str(row.get("phone") or "")[:32]
     existing.email = str(row.get("email") or "")[:80]
     existing.username = str(row.get("username") or "")[:80]
-    existing.password = str(row.get("password") or "")[:120]
-    existing.otp = str(row.get("otp") or "")[:32]
+    # 不能截断密文；长度约束在调用方规范化明文时执行。
+    if "password" in row:
+        existing.password = encrypt_secret(
+            row.get("password"),
+            project_id=pid,
+            account_id=aid,
+            field="password",
+        )
+    if "otp" in row:
+        existing.otp = encrypt_secret(
+            row.get("otp"),
+            project_id=pid,
+            account_id=aid,
+            field="otp",
+        )
     existing.kind = str(row.get("kind") or "mixed")[:24]
     existing.profile_id = str(row.get("profile_id") or "")[:40]
     existing.note = str(row.get("note") or "")[:200]
@@ -151,6 +216,96 @@ def list_accounts(project_id: str, env_doc: dict | None = None) -> list[dict[str
         return out
 
 
+def get_account(project_id: str, account_id: str) -> dict[str, Any] | None:
+    """读取单个账号的脱敏视图；不会批量解密号池。"""
+    pid = str(project_id or "").strip()
+    aid = str(account_id or "").strip()
+    if not pid or not aid:
+        return None
+    with session_scope() as db:
+        acc = (
+            db.query(PoolAccount)
+            .filter(PoolAccount.project_id == pid, PoolAccount.id == aid)
+            .one_or_none()
+        )
+        if acc is None:
+            return None
+        return _account_to_dict(acc, _facets_for_account(db, pid, aid))
+
+
+def read_account_credentials(
+    project_id: str,
+    account_id: str,
+    *,
+    fields: tuple[str, ...] = ("password", "otp"),
+    app_id: str = "",
+) -> dict[str, str] | None:
+    """按账号和字段解密；应用范围不匹配时拒绝读取。"""
+    pid = str(project_id or "").strip()
+    aid = str(account_id or "").strip()
+    app_id = str(app_id or "").strip()
+    requested = tuple(dict.fromkeys(str(field) for field in fields))
+    if not pid or not aid or not app_id or not requested:
+        return None
+    with session_scope() as db:
+        row = (
+            db.query(PoolAccount)
+            .filter(PoolAccount.project_id == pid, PoolAccount.id == aid)
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        from mino_nexus.resources.accounts.app_scope import account_matches_app
+        if not account_matches_app({"app_ids": row.app_ids or []}, app_id):
+            return None
+        return _read_credentials(row, fields=requested)
+
+
+def read_leased_account_credentials(
+    project_id: str,
+    account_id: str,
+    *,
+    run_id: str,
+    case_id: str = "",
+    sn: str = "",
+    app_id: str = "",
+    fields: tuple[str, ...] = ("password", "otp"),
+) -> dict[str, str] | None:
+    """严格校验当前租约后，按字段返回单账号明文。"""
+    pid = str(project_id or "").strip()
+    aid = str(account_id or "").strip()
+    rid = str(run_id or "").strip()
+    requested = tuple(dict.fromkeys(str(field) for field in fields))
+    if not pid or not aid or not rid or not requested:
+        return None
+    with session_scope() as db:
+        row = (
+            db.query(PoolAccount)
+            .filter(PoolAccount.project_id == pid, PoolAccount.id == aid)
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        lease = row.lease if isinstance(row.lease, dict) else {}
+        if str(lease.get("run_id") or "").strip() != rid:
+            return None
+        lease_case = str(lease.get("case_id") or "").strip()
+        if lease_case and lease_case != str(case_id or "").strip():
+            return None
+        lease_sn = str(lease.get("sn") or "").strip()
+        if lease_sn and lease_sn != str(sn or "").strip():
+            return None
+        from mino_nexus.resources.resource_pool import lease_expired
+        if lease_expired(lease):
+            return None
+        if not app_id:
+            return None
+        from mino_nexus.resources.accounts.app_scope import account_matches_app
+        if not account_matches_app({"app_ids": row.app_ids or []}, app_id):
+            return None
+        return _read_credentials(row, fields=requested)
+
+
 def replace_all(project_id: str, rows: list[dict[str, Any]]) -> None:
     pid = str(project_id or "").strip()
     if not pid:
@@ -159,17 +314,29 @@ def replace_all(project_id: str, rows: list[dict[str, Any]]) -> None:
         from sqlalchemy import text
         db.execute(text("BEGIN IMMEDIATE"))
         held = db.query(PoolAccount).filter(PoolAccount.project_id == pid).all()
+        legacy_empty_scope_ids = {
+            str(row.id)
+            for row in held
+            if not list(row.app_ids or [])
+        }
         if any((row.lease or {}).get("run_id") for row in held):
             raise ValueError("resource_busy: 存在未释放的账号租约，暂不能整表替换号池")
         retained = {str(row.get("account_id") or row.get("id") or "") for row in rows or []}
         for model in (AccountData, AccountDataRequest):
             db.query(model).filter(model.project_id == pid, model.account_id.notin_(retained)).delete(synchronize_session=False)
-        db.query(PoolAccountFacet).filter(PoolAccountFacet.project_id == pid).delete(
-            synchronize_session=False
-        )
-        db.query(PoolAccount).filter(PoolAccount.project_id == pid).delete(synchronize_session=False)
+        removed = {str(row.id) for row in held if str(row.id) not in retained}
+        if removed:
+            db.query(PoolAccountFacet).filter(
+                PoolAccountFacet.project_id == pid,
+                PoolAccountFacet.account_id.in_(removed),
+            ).delete(synchronize_session=False)
+            db.query(PoolAccount).filter(
+                PoolAccount.project_id == pid,
+                PoolAccount.id.in_(removed),
+            ).delete(synchronize_session=False)
         for row in rows or []:
-            _upsert_row(db, pid, row)
+            aid = str(row.get("account_id") or row.get("id") or "").strip()
+            _upsert_row(db, pid, row, allow_legacy_empty_scope=aid in legacy_empty_scope_ids)
 
 
 def upsert_one(project_id: str, row: dict[str, Any]) -> dict[str, Any] | None:

@@ -1,6 +1,6 @@
 id: resource.account.reserve
 title: MCP 预约测试账号
-description: 为一个外部执行/人工核验占用一个测试账号：优先按 account_id，未给则按 env/lifecycle 选第一个空闲账号。占用写入号池租约，立刻在资源视图里显示 occupied，其他租号/预约会跳过它。返回账号、密码、OTP 明文，可直接用于外部登录或 curl；占用期间其他租号/预约会跳过它。用户明确说“先占一个号/帮我留一个号”时用。
+description: 为一个外部执行/人工核验占用一个测试账号：优先按 account_id，未给则按 app_id/env/lifecycle 选第一个空闲账号。应用范围是硬条件。占用写入号池租约，资源视图显示 occupied。响应只返回账号元数据、凭据配置状态与租约，绝不返回密码或验证码。用户明确说“先占一个号/帮我留一个号”时用。
 route: POST /project/{project_id}/resources/accounts/reserve
 risk: write
 async: false
@@ -13,10 +13,12 @@ params_schema:
       description: 项目 id 或项目名
     account_id:
       type: string
-      description: 指定账号 id；留空则按条件选空闲账号
+      description: 指定账号 id；留空则按 app_id/env/lifecycle 选空闲账号
     app_id:
       type: string
-      description: 目标应用 ID；账号生效应用是硬条件，省略时只预约全部应用账号
+      minLength: 1
+      maxLength: 80
+      description: 必填；账号生效范围必须包含该应用
     env:
       type: string
       description: 环境 key；选号时作为硬条件
@@ -37,6 +39,7 @@ params_schema:
       description: 租约秒数；默认 7200，最小 60，最大 7 天
   required:
   - project_id
+  - app_id
 param_resolvers:
   project_id: project.by_name
 result_pick:

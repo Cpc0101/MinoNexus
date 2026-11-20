@@ -401,8 +401,9 @@ def renew_run_lease(ctx: Any) -> bool:
         return False
 
 
-def apply_lease_to_ctx(ctx: Any, row: dict[str, Any], *, project_id: str) -> None:
+def apply_lease_to_ctx(ctx: Any, row: dict[str, Any], *, project_id: str) -> bool:
     from mino_nexus.resources.gmail_alias_lease import enrich_gmail_alias_account_row
+    from mino_nexus.resources.pool_account_store import read_leased_account_credentials
 
     src = row if isinstance(row, dict) else {}
     row = enrich_gmail_alias_account_row(src, ctx)
@@ -421,8 +422,20 @@ def apply_lease_to_ctx(ctx: Any, row: dict[str, Any], *, project_id: str) -> Non
             pass
     ident = account_ident(row)
     facets = account_facets(row)
+    account_id = str(row.get("id") or "")
+    credentials = read_leased_account_credentials(
+        project_id,
+        account_id,
+        run_id=str(getattr(ctx, "run_id", "") or ""),
+        case_id=str(getattr(ctx, "case_id", "") or ""),
+        sn=str(getattr(ctx, "sn", "") or ""),
+        app_id=str(getattr(ctx, "app_id", "") or ""),
+    )
+    if credentials is None:
+        SLog.w(TAG, f"lease credential read denied account={account_id[:12]}")
+        return False
     lease_meta = {
-        "account_id": str(row.get("id") or ""),
+        "account_id": account_id,
         "project_id": str(project_id or ""),
         "run_id": str(getattr(ctx, "run_id", "") or ""),
         "account_ident": ident,
@@ -444,8 +457,8 @@ def apply_lease_to_ctx(ctx: Any, row: dict[str, Any], *, project_id: str) -> Non
         "phone": str(row.get("phone") or ""),
         "email": str(row.get("email") or ""),
         "username": str(row.get("username") or ""),
-        "password": str(row.get("password") or ""),
-        "otp": str(row.get("otp") or row.get("sms_code") or ""),
+        "password": str(credentials.get("password") or ""),
+        "otp": str(credentials.get("otp") or ""),
         "facets": facets,
         "profile_id": lease_meta["profile_id"],
         "env": lease_meta["env"],
@@ -457,6 +470,7 @@ def apply_lease_to_ctx(ctx: Any, row: dict[str, Any], *, project_id: str) -> Non
         "project_id": project_id,
         "account_id": lease_meta["account_id"],
     }
+    return True
 
 
 def row_satisfies_requirements(
@@ -552,7 +566,10 @@ def restore_lease_for_run(ctx: Any, run_id: str) -> tuple[dict[str, Any] | None,
         lease_sn = str(lease.get("sn") or "").strip()
         if want_sn and lease_sn and lease_sn != want_sn:
             continue
-        apply_lease_to_ctx(ctx, row, project_id=project_id)
+        if not apply_lease_to_ctx(ctx, row, project_id=project_id):
+            ctx.resource_lease = {}
+            ctx.picked_account = {}
+            return None, "租约凭证读取失败，未恢复账号"
         if not renew_run_lease(ctx):
             ctx.resource_lease = {}
             ctx.picked_account = {}
@@ -744,7 +761,9 @@ def _lease_for_context(
                 env=env_profile,
                 requirements=requirements,
             ):
-                apply_lease_to_ctx(ctx, alias_row, project_id=project_id)
+                if not apply_lease_to_ctx(ctx, alias_row, project_id=project_id):
+                    _clear_leased(project_id, account_id, run_id)
+                    return None, "租约凭证读取失败"
                 SLog.i(TAG, f"leased gmail alias (fresh) {account_ident(alias_row)} run={run_id[:12]}")
                 return alias_row, ""
     if not ident_hints and should_provision_phone_seq(requirements, prompt=prompt, env_doc=env_doc, ctx=ctx):
@@ -767,7 +786,9 @@ def _lease_for_context(
                 env=env_profile,
                 requirements=requirements,
             ):
-                apply_lease_to_ctx(ctx, phone_row, project_id=project_id)
+                if not apply_lease_to_ctx(ctx, phone_row, project_id=project_id):
+                    _clear_leased(project_id, account_id, run_id)
+                    return None, "租约凭证读取失败"
                 SLog.i(TAG, f"leased phone seq (fresh) {account_ident(phone_row)} run={run_id[:12]}")
                 return phone_row, ""
         return None, "新账号未能满足前置或资源仍被占用；未回退复用旧账号"
@@ -841,7 +862,9 @@ def _lease_for_context(
                 env=env_profile,
                 requirements=requirements,
             ):
-                apply_lease_to_ctx(ctx, alias_row, project_id=project_id)
+                if not apply_lease_to_ctx(ctx, alias_row, project_id=project_id):
+                    _clear_leased(project_id, account_id, run_id)
+                    return None, "租约凭证读取失败"
                 SLog.i(
                     TAG,
                     f"leased gmail alias after miss {account_ident(alias_row)} run={run_id[:12]}",
@@ -875,7 +898,9 @@ def _lease_for_context(
             return None, held
         return None, f"{base}{hint}"
 
-    apply_lease_to_ctx(ctx, row, project_id=project_id)
+    if not apply_lease_to_ctx(ctx, row, project_id=project_id):
+        _clear_leased(project_id, str(row.get("id") or ""), run_id)
+        return None, "租约凭证读取失败"
     SLog.i(TAG, f"leased {account_ident(row)} for run={run_id[:12]} score={row.get('score')}")
     return row, ""
 

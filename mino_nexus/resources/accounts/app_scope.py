@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 
-def normalize_app_ids(value) -> list[str]:
+def normalize_app_ids(value, *, required: bool = False) -> list[str]:
     if not isinstance(value, list) or len(value) > 100:
         raise ValueError("account_app_ids_invalid")
     if any(not isinstance(item, str) or not item.strip() or len(item) > 80 for item in value):
         raise ValueError("account_app_ids_invalid")
-    return list(dict.fromkeys(item.strip() for item in value))
+    ids = list(dict.fromkeys(item.strip() for item in value))
+    if required and not ids:
+        raise ValueError("account_app_ids_required")
+    return ids
 
 
 def account_matches_app(row: dict, app_id: str = "") -> bool:
     ids = normalize_app_ids(row.get("app_ids", []))
-    return not ids or bool(app_id) and app_id in ids
+    return bool(ids) and bool(str(app_id or "").strip()) and str(app_id).strip() in ids
 
 
 def validate_project_apps(project_id: str, app_ids: list[str]) -> None:

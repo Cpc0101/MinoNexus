@@ -1,6 +1,6 @@
 id: resource.account.create
 title: 新增测试账号
-description: 向当前项目的 Nexus 测试账号池新增账号。环境与登录身份用于租用匹配。参数齐全且用户已要求该操作时直接调用，无需再次确认。
+description: 向当前项目的 Nexus 测试账号池新增账号。必须绑定至少一个当前项目应用；环境与登录身份用于租用匹配。请求不得携带密码或固定验证码，响应只返回凭据配置状态。参数齐全且用户已要求该操作时直接调用，无需再次确认。
 route: POST /project/{project_id}/accounts
 risk: write
 async: false
@@ -12,6 +12,16 @@ params_schema:
     project_id:
       type: string
       minLength: 1
+    app_ids:
+      type: array
+      minItems: 1
+      maxItems: 100
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        maxLength: 80
+      description: 生效应用，至少一个且必须属于当前项目；可多选
     env:
       type: string
     display_name:
@@ -21,10 +31,6 @@ params_schema:
     email:
       type: string
     username:
-      type: string
-    password:
-      type: string
-    otp:
       type: string
     kind:
       type: string
@@ -39,6 +45,7 @@ params_schema:
       type: boolean
   required:
   - project_id
+  - app_ids
 param_resolvers:
   project_id: project.by_name
 result_pick:

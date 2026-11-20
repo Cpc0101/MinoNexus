@@ -11,7 +11,7 @@ from mino_nexus.resources.accounts.pool_templates import (
     project_enabled_templates,
     template_facet_extensions,
 )
-from mino_nexus.resources.accounts.lease import _mark_leased, apply_lease_to_ctx
+from mino_nexus.resources.accounts.lease import _clear_leased, _mark_leased, apply_lease_to_ctx
 from mino_nexus.resources.project_env import list_test_accounts, pick_test_accounts
 from mino_nexus.resources.resource_pool import empty_requirements
 
@@ -86,9 +86,17 @@ def allocate_by_template(
             break
     if row is None:
         return None, "匹配账号已被占用或状态发生变化，未分配凭证"
-    apply_lease_to_ctx(ctx, row, project_id=project_id)
+    if not apply_lease_to_ctx(ctx, row, project_id=project_id):
+        _clear_leased(project_id, str(row.get("id") or ""), run_id)
+        return None, "租约凭证读取失败"
 
-    grant = credentials_grant(row, tpl)
+    picked = dict(getattr(ctx, "picked_account", None) or {})
+    grant_row = {
+        **row,
+        **picked,
+        "facets": row.get("facets") or picked.get("facets") or {},
+    }
+    grant = credentials_grant(grant_row, tpl)
     grant["template_label"] = str(tpl.get("label") or "")
     grant["reason"] = str(row.get("reason") or "")
     return grant, ""

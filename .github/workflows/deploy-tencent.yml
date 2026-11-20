@@ -14,6 +14,8 @@ on:
     secrets:
       TENCENT_SSH_PRIVATE_KEY:
         required: true
+      MINO_NEXUS_CREDENTIAL_MASTER_KEY:
+        required: true
       TCR_USERNAME:
         required: true
       TCR_PASSWORD:
@@ -61,6 +63,7 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+          CREDENTIAL_MASTER_KEY: ${{ secrets.MINO_NEXUS_CREDENTIAL_MASTER_KEY }}
           TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
           TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
         run: |
@@ -81,6 +84,8 @@ jobs:
           fi
           test -n "$TCR_USERNAME" || { echo 'Missing repository secret TCR_USERNAME' >&2; exit 1; }
           test -n "$TCR_PASSWORD" || { echo 'Missing repository secret TCR_PASSWORD' >&2; exit 1; }
+          test -n "$CREDENTIAL_MASTER_KEY" || { echo 'Missing repository secret MINO_NEXUS_CREDENTIAL_MASTER_KEY' >&2; exit 1; }
+          CREDENTIAL_MASTER_KEY="$CREDENTIAL_MASTER_KEY" python3 -c 'import base64, os; value = os.environ["MINO_NEXUS_CREDENTIAL_MASTER_KEY"].strip(); raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)); assert len(raw) == 32, "MINO_NEXUS_CREDENTIAL_MASTER_KEY must decode to exactly 32 bytes"'
           test -n "$TENCENT_HOST" || { echo 'Missing repository variable TENCENT_HOST' >&2; exit 1; }
           test -n "$TENCENT_USER" || { echo 'Missing repository variable TENCENT_USER' >&2; exit 1; }
           if [ -n "$TENCENT_DEPLOY_DIR" ]; then
@@ -198,6 +203,23 @@ jobs:
           echo "TENCENT_DEPLOY_DIR=$deploy_dir" >> "$GITHUB_ENV"
           echo "Resolved deployment directory from live volume: $deploy_dir"
 
+      - name: Install production credential key
+        env:
+          CREDENTIAL_MASTER_KEY: ${{ secrets.MINO_NEXUS_CREDENTIAL_MASTER_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$CREDENTIAL_MASTER_KEY" | \
+            ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" "
+              set -euo pipefail
+              umask 077
+              install -d -m 0700 '$TENCENT_DEPLOY_DIR/.secrets'
+              cat > '$TENCENT_DEPLOY_DIR/.secrets/credential-master.key'
+              chown 10001:10001 '$TENCENT_DEPLOY_DIR/.secrets/credential-master.key'
+              chmod 0400 '$TENCENT_DEPLOY_DIR/.secrets/credential-master.key'
+            "
+          echo "MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE=$TENCENT_DEPLOY_DIR/.secrets/credential-master.key" >> "$GITHUB_ENV"
+          echo 'Installed the production credential keyring outside the repository and database backup.'
+
       - name: Upload deployment files
         run: |
           set -euo pipefail
@@ -219,7 +241,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
-            "MINO_DEPLOY_SKIP_PULL=1 MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' MINO_WORKBENCH_ORIGINS='$MINO_WORKBENCH_ORIGINS' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$NEXUS_IMAGE_TAG' '$TENCENT_DEPLOY_DIR'"
+            "MINO_DEPLOY_SKIP_PULL=1 MINO_NEXUS_PUBLIC_URL='$MINO_NEXUS_PUBLIC_URL' MINO_WORKBENCH_PUBLIC_URL='$MINO_WORKBENCH_PUBLIC_URL' MINO_SCOUT_MANIFEST_URL='$MINO_SCOUT_MANIFEST_URL' MINO_WORKBENCH_ORIGINS='$MINO_WORKBENCH_ORIGINS' MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE='$MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE' bash '$TENCENT_DEPLOY_DIR/.deploy-tencent.sh' '$NEXUS_VERSION' '$NEXUS_IMAGE_TAG' '$TENCENT_DEPLOY_DIR'"
 
       - name: Verify deployment from Tencent
         run: |
@@ -236,7 +258,15 @@ jobs:
           grep -Fx "MINO_WORKBENCH_PUBLIC_URL=$MINO_WORKBENCH_PUBLIC_URL" /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_SCOUT_MANIFEST_URL=$MINO_SCOUT_MANIFEST_URL" /tmp/nexus-runtime-env.txt
           grep -Fx "MINO_WORKBENCH_ORIGINS=$MINO_WORKBENCH_ORIGINS" /tmp/nexus-runtime-env.txt
-          echo 'Verified Nexus runtime public URLs'
+          grep -Fx 'MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE=/run/secrets/credential-master.key' /tmp/nexus-runtime-env.txt
+          echo 'Verified Nexus runtime public URLs and credential key mount'
+
+      - name: Verify credential keyring
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "cd '$TENCENT_DEPLOY_DIR' && docker compose exec -T nexus python -c 'import json; from mino_nexus.resources.credential_cipher import credential_encryption_status; print(json.dumps(credential_encryption_status()))'" > /tmp/nexus-keyring.json
+          python3 -c 'import json; status = json.load(open("/tmp/nexus-keyring.json")); assert status.get("configured") is True and status.get("active_key_version"), status; print("Credential keyring configured; active version " + status["active_key_version"])'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_NEXUS_HEALTH_URL'" > /tmp/nexus-health.json
           echo 'Verified Nexus /health through the Tencent :8443 entry'

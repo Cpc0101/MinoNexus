@@ -8,6 +8,7 @@ from typing import Any
 from mino_nexus.core.database import session_scope
 from mino_nexus.core.log import SLog
 from mino_nexus.models.resource_ops import ResourceAllocationLog
+from mino_nexus.resources.credential_safety import sanitize_credentials, scrub_credential_text
 
 TAG = "ResourceAllocLog"
 
@@ -115,7 +116,9 @@ def append_allocation_log(
     act = str(action or "").strip()[:48]
     if not pid or not act:
         return
-    detail_out = dict(detail or {})
+    raw_detail = dict(detail or {})
+    detail_out = sanitize_credentials(raw_detail)
+    message_out = scrub_credential_text(message)[:2000]
     sid = _resolve_session_id(run_id, case_id=case_id, sn=sn)
     if sid:
         detail_out["session_id"] = sid
@@ -130,7 +133,7 @@ def append_allocation_log(
         account_id=str(account_id or "")[:64],
         account_ident=str(account_ident or "")[:80],
         action=act,
-        message=str(message or "")[:2000],
+        message=message_out,
         detail_json=detail_out,
     )
     log_id = 0
@@ -145,7 +148,7 @@ def append_allocation_log(
         _mirror_allocation_session_log(
             session_id=sid,
             action=act,
-            message=str(message or ""),
+            message=message_out,
             run_id=str(run_id or ""),
             case_id=str(case_id or ""),
             account_ident=str(account_ident or ""),
@@ -207,8 +210,15 @@ def list_allocation_logs(
         else:
             total = q.count()
             rows = ordered.offset((pg - 1) * ps).limit(ps).all()
-        items = [
-            {
+        items = []
+        for r in rows:
+            raw_detail = r.detail_json if isinstance(r.detail_json, dict) else {}
+            safe_detail = sanitize_credentials(raw_detail)
+            sid = _resolve_session_id(
+                str(raw_detail.get("session_id") or r.run_id or ""),
+                case_id=str(r.case_id or ""), sn=str(r.sn or ""),
+            )
+            items.append({
                 "id": r.id,
                 "created_at": r.created_at or "",
                 "project_id": r.project_id or "",
@@ -220,16 +230,10 @@ def list_allocation_logs(
                 "account_id": r.account_id or "",
                 "account_ident": r.account_ident or "",
                 "action": r.action or "",
-                "message": r.message or "",
-                "detail": r.detail_json if isinstance(r.detail_json, dict) else {},
-                "session_id": _resolve_session_id(
-                    str((r.detail_json or {}).get("session_id") or r.run_id or "")
-                    if isinstance(r.detail_json, dict) else str(r.run_id or ""),
-                    case_id=str(r.case_id or ""), sn=str(r.sn or ""),
-                ),
-            }
-            for r in rows
-        ]
+                "message": scrub_credential_text(r.message or ""),
+                "detail": safe_detail,
+                "session_id": sid,
+            })
     return {"items": items, "total": total, "page": pg, "page_size": ps}
 
 
