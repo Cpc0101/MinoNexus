@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a complete Scout release before atomically publishing its manifest."""
+"""Validate and atomically publish a Scout release manifest."""
 from __future__ import annotations
 
 import argparse
@@ -44,6 +44,26 @@ def validate_public_url(value):
     return value
 
 
+def load_release_asset_sizes(path):
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    assets = payload.get("assets") if isinstance(payload, dict) else payload
+    if not isinstance(assets, list):
+        raise ValueError("invalid_release_asset_index")
+    sizes = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ValueError("invalid_release_asset_index")
+        name = str(asset.get("name") or "")
+        try:
+            size = int(asset["size"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid_release_asset_index") from exc
+        if not name or size <= 0 or (name in sizes and sizes[name] != size):
+            raise ValueError("invalid_release_asset_index")
+        sizes[name] = size
+    return sizes
+
+
 def fetch_asset(path, url):
     partial = path.with_name(path.name + ".part")
     subprocess.run(
@@ -54,7 +74,7 @@ def fetch_asset(path, url):
     partial.replace(path)
 
 
-def validate(source, tag, *, fetch_missing=False):
+def validate(source, tag, *, fetch_missing=False, require_assets=True, release_assets_json=None):
     source = Path(source).resolve()
     want = tag.removeprefix("v")
     version(want)
@@ -69,6 +89,9 @@ def validate(source, tag, *, fetch_missing=False):
     items = manifest.get("items") or []
     if len(items) != 3 or {(r.get("os"), r.get("arch")) for r in items} != PLATFORMS:
         raise ValueError("release_platforms_incomplete")
+    release_asset_sizes = (
+        load_release_asset_sizes(release_assets_json) if release_assets_json else None
+    )
     files = {}
     for item in items:
         if item.get("version") != want or set(item.get("layers") or {}) != {"app", "runtime", "browser"}:
@@ -82,15 +105,23 @@ def validate(source, tag, *, fetch_missing=False):
         for row in (item, *item["layers"].values()):
             name = str(row.get("filename") or "")
             expected = str(row.get("sha256") or "")
+            try:
+                expected_bytes = int(row.get("bytes"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("release_asset_invalid") from exc
             if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.zip", name)
                     or row.get("url") != REPO + tag + "/" + name
-                    or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                    or expected_bytes <= 0):
                 raise ValueError("release_asset_invalid")
-            path = source / name
-            if fetch_missing and not path.exists():
-                fetch_asset(path, str(row["url"]))
-            if path.is_symlink() or not path.is_file() or path.stat().st_size != row.get("bytes") or digest(path) != expected:
-                raise ValueError("release_asset_checksum_mismatch: " + name)
+            if release_asset_sizes is not None and release_asset_sizes.get(name) != expected_bytes:
+                raise ValueError("release_asset_index_mismatch: " + name)
+            if require_assets:
+                path = source / name
+                if fetch_missing and not path.exists():
+                    fetch_asset(path, str(row["url"]))
+                if path.is_symlink() or not path.is_file() or path.stat().st_size != expected_bytes or digest(path) != expected:
+                    raise ValueError("release_asset_checksum_mismatch: " + name)
             if name in files and files[name] != expected:
                 raise ValueError("release_asset_identity_conflict")
             files[name] = expected
@@ -101,10 +132,16 @@ def validate(source, tag, *, fetch_missing=False):
     return manifest, files
 
 
-def publish(source, destination, tag, public_url):
-    manifest, files = validate(source, tag, fetch_missing=True)
-    source, destination = Path(source).resolve(), Path(destination).resolve()
-    validate_public_url(public_url)
+def publish(source, destination, tag, public_url, *, metadata_only=False, release_assets_json=None):
+    source = Path(source).resolve()
+    destination = Path(destination).resolve()
+    manifest, files = validate(
+        source,
+        tag,
+        fetch_missing=not metadata_only,
+        require_assets=not metadata_only,
+        release_assets_json=release_assets_json,
+    )
     destination.mkdir(parents=True, exist_ok=True)
     current = destination / "manifest.json"
     if current.exists():
@@ -113,40 +150,50 @@ def publish(source, destination, tag, public_url):
             raise ValueError("release_downgrade_rejected")
         if old.get("version") == manifest["version"] and old.get("build_id") != manifest["build_id"]:
             raise ValueError("release_version_is_immutable")
-    for item in manifest["items"]:
-        for row in (item, *item["layers"].values()):
-            row["url"] = public_url + "/" + tag + "/" + row["filename"]
-    encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
-    release = destination / tag
-    if release.exists():
-        if release.is_symlink() or (release / "manifest.json").read_text() != encoded:
-            raise ValueError("published_release_conflict")
-        if any(digest(release / name) != expected for name, expected in files.items()):
-            raise ValueError("published_release_corrupt")
+    release = None
+    if metadata_only:
+        encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     else:
-        stage = Path(tempfile.mkdtemp(prefix=".stage-" + tag + "-", dir=destination))
-        try:
-            for name in (*files, "bootstrap.sh", "bootstrap.ps1"):
-                try:
-                    os.link(source / name, stage / name)
-                except OSError:
-                    shutil.copy2(source / name, stage / name)
-            (stage / "manifest.json").write_text(encoded)
-            os.chmod(stage, 0o755)
-            stage.rename(release)
-        finally:
-            if stage.exists():
-                shutil.rmtree(stage)
-    # All immutable packages are now in place; publish the mutable entry last.
+        validate_public_url(public_url)
+        for item in manifest["items"]:
+            for row in (item, *item["layers"].values()):
+                row["url"] = public_url + "/" + tag + "/" + row["filename"]
+        encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+        release = destination / tag
+        if release.exists():
+            if release.is_symlink() or (release / "manifest.json").read_text() != encoded:
+                raise ValueError("published_release_conflict")
+            if any(digest(release / name) != expected for name, expected in files.items()):
+                raise ValueError("published_release_corrupt")
+        else:
+            stage = Path(tempfile.mkdtemp(prefix=".stage-" + tag + "-", dir=destination))
+            try:
+                for name in (*files, "bootstrap.sh", "bootstrap.ps1"):
+                    try:
+                        os.link(source / name, stage / name)
+                    except OSError:
+                        shutil.copy2(source / name, stage / name)
+                (stage / "manifest.json").write_text(encoded)
+                os.chmod(stage, 0o755)
+                stage.rename(release)
+            finally:
+                if stage.exists():
+                    shutil.rmtree(stage)
     for name in ("bootstrap.sh", "bootstrap.ps1", "manifest.json"):
         pending = destination / ("." + name + "." + tag + ".next")
+        payload = encoded.encode() if name == "manifest.json" else (release or source).joinpath(name).read_bytes()
         with pending.open("wb") as stream:
-            stream.write((release / name).read_bytes())
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(pending, 0o644)
         pending.replace(destination / name)
-    print(json.dumps({"version": manifest["version"], "build_id": manifest["build_id"], "assets": len(files)}))
+    print(json.dumps({
+        "version": manifest["version"],
+        "build_id": manifest["build_id"],
+        "assets": len(files),
+        "metadata_only": metadata_only,
+    }))
 
 
 def main():
@@ -155,12 +202,31 @@ def main():
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--destination")
     parser.add_argument("--public-url", default="https://nexus.minocc.top:8443/scout-release")
+    parser.add_argument("--metadata-only", action="store_true")
+    parser.add_argument("--release-assets-json")
     args = parser.parse_args()
     if args.destination:
-        publish(args.source, args.destination, args.release_tag, args.public_url)
+        publish(
+            args.source,
+            args.destination,
+            args.release_tag,
+            args.public_url,
+            metadata_only=args.metadata_only,
+            release_assets_json=args.release_assets_json,
+        )
     else:
-        manifest, files = validate(args.source, args.release_tag)
-        print(json.dumps({"version": manifest["version"], "build_id": manifest["build_id"], "assets": len(files)}))
+        manifest, files = validate(
+            args.source,
+            args.release_tag,
+            require_assets=not args.metadata_only,
+            release_assets_json=args.release_assets_json,
+        )
+        print(json.dumps({
+            "version": manifest["version"],
+            "build_id": manifest["build_id"],
+            "assets": len(files),
+            "metadata_only": args.metadata_only,
+        }))
 
 
 if __name__ == "__main__":

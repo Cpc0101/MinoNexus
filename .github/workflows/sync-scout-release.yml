@@ -26,15 +26,17 @@ jobs:
       TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
     steps:
       - uses: actions/checkout@v5
-      - name: Download and validate complete native release
+      - name: Download and validate release metadata
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           gh release download "$RELEASE_TAG" --repo Cpc0101/MinoScout --dir dist \
-            --pattern '*.zip' --pattern manifest.json --pattern bootstrap.sh --pattern bootstrap.ps1
-          python3 scripts/publish-scout-release.py --source dist --release-tag "$RELEASE_TAG"
+            --pattern manifest.json --pattern bootstrap.sh --pattern bootstrap.ps1
+          gh release view "$RELEASE_TAG" --repo Cpc0101/MinoScout --json assets > dist/release-assets.json
+          python3 scripts/publish-scout-release.py --source dist --release-tag "$RELEASE_TAG" \
+            --metadata-only --release-assets-json dist/release-assets.json
           bash -n dist/bootstrap.sh
       - name: Configure authenticated deployment transport
         env:
@@ -56,12 +58,13 @@ jobs:
           incoming="/var/www/scout-release/.incoming-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           transport=(ssh -i ~/.ssh/mino-scout-deploy -o BatchMode=yes)
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "mkdir -p '$incoming'"
-          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes dist/manifest.json dist/bootstrap.sh dist/bootstrap.ps1 \
+          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes dist/manifest.json dist/release-assets.json \
+            dist/bootstrap.sh dist/bootstrap.ps1 \
             "$TENCENT_USER@$TENCENT_HOST:$incoming/"
           scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes scripts/publish-scout-release.py \
             "$TENCENT_USER@$TENCENT_HOST:$incoming/publish.py"
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
-            "python3 '$incoming/publish.py' --source '$incoming' --release-tag '$RELEASE_TAG' --destination /var/www/scout-release"
+            "python3 '$incoming/publish.py' --source '$incoming' --release-tag '$RELEASE_TAG' --destination /var/www/scout-release --metadata-only --release-assets-json '$incoming/release-assets.json'"
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve nexus.minocc.top:8443:127.0.0.1 https://nexus.minocc.top:8443/scout-release/manifest.json" > published.json
           python3 - <<'PY'
