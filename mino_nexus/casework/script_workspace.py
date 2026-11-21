@@ -1,4 +1,4 @@
-"""项目脚本工作目录：检出仓库，并准备只给业务脚本用的虚拟环境。"""
+"""项目脚本工作区：保存仓库位置，并读取已有本地检出。"""
 from __future__ import annotations
 
 import os
@@ -88,8 +88,18 @@ def workspace_location(project_id: str) -> dict[str, str]:
     }
 
 
+def workspace_status(project_id: str) -> dict[str, Any]:
+    """只报告已有工作区，不在 Nexus 端按仓库地址自动检出。"""
+    place = workspace_location(project_id)
+    repo = get_repo(project_id)
+    configured = bool(str(repo.get("url") or "").strip())
+    checkout = Path(place["checkout"])
+    ready = configured and (checkout / ".git").is_dir()
+    return {**place, "ready": ready, "error": ""}
+
+
 def ensure_workspace(project_id: str) -> dict[str, Any]:
-    """地址已保存但本机还没有检出时就 clone。已有检出则不动，拉取留到执行。"""
+    """显式准备脚本工作区；配置读取不调用此函数。"""
     place = workspace_location(project_id)
     repo = get_repo(project_id)
     url = str(repo.get("url") or "").strip()

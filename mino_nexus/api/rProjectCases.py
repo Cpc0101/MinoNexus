@@ -257,11 +257,11 @@ def post_case_preflight(project_id: str, body: CasePreflightBody, _sess: dict = 
 
 @router.get("/{project_id}/script-repo")
 def get_script_repo(project_id: str, _sess: dict = Depends(current_session)):
-    from mino_nexus.casework.script_workspace import ensure_workspace, get_repo, public_url
+    from mino_nexus.casework.script_workspace import get_repo, public_url, workspace_status
 
     _project(project_id)
     row = get_repo(project_id)
-    place = ensure_workspace(project_id)
+    place = workspace_status(project_id)
     return ok({
         "url": public_url(row["url"]),
         "branch": row["branch"],
@@ -272,20 +272,20 @@ def get_script_repo(project_id: str, _sess: dict = Depends(current_session)):
 
 @router.put("/{project_id}/script-repo", dependencies=[Depends(project_maintainer)])
 def put_script_repo(project_id: str, body: ScriptRepoBody, _sess: dict = Depends(current_session)):
-    from mino_nexus.casework.script_workspace import ensure_workspace, save_repo
+    from mino_nexus.casework.script_workspace import save_repo, workspace_status
 
     _project(project_id)
     try:
         saved = save_repo(project_id, body.url, body.branch)
     except ValueError as exc:
         raise _case_error(exc) from exc
-    place = ensure_workspace(project_id)
+    place = workspace_status(project_id)
     return ok({
         "url": saved["public_url"],
         "branch": saved["branch"],
         "updated_at": saved["updated_at"],
         "workspace": place,
-    }, msg="脚本仓库已保存" if place.get("ready") or not str(body.url or "").strip() else "地址已保存，检出失败")
+    }, msg="脚本仓库已保存")
 
 
 @router.post("/{project_id}/script-repo/check", dependencies=[Depends(project_maintainer)])

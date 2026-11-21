@@ -177,7 +177,7 @@ HITL 问人界面、排期 cron、基线库、从设计稿/定位抽登录图标
 | GET | `/project/{project_id}/cases` | 项目用例列表。每条含 `step_keys_summary`（含 `ui_automation.coverable` / `blocked_by` / 逐步 `lights`） |
 | GET | `/project/{project_id}/cases/{case_id}` | 单条用例 + `step_keys_summary`。`coverable=false` 时 Workbench 选用例应禁用开跑。用例含 `script` / `pretest` / `posttest` |
 | PUT | `/project/{project_id}/cases/{case_id}` | 保存用例。`script` / `pretest` / `posttest` 缺省不改；传入空串则清空。`script_platform` 为 `mac` / `win` / `android` / `ios` / `web` 时写入该端脚本。脚本须分别定义 `run(case)`、`pretest(case)`、`posttest(case)` |
-| GET / PUT | `/project/{project_id}/script-repo` | 用例脚本仓库地址和分支。GET 同时返回本机 `workspace.root`、`workspace.checkout`、`workspace.venv`。PUT 需项目维护权限。库中只保存仓库地址 |
+| GET / PUT | `/project/{project_id}/script-repo` | 用例脚本仓库地址和分支。GET 同时返回本机 `workspace.root`、`workspace.checkout`、`workspace.venv` 及已有检出状态；读取不触发 clone。PUT 需项目维护权限。库中只保存仓库地址 |
 | POST | `/project/{project_id}/script-repo/check` | 检查工作目录里的本地脚本。body：`case_id` 或 `path`。需项目维护权限 |
 | PUT | `/project/{project_id}/cases/{case_id}` 的 `script_path` | 这条用例在仓库内的相对路径，例如 `cases/login.py` |
 | GET / PUT | `/project/{project_id}/case-scripts` | GET 仍可读历史上通过接口保存的项目级前后置。PUT 拒绝，脚本在本机仓库里修改 |
