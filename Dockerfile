@@ -12,7 +12,14 @@ RUN SOURCE_COMMIT="$SOURCE_COMMIT" python scripts/prepare_build.py \
 FROM python:3.12-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 MINO_NEXUS_MODE=production MINO_NEXUS_DATA_DIR=/data MINO_NEXUS_MDNS=0
 COPY --from=source-wheel /wheels/ /wheels/
-RUN python -m pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels && useradd --uid 10001 --create-home nexus && mkdir /data && chown nexus:nexus /data
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -m pip install --no-cache-dir /wheels/*.whl \
+ && rm -rf /wheels \
+ && useradd --uid 10001 --create-home nexus \
+ && mkdir /data \
+ && chown nexus:nexus /data
 WORKDIR /home/nexus
 USER 10001:10001
 EXPOSE 50104

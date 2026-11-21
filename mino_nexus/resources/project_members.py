@@ -42,14 +42,25 @@ def visible_project_ids(sess: dict[str, Any]) -> set[str]:
         return {r.id for r in db.query(Project).filter(Project.created_by == uid)} | {r.project_id for r in db.query(ProjectMember).filter(ProjectMember.user_id == uid)}
 
 
+def _timestamp_ms(value: Any) -> int:
+    """API 时间戳统一为毫秒；兼容早期以秒存储的项目创建时间。"""
+    try:
+        timestamp = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    if 0 < timestamp < 1_000_000_000_000:
+        return timestamp * 1000
+    return timestamp
+
+
 def list_members(project_id: str, sess: dict[str, Any]) -> dict[str, Any]:
     require_project_access(project_id, sess)
     with session_scope() as db:
         project = db.get(Project, project_id)
         owner = db.get(User, project.created_by)
-        members = [{"user_id": project.created_by, "email": owner.email if owner else "", "role": "owner", "added_at": project.created_at}]
+        members = [{"user_id": project.created_by, "email": owner.email if owner else "", "role": "owner", "added_at": _timestamp_ms(project.created_at)}]
         for row, user in db.query(ProjectMember, User).join(User, User.user_id == ProjectMember.user_id).filter(ProjectMember.project_id == project_id).order_by(ProjectMember.added_at_ms):
-            members.append({"user_id": row.user_id, "email": user.email, "role": "member", "added_at": row.added_at_ms})
+            members.append({"user_id": row.user_id, "email": user.email, "role": "member", "added_at": _timestamp_ms(row.added_at_ms)})
         return {"members": members, "can_manage": project.created_by == _uid(sess)}
 
 

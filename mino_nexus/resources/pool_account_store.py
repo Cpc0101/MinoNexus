@@ -325,7 +325,8 @@ def replace_all(project_id: str, rows: list[dict[str, Any]]) -> None:
         if any((row.lease or {}).get("run_id") for row in held):
             raise ValueError("resource_busy: 存在未释放的账号租约，暂不能整表替换号池")
         retained = {str(row.get("account_id") or row.get("id") or "") for row in rows or []}
-        for model in (AccountData, AccountDataRequest):
+        from mino_nexus.models.web_auth_snapshot import WebAuthSnapshot
+        for model in (AccountData, AccountDataRequest, WebAuthSnapshot):
             db.query(model).filter(model.project_id == pid, model.account_id.notin_(retained)).delete(synchronize_session=False)
         removed = {str(row.id) for row in held if str(row.id) not in retained}
         if removed:

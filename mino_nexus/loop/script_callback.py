@@ -22,6 +22,7 @@ _ALIASES = {
     "fail": "case.fail",
 }
 HANDLED = frozenset({
+    "web_auth_get", "web_auth_save", "web_auth_invalidate",
     "case.account", "case.note", "case.step", "case.fail",
     "account", "note", "step", "fail", STEP_CAP, SESSION_CAP, LEASE_CAP, "record.sync",
 })
@@ -145,6 +146,8 @@ def _call(admission: ScriptAdmission, cap: str, params: dict[str, Any]) -> dict[
     if not owner:
         raise PermissionError("这次运行没有执行账号")
     with execution_user(owner):
+        if cap in {"web_auth_get", "web_auth_save", "web_auth_invalidate"}:
+            return _web_auth(admission, cap, params)
         if cap == "case.account":
             return _account(admission, params)
         if cap == "case.note":
@@ -154,6 +157,26 @@ def _call(admission: ScriptAdmission, cap: str, params: dict[str, Any]) -> dict[
         if cap == "case.fail":
             return _fail(admission, params)
     raise PermissionError("Nexus 不处理这个回调")
+
+
+def _web_auth(admission, cap, params):
+    from mino_nexus.resources.accounts.lease import leased_account_for_slot, current_lease_is_active
+    from mino_nexus.resources import web_auth_snapshots as snapshots
+    account = leased_account_for_slot(admission.ctx, params.get("slot", "default"))
+    if not account or str(account.get("id") or account.get("account_id")) != params.get("account_id"):
+        raise PermissionError("web_auth_account_not_leased")
+    if not current_lease_is_active(admission.ctx, params["account_id"]):
+        raise PermissionError("resource_account_missing")
+    if str(account.get("platform") or admission.platform) != "web":
+        raise ValueError("web_auth_platform_invalid")
+    s = snapshots.scope(admission.ctx, account)
+    expected_lease = {"run_id": admission.run_id, "case_id": admission.case_id, "sn": admission.sn,
+                      "slot": str(account.get("slot") or "default")}
+    if cap == "web_auth_get":
+        return snapshots.get(s, expected_lease=expected_lease)
+    if cap == "web_auth_save":
+        return snapshots.save(s, params.get("credential"), params.get("ttl_seconds", 3600), expected_lease=expected_lease)
+    return snapshots.invalidate(s, params.get("revision"), expected_lease=expected_lease)
 
 
 def _account(admission: ScriptAdmission, params: dict[str, Any]) -> dict[str, Any]:

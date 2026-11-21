@@ -204,6 +204,10 @@ def accounts(
     lim = max(1, min(int(limit or DEFAULT_PAGE), MAX_PAGE))
     off = max(0, int(offset or 0))
     page = items[off: off + lim]
+    from mino_nexus.resources.web_auth_snapshots import statuses
+    snapshots = statuses(project_id, app_id, [item["account_id"] for item in page])
+    for item in page:
+        item["web_auth"] = snapshots.get(item["account_id"], [])
     return {
         "items": page,
         "total": total,
@@ -226,6 +230,8 @@ def account_detail(project_id: str, account_id: str, *, app_id: str) -> dict[str
     if row is None or not _account_matches_app(row, app_id):
         return None
     out = _public_account(row, doc)
+    from mino_nexus.resources.web_auth_snapshots import statuses
+    out["web_auth"] = statuses(project_id, app_id, [account_id]).get(account_id, [])
     out["bound_sessions"] = _bound_sessions(account_id)
     out["recent_logs"] = _account_logs(project_id, account_id)
     return out

@@ -29,6 +29,7 @@ _EXACT_CREDENTIAL_KEYS = frozenset({
     "cookies",
     "session_key",
     "storage_state",
+    "session_storage",
     "credential",
     "credentials",
     "channel_secrets",

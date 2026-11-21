@@ -537,7 +537,7 @@ def list_app_accounts(app_id: str, env: str = "", _sess: dict = Depends(current_
 def list_project_accounts(
     project_id: str,
     env: str = "",
-    app_id: str = Query(..., min_length=1, max_length=80),
+    app_id: str = Query("", max_length=80),
     _sess: dict = Depends(current_session),
 ):
     project_id = _resolve_project_id(project_id)
@@ -558,8 +558,13 @@ def list_project_accounts(
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
 
     pool_defs = merged_pool_field_defs(doc)
+    from mino_nexus.resources.web_auth_snapshots import statuses
+    public = _public_accounts(rows, doc)
+    snapshots = statuses(project_id, app_id, [str(row.get("account_id") or row.get("id") or "") for row in public])
+    for row in public:
+        row["web_auth"] = snapshots.get(str(row.get("account_id") or row.get("id") or ""), [])
     return ok({
-        "accounts": _public_accounts(rows, doc),
+        "accounts": public,
         "pool_field_defs": pool_defs,
         "account_facet_extensions": _facet_extensions(doc),
         "environments": doc.get("environments") or [],
