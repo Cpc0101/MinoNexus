@@ -68,11 +68,14 @@ def get_channel_phone_seq(
     if not apply_phone_default:
         return out
     from mino_nexus.resources.otp_resolve import (
+        login_allows_auto_provision,
         login_kind_from_secrets,
         resolve_effective_secrets,
     )
 
     secrets = resolve_effective_secrets(doc, env_profile=env_key, env_surface=surface, app_id=app_id)
+    if not login_allows_auto_provision(secrets):
+        return out
     if login_kind_from_secrets(secrets) != "phone":
         return out
     return _norm_alias_slot({"start": _DEFAULT_PHONE_START, "next": _DEFAULT_PHONE_START})
@@ -80,6 +83,7 @@ def get_channel_phone_seq(
 
 def phone_pool_lease_enabled(env_doc: dict | None, ctx: Any) -> bool:
     from mino_nexus.resources.otp_resolve import (
+        login_allows_auto_provision,
         login_kind_from_secrets,
         resolve_effective_secrets,
     )
@@ -89,6 +93,8 @@ def phone_pool_lease_enabled(env_doc: dict | None, ctx: Any) -> bool:
     surface = ensure_ctx_env_surface(ctx, doc)
     app_id = str(getattr(ctx, "app_id", "") or "")
     secrets = resolve_effective_secrets(doc, env_profile=env_profile, env_surface=surface, app_id=app_id)
+    if not login_allows_auto_provision(secrets):
+        return False
     if login_kind_from_secrets(secrets) != "phone":
         return False
     slot = get_channel_phone_seq(

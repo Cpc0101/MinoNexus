@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mino_nexus.core.log import SLog
+
 
 def release_run_resource_holdings(doc: dict[str, Any] | None, *, run_id: str = "") -> None:
     rid = str(run_id or (doc or {}).get("run_id") or "").strip()
@@ -18,5 +20,9 @@ def release_run_resource_holdings(doc: dict[str, Any] | None, *, run_id: str = "
         from mino_nexus.resources.accounts.lease import release_run_lease
 
         release_run_lease(rid, app_id=app_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        SLog.w(
+            "RunResourceRelease",
+            f"account lease release failed run_id={rid} app_id={app_id or '-'} "
+            f"error={type(exc).__name__} detail={exc!r}",
+        )

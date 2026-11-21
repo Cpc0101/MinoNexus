@@ -5,10 +5,29 @@ from copy import deepcopy
 import time
 from datetime import datetime, timezone
 
+from mino_nexus.core.log import SLog
 from mino_nexus.platform.identity import require_user_id
 from mino_nexus.resources import scout_record_store as records
 from mino_nexus.casework import run_store
 from mino_nexus.loop.scout_record_proxy import _request
+
+
+_RECOVERY_RETRY_AFTER_SEC = 30.0
+_RECOVERY_RETRY_AT: dict[str, float] = {}
+
+
+def _recovery_due(row: dict, now: float) -> bool:
+    key = f"{row['session_id']}:{row.get('summary_version') or 0}"
+    previous = _RECOVERY_RETRY_AT.get(key, 0.0)
+    if previous and now < previous:
+        return False
+    _RECOVERY_RETRY_AT[key] = now + _RECOVERY_RETRY_AFTER_SEC
+    if len(_RECOVERY_RETRY_AT) > 512:
+        cutoff = now - 300.0
+        for stale in [item for item, retry_at in _RECOVERY_RETRY_AT.items()
+                      if retry_at - _RECOVERY_RETRY_AFTER_SEC < cutoff]:
+            _RECOVERY_RETRY_AT.pop(stale, None)
+    return True
 
 
 def reconcile_task_resources(task_id: str) -> dict:
@@ -33,14 +52,7 @@ def reconcile_task_resources(task_id: str) -> dict:
             continue  # Persisted rejection before any Scout acceptance.
         proof = _request(row, "record.resource_status", timeout=5)
         stop = proof.get("resource_stop") or {}
-        if (any(proof.get(key) != row.get(key) for key in (
-                "task_id", "session_id", "attempt_id", "owner_user_id", "node_id", "sn"))
-                or proof.get("platform") != "web" or proof.get("sealed") is not True
-                or proof.get("summary_version") != row["summary_version"]
-                or proof.get("status") not in records.TERMINAL
-                or stop.get("contract") != "script_resource_stop.v1"
-                or stop.get("stop_confirmed") is not True or stop.get("worker_active") is not False
-                or stop.get("browser_closed") is not True or not stop.get("scout_process_generation")):
+        if not records.web_stop_proof_valid(row, proof):
             raise ValueError("stop_evidence_required")
         proofs.append({"attempt_id": row["attempt_id"], "summary_version": row["summary_version"], "resource_stop": stop})
     if not proofs:
@@ -147,14 +159,7 @@ def settle_terminal_task(task_id: str, owner: str) -> None:
         if not indexed or unresolved(doc):
             return
         for record in indexed:
-            summary = record.summary or {}
-            resolved = (record.context.get("resource_resolution") or {}).get("state") == "released"
-            if record.status not in records.TERMINAL or summary.get("sealed") is not True:
-                return
-            if not resolved and (summary.get("resource_isolated") is True
-                    or summary.get("execution_started") == "unknown" or summary.get("state") == "interrupted"
-                    or summary.get("reason_code") == "write_outcome_unknown"
-                    or summary.get("execution_stopped") is False or summary.get("browser_closed") is False):
+            if not records.release_evidence_confirmed(records.view(record)):
                 return
         holdings = db.query(ExecutionResource).filter_by(run_id=task_id, owner_user_id=owner).all()
         if any(resource.state != "released" and not _owns_epoch(resource, indexed) for resource in holdings):
@@ -166,10 +171,26 @@ def settle_terminal_task(task_id: str, owner: str) -> None:
 
 
 def repair_terminal_resources() -> None:
-    """No device execution: settle only persisted, sealed results at their exact epochs."""
+    """Settle persisted proofs and recover missing Web stops from the original Scout."""
     from mino_nexus.platform.identity import execution_user
     from mino_nexus.loop.scout_record_tasks import project
     for row in records.terminal_records_for_settlement():
         with execution_user(row["owner_user_id"]):
             project(row)
             settle_terminal_task(row["task_id"], row["owner_user_id"])
+    now = time.monotonic()
+    for row in records.terminal_records_for_recovery():
+        if not _recovery_due(row, now):
+            continue
+        with execution_user(row["owner_user_id"]):
+            try:
+                proof = _request(row, "record.resource_status", timeout=5)
+                if not records.web_stop_proof_valid(row, proof):
+                    SLog.w("ScoutResources", f"web stop evidence remains unconfirmed session={row['session_id']}")
+                    continue
+                current = records.save_resource_stop(row["session_id"], proof)
+                project(current)
+                settle_terminal_task(row["task_id"], row["owner_user_id"])
+            except Exception as exc:
+                reason = str(getattr(exc, "reason_code", "") or type(exc).__name__)
+                SLog.w("ScoutResources", f"web stop recovery pending session={row['session_id']} reason={reason}")

@@ -39,10 +39,11 @@ def agent_guide() -> dict[str, Any]:
         "boundaries": [
             "缺数据后的查找、构造、替代和重试决策只属于 Agent；脚本仓不内置 get_or_create、缺数据自动补数或自动换号。flows 只执行明确业务操作、识别阶段、等待、定位指定对象和复用验证方法。",
             "账号业务标签与资产记忆是选号线索，缺省、未知或未命中不得单独阻塞执行。申请账号时用 case.nexus.account(data_need=描述) 留存所需数据；resource_account_data_list/save/delete 管理独立对象引用记忆，不创建被测业务数据、不进行全量盘点。",
+            "业务测试账号的唯一事实源是 Nexus 号池；账号元数据通过 resource_account_* 维护，执行时只由租约把本次所需字段交给 Scout。不要从 macOS Keychain、本地明文、环境变量或其他钥匙串读取业务测试账号。飞书 CLI、SMB、AI Provider、Scout Gmail 和插件密钥等本地专属或系统配置继续按各自现有边界保存，不进入号池。",
             "对象生产后绑定实际 ID 或区分特征，弹窗重绘、跨页和跨应用使用该变量重新定位并验证关联。业务阶段放 flows，原文映射和整例编排留用例。相同缺口无新观察时停止重复申请与整例重跑，Agent 选择有依据的准备路径；写结果未知先查同一任务。探针与准备用途排除正式统计；task_get.statistics 按执行次数、原文预期和辅助断言分列，completed 是已结束。通过率无判定为 null；blocked/declined/skipped/cancelled 不算 failed。报告绑定同一 task/session/attempt/revision/source_hash 和带时区记录时间；准备及续跑独立，不把历史局部通过拼成本次结论。缺完整证据时展示保存的摘要并说明证据暂不可用。",
             "编写工作区由本机 agent 编辑；debug_case 直接在该目录调试，正式 case_run 使用 Git 固定版本与独立任务工作区。MCP 不编辑工作区文件。各仓库分工与 Scout 安装见 agent 技能 overview。",
             "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
-            "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；号池为空或没有匹配账号时由 Nexus 自动补号。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
+            "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；只有 login.mode=auto 才会在缺号时自动补号，pool 只使用号池已有账号，hitl 转人工。应用级 login_policies 的 selected 优先于 all。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
         ],
         "workbench": _workbench(),
         "flows": [
@@ -102,7 +103,7 @@ def agent_guide() -> dict[str, Any]:
             {
                 "name": "看资源或配置账号自动补池",
                 "tools": ["resource_overview", "resource_device_list", "resource_account_list", "resource_account_create", "resource_account_update", "resource_account_delete", "resource_account_import", "resource_env_get", "resource_env_set"],
-                "then": "登录方式、验证码策略、Gmail 收件箱、手机号/Gmail 别名序号和自动补池策略由 Nexus 项目环境配置决定。号池为空或没有匹配账号时，租号会按该策略自动新增；不要把这些字段写进脚本仓 config.yaml。账号新增/修改/批量导入后回读 resource_account_list 核对；删除只用于用户明确要求删除的空闲账号。",
+                "then": "登录方式、验证码策略、Gmail 收件箱、应用级 login_policies、手机号/Gmail 别名序号和自动补池策略由 Nexus 项目环境配置决定。selected 策略对指定应用优先于 all；只有 login.mode=auto 才会在缺号时自动补号，pool 只使用号池已有账号，hitl 转人工。不要把这些字段写进脚本仓 config.yaml。账号新增/修改/批量导入后回读 resource_account_list 核对；删除只用于用户明确要求删除的空闲账号。",
             },
             {
                 "name": "恢复已结束 Web 任务的隔离资源",

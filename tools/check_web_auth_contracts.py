@@ -82,6 +82,14 @@ def check():
     rejected(lambda: auth.save(s, wrong, 60, expected_lease=lease), "web_auth_snapshot_invalid")
     rejected(lambda: auth.get(s, expected_lease={**lease, "run_id": "foreign"}), "resource_account_missing")
     rejected(lambda: auth.save(s, credential, 0, expected_lease=lease), "web_auth_ttl_invalid")
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outputs = list(pool.map(lambda _: auth.save(s, credential, 60, expected_lease=lease), range(2)))
+    assert len({row["revision"] for row in outputs}) == 2
+    assert auth.get(s, expected_lease=lease)["revision"] in {row["revision"] for row in outputs}
+    with database.session_scope() as db:
+        db.query(PoolAccount).filter_by(id="account-a").update({"lease": {**lease, "app_id": "foreign-app"}})
+    rejected(lambda: auth.get(s, expected_lease=lease), "web_auth_account_scope_mismatch")
     # Released or rebound accounts cannot read, save or invalidate credentials.
     with database.session_scope() as db:
         db.query(PoolAccount).filter_by(id="account-a").update({"lease": {}})

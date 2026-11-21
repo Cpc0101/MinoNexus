@@ -108,13 +108,48 @@ project_env
 | `login.mode` | `auto` \| `pool` \| `hitl` |
 | `login.kind` | `phone` \| `email` — 该 App 在本环境下默认用号池哪一列登录 |
 
-### 3.4 解析顺序（跑批 / get_otp / 租号）
+### 3.4 应用级 `login_policies`
+
+同一项目内不同应用可以配置不同的登录与补号策略。`selected` 对 `app_ids` 中列出的应用**无条件优先于** `apply=all`，与数组顺序无关；未命中 `selected` 时才使用唯一的默认 `all`，没有 `all` 时回退 `channel_secrets` / 环境默认。
+
+```json
+"login_policies": [
+  {
+    "id": "default",
+    "apply": "all",
+    "app_ids": [],
+    "secrets": {
+      "test": { "otp": { "mode": "auto" }, "login": { "mode": "auto", "kind": "email" } }
+    }
+  },
+  {
+    "id": "ops-pool-only",
+    "apply": "selected",
+    "app_ids": ["APP002"],
+    "secrets": {
+      "test": { "otp": { "mode": "auto" }, "login": { "mode": "pool", "kind": "email" } }
+    }
+  }
+]
+```
+
+约束：
+
+- 最多一条 `apply=all`，且其 `app_ids` 必须为空。
+- `selected.app_ids` 必须非空，同一应用不能出现在多条 `selected` 中。
+- `login.mode=auto`：先租号池已有账号，缺号时允许按 Gmail 别名 / 手机号序列自动补号。
+- `login.mode=pool`：只租号池已有账号，**缺号也不自动补号**。
+- `login.mode=hitl`：不自动补号，转人工处理账号。
+
+### 3.5 解析顺序（跑批 / get_otp / 租号）
 
 入参：`project_id`、`env_profile`（批次）、`env_surface`（channel id，来自新建执行选中的被测应用）。
 
 ```text
 effective_secrets =
-  channel_secrets[env_surface][env_profile]   # 有则整块使用 otp+login
+  login_policies 命中的 selected（优先）
+  否则唯一的 apply=all 默认策略
+  否则 channel_secrets[env_surface][env_profile]
   否则 environments[env_profile].secrets       # 继承环境默认
 ```
 
@@ -165,9 +200,9 @@ effective_secrets =
 
 ### 4.3 登录号 `login`
 
-- `pool`：租号后使用 `phone` 或 `email`（由 `login.kind` + 账号字段）
-- `hitl`：问人
-- `auto`：pool → hitl
+- `pool`：只租号池里已有的 `phone` / `email` 账号（由 `login.kind` 决定）；缺号不自动补号。
+- `auto`：先租号池已有账号；缺号时允许按已配置的 Gmail 别名或手机号序列自动补号。
+- `hitl`：不自动补号，转人工处理账号或登录。
 
 ---
 

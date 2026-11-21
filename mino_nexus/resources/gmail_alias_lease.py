@@ -109,11 +109,14 @@ def get_channel_gmail_alias(
     if not apply_email_default:
         return out
     from mino_nexus.resources.otp_resolve import (
+        login_allows_auto_provision,
         login_kind_from_secrets,
         resolve_effective_secrets,
     )
 
     secrets = resolve_effective_secrets(doc, env_profile=env_key, env_surface=surface, app_id=app_id)
+    if not login_allows_auto_provision(secrets):
+        return out
     if login_kind_from_secrets(secrets) != "email":
         return out
     otp = secrets.get("otp") if isinstance(secrets.get("otp"), dict) else {}
@@ -279,6 +282,7 @@ def gmail_alias_lease_enabled(
     plugin_user_id: str = "",
 ) -> bool:
     from mino_nexus.resources.otp_resolve import (
+        login_allows_auto_provision,
         login_kind_from_secrets,
         resolve_effective_secrets,
         resolve_gmail_inbox,
@@ -294,6 +298,8 @@ def gmail_alias_lease_enabled(
         env_surface=surface,
         app_id=app_id,
     )
+    if not login_allows_auto_provision(secrets):
+        return False
     if login_kind_from_secrets(secrets) != "email":
         return False
     otp = secrets.get("otp") if isinstance(secrets.get("otp"), dict) else {}

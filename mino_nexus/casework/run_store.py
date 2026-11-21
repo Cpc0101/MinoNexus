@@ -840,7 +840,7 @@ def clear_cancel(run_id: str) -> None:
         _CANCEL.discard(run_id)
 
 
-def cancel_run(run_id: str, *, reason: str = "已取消") -> dict[str, Any]:
+def cancel_run(run_id: str, *, reason: str = "已取消", release: bool = True) -> dict[str, Any]:
     """用户取消：立刻落库为 cancelled，后台线程不得再覆盖终态。"""
     doc = get(run_id)
     if not doc:
@@ -851,8 +851,16 @@ def cancel_run(run_id: str, *, reason: str = "已取消") -> dict[str, Any]:
     with _LOCK:
         _CANCEL.add(run_id)
     from mino_nexus.resources.scout_record_store import for_task, request_cancel as cancel_records
-    if for_task(run_id):
+    records = for_task(run_id)
+    if records:
         cancel_records(run_id)
+        doc["cancel_requested"] = True
+        doc["cancel_reason"] = reason
+        for case in doc.get("cases") or []:
+            if case.get("status") == "pending":
+                case.update(status="cancelled", reason_code="task_cancelled", execution_started="no", summary=reason)
+        return {"ok": True, "code": 202, "pending": True, "doc": put(doc)}
+    if not release:
         doc["cancel_requested"] = True
         doc["cancel_reason"] = reason
         for case in doc.get("cases") or []:
@@ -980,10 +988,14 @@ def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: s
     if not task_is_live(doc):
         clear_cancel(run_id)
         return doc
-    from mino_nexus.resources.scout_record_store import for_task, TERMINAL
-    pending_records = [row for row in for_task(run_id) if row["status"] not in TERMINAL]
+    from mino_nexus.resources.scout_record_store import for_task, release_evidence_confirmed, TERMINAL
+    records = for_task(run_id)
+    pending_records = [row for row in records if row["status"] not in TERMINAL]
     if pending_records:
         return cancel_run(run_id, reason=error or "等待 Scout 确认停止")["doc"]
+    if doc.get("execution_kind") == "debug" and doc.get("cancel_requested"):
+        if not records or any(not release_evidence_confirmed(row) for row in records):
+            return cancel_run(run_id, reason=error or "等待 Scout 确认停止", release=False)["doc"]
     if status == "cancelled":
         for case in doc.get("cases") or []:
             if str(case.get("status") or "") in ("pending", "running"):

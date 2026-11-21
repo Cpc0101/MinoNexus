@@ -1,19 +1,262 @@
 """Local authoring sessions using the existing Scout admission and record ledger."""
 from __future__ import annotations
 
+import time
+from typing import Any
+
 from mino_nexus.core import protocol as P
 from mino_nexus.core.async_util import run_sync
 from mino_nexus.platform.identity import require_user_id
 from mino_nexus.resources.node_registry import get_registry
 
+_CONTROL_NODE_RECONNECT_WAIT_SEC = 10.0
+_CONTROL_NODE_POLL_SEC = 0.25
 
-def _call(node, capability, params, *, run_id="", sn="", platform=""):
-    response = run_sync(node.send(P.MsgType.EXECUTE, P.Execute(
-        run_id=run_id, step_idx=-1, sn=sn, platform=platform, capability_id=capability,
-        params=params, timeout_sec=15), timeout=15))
-    if response is None or response.status != P.EventStatus.PASS:
-        raise ValueError(str(getattr(response, "error", "") or getattr(response, "summary", "") or "debug_node_unavailable"))
-    return dict(response.data or {})
+
+class DebugCallError(ValueError):
+    """A Scout debug call failed without conflating transport and business reasons."""
+
+    def __init__(self, reason_code: str, message: str = "", *, transport: bool = False):
+        self.reason_code = str(reason_code or "debug_node_unavailable")
+        self.message = str(message or self.reason_code)
+        self.transport = bool(transport)
+        super().__init__(self.message)
+
+
+def _call(node, capability, params, *, run_id="", sn="", platform="", timeout=15.0):
+    try:
+        response = run_sync(node.send(
+            P.MsgType.EXECUTE,
+            P.Execute(
+                run_id=run_id, step_idx=-1, sn=sn, platform=platform,
+                capability_id=capability, params=params, timeout_sec=timeout,
+            ),
+            timeout=timeout,
+        ))
+    except Exception as exc:
+        raise DebugCallError("debug_transport_timeout", str(exc), transport=True) from exc
+    if response is None or not isinstance(response, P.Result):
+        raise DebugCallError("debug_transport_timeout", transport=True)
+    if response.status != P.EventStatus.PASS:
+        data = response.data if isinstance(response.data, dict) else {}
+        reason_code = str(
+            data.get("reason_code") or response.error or response.summary
+            or "debug_node_unavailable"
+        ).strip()
+        message = str(data.get("message") or response.summary or response.error or reason_code).strip()
+        raise DebugCallError(reason_code or "debug_node_unavailable", message)
+    if not isinstance(response.data, dict):
+        raise DebugCallError("debug_transport_timeout", transport=True)
+    return dict(response.data)
+
+
+def _scope(record: dict[str, Any]) -> dict[str, str]:
+    return {key: str(record.get(key) or "") for key in (
+        "task_id", "attempt_id", "session_id", "owner_user_id",
+    )}
+
+
+def _terminal_debug_error(record: dict[str, Any]) -> DebugCallError | None:
+    """Map a terminal debug record to the error a later control call should show."""
+    from mino_nexus.resources import scout_record_store
+
+    if record.get("status") not in scout_record_store.TERMINAL:
+        return None
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    if summary.get("reason_code") == "scout_restarted":
+        return DebugCallError(
+            "debug_session_expired",
+            "Scout restarted; the debug session must be started again",
+        )
+    if summary.get("state") == "interrupted":
+        return DebugCallError(
+            "debug_session_interrupted",
+            "The debug worker was interrupted",
+        )
+    return DebugCallError("debug_session_closed", "The debug session is closed")
+
+
+def _wait_control_node(record: dict[str, Any], owner_user_id: str) -> tuple[Any, dict[str, Any]]:
+    """Wait briefly through a heartbeat gap, but never mask a terminal session."""
+    from mino_nexus.resources import scout_record_store
+
+    session_id = str(record.get("session_id") or "")
+    deadline = time.monotonic() + _CONTROL_NODE_RECONNECT_WAIT_SEC
+    current = record
+    while True:
+        terminal = _terminal_debug_error(current)
+        if terminal is not None:
+            raise terminal
+        node = get_registry().get_node(str(current.get("node_id") or ""))
+        if (node is not None and node.alive and node.send
+                and node.owner_user_id == owner_user_id):
+            return node, current
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_CONTROL_NODE_POLL_SEC, remaining))
+        latest = scout_record_store.get(session_id)
+        if not latest:
+            raise DebugCallError("debug_session_not_found", "The debug session no longer exists")
+        current = latest
+    terminal = _terminal_debug_error(current)
+    if terminal is not None:
+        raise terminal
+    node = get_registry().get_node(str(current.get("node_id") or ""))
+    detail = "debug_node_unavailable"
+    if node is not None:
+        detail += f": node={node.node_id}, last_seen_ago_sec={round(time.time() - node.last_seen, 1)}"
+    raise DebugCallError("debug_node_unavailable", detail)
+
+
+def _persist_status(node_id: str, data: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    from mino_nexus.resources import scout_record_store
+
+    version = data.get("summary_version")
+    if (isinstance(version, int) and not isinstance(version, bool) and version > 0
+            and data.get("session_id") == fallback.get("session_id")):
+        return scout_record_store.receive(node_id, data)
+    return fallback
+
+
+def _stopping(task_id: str, session_id: str, blocking_code: str, *, stop_confirmed: bool = False,
+              lease_released: bool = False) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "session_id": session_id,
+        "state": "stopping",
+        "stop_confirmed": stop_confirmed,
+        "lease_released": lease_released,
+        "blocking_code": blocking_code,
+    }
+
+
+def _leases_released(task_id: str, session_id: str, owner_user_id: str) -> bool:
+    """Confirm every resource holding is gone instead of trusting finish() alone."""
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.models.device_reservation import DeviceReservation
+    from mino_nexus.models.execution_resource import ExecutionResource
+    from mino_nexus.models.pool_account import PoolAccount
+    from mino_nexus.models.resource_ops import DeviceResourceLease
+    from mino_nexus.models.run import AppRegressionRun
+
+    aliases = {str(value) for value in (task_id, session_id) if str(value or "")}
+    with session_scope() as db:
+        run = db.get(AppRegressionRun, task_id)
+        if (run is None or run.owner_user_id != owner_user_id or not run.finished_at
+                or str(run.status or "").lower() in {"queued", "running"}):
+            return False
+        resources = db.query(ExecutionResource).filter(ExecutionResource.run_id == task_id,
+                                                       ExecutionResource.owner_user_id == owner_user_id).all()
+        if any(str(resource.state or "") != "released" for resource in resources):
+            return False
+        accounts = db.query(PoolAccount).filter(PoolAccount.project_id == str(run.payload.get("project_id") or "")).all()
+        if any(str((account.lease or {}).get("run_id") or "") in aliases for account in accounts):
+            return False
+        if db.query(DeviceResourceLease).filter(DeviceResourceLease.run_id.in_(aliases)).first():
+            return False
+        if db.query(DeviceReservation).filter(DeviceReservation.run_id.in_(aliases)).first():
+            return False
+    return True
+
+
+def _close_state(record: dict[str, Any], owner_user_id: str) -> dict[str, Any]:
+    """Project an already-terminal record and report the remaining close gates."""
+    from mino_nexus.casework import run_store
+    from mino_nexus.loop.scout_record_tasks import project
+    from mino_nexus.resources import scout_record_store
+
+    if record.get("status") in scout_record_store.TERMINAL:
+        project(record)
+        record = scout_record_store.get(record["session_id"]) or record
+    task_id = str(record["task_id"])
+    session_id = str(record["session_id"])
+    stop_confirmed = scout_record_store.stop_evidence_confirmed(record)
+    doc = run_store.get(task_id) or {}
+    finished = bool(doc.get("finished_at")) and not run_store.task_is_live(doc)
+    lease_released = finished and _leases_released(task_id, session_id, owner_user_id)
+    if stop_confirmed and finished and lease_released:
+        return {
+            "task_id": task_id,
+            "session_id": session_id,
+            "state": "closed",
+            "stop_confirmed": True,
+            "lease_released": True,
+        }
+    if (not stop_confirmed and (record.get("payload") or {}).get("platform") == "web"
+            and record.get("cancel_requested") is True):
+        blocking = "stop_evidence_required"
+    elif finished:
+        blocking = "lease_release_pending"
+    else:
+        blocking = "run_finalize_pending"
+    return _stopping(task_id, session_id, blocking, stop_confirmed=stop_confirmed,
+                     lease_released=lease_released)
+
+
+def _close(record: dict[str, Any]) -> dict[str, Any]:
+    from mino_nexus.casework import run_store
+    from mino_nexus.resources import scout_record_store
+
+    task_id = str(record["task_id"])
+    session_id = str(record["session_id"])
+    owner = require_user_id()
+
+    # Cancellation is only an intent. Resources remain fenced until Scout has
+    # persisted a sealed terminal summary and any Web lane stop has been proved.
+    run_store.cancel_run(task_id, release=False)
+    record = scout_record_store.get(session_id) or record
+    state = _close_state(record, owner)
+    if state["state"] == "closed":
+        return state
+    record = scout_record_store.get(session_id) or record
+
+    terminal = record.get("status") in scout_record_store.TERMINAL
+    if terminal and not scout_record_store.web_stop_recovery_candidate(record):
+        return state
+
+    node = get_registry().get_node(str(record.get("node_id") or ""))
+    if (node is None or not node.alive or not node.send or node.owner_user_id != owner):
+        return _stopping(task_id, session_id, "stop_evidence_required")
+    params = _scope(record)
+    try:
+        if not terminal:
+            ack = _call(
+                node, "debug.close", params, run_id=task_id, sn=str(record.get("sn") or ""),
+                platform=str((record.get("payload") or {}).get("platform") or ""), timeout=15,
+            )
+            record = _persist_status(node.node_id, ack, record)
+
+            deadline = time.monotonic() + 5.0
+            while record.get("status") not in scout_record_store.TERMINAL:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                status = _call(
+                    node, "record.status", _scope(record), run_id=task_id,
+                    sn=str(record.get("sn") or ""),
+                    platform=str((record.get("payload") or {}).get("platform") or ""),
+                    timeout=max(0.5, min(2.5, remaining)),
+                )
+                record = _persist_status(node.node_id, status, record)
+                if record.get("status") not in scout_record_store.TERMINAL:
+                    time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        if record.get("status") not in scout_record_store.TERMINAL:
+            return _stopping(task_id, session_id, "stop_evidence_required")
+
+        if (not scout_record_store.stop_evidence_confirmed(record)
+                and scout_record_store.web_stop_recovery_candidate(record)):
+            proof = _call(
+                node, "record.resource_status", _scope(record), run_id=task_id,
+                sn=str(record.get("sn") or ""), platform="web", timeout=5,
+            )
+            if not scout_record_store.web_stop_proof_valid(record, proof):
+                return _stopping(task_id, session_id, "stop_evidence_required")
+            record = scout_record_store.save_resource_stop(session_id, proof)
+
+        return _close_state(record, owner)
+    except (DebugCallError, PermissionError, ValueError):
+        return _stopping(task_id, session_id, "stop_evidence_required")
 
 
 def start(app, args):
@@ -79,20 +322,16 @@ def control(session_id, operation, args):
         if not doc or doc.get("owner_user_id") != require_user_id() or doc.get("execution_kind") != "debug" or not any(c.get("report_run_id") == session_id for c in doc.get("cases", [])):
             raise ValueError("debug_session_not_found")
         if operation == "close":
-            run_store.cancel_run(doc["run_id"])
-            return {"task_id": doc["run_id"], "session_id": session_id, "state": "cancel_requested", "stop_confirmed": False}
+            run_store.cancel_run(doc["run_id"], release=False)
+            return _stopping(doc["run_id"], session_id, "record_admission_pending")
         elif operation != "status":
             raise ValueError("debug_session_not_ready")
         return {"task_id": doc["run_id"], "session_id": session_id, "state": "starting" if not doc.get("finished_at") else "closed", "status": doc["status"], "cases": doc.get("cases", [])}
     if record["payload"].get("execution_kind") != "debug":
         raise ValueError("debug_session_not_found")
     if operation == "close":
-        run_store.cancel_run(record["task_id"])
-        scout_record_store.request_cancel(record["task_id"])
-        return {"task_id": record["task_id"], "session_id": session_id, "state": "cancel_requested", "stop_confirmed": False}
-    node = get_registry().get_node(record["node_id"])
-    if node is None or not node.alive or not node.send or node.owner_user_id != require_user_id():
-        raise ValueError("debug_node_unavailable")
+        return _close(record)
+    node, record = _wait_control_node(record, require_user_id())
     params = {**args, **{key: record[key] for key in ("task_id", "attempt_id", "session_id", "owner_user_id")}}
     data = _call(node, "debug." + operation, params, run_id=record["task_id"], sn=record["sn"], platform=record["payload"]["platform"])
     if operation == "status":

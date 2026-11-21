@@ -470,7 +470,23 @@ def update_project_env(project_id: str, item: ProjectEnvUpdate, _sess: dict = De
         validate_environment_write(body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    doc = normalize_project_env(body)
+    try:
+        doc = normalize_project_env(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    selected_app_ids = {
+        str(app_id)
+        for policy in doc.get("login_policies") or []
+        if isinstance(policy, dict) and policy.get("apply") == "selected"
+        for app_id in policy.get("app_ids") or []
+    }
+    if selected_app_ids:
+        from mino_nexus.resources.accounts.app_scope import validate_project_apps
+
+        try:
+            validate_project_apps(project["id"], sorted(selected_app_ids))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     env_keys = {e["key"] for e in doc.get("environments") or []}
     try:
         # 旧项目可能仍存有 phone/login_kind；只在合并“已保存值”时适配，

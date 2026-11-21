@@ -54,6 +54,14 @@ def _account(db, s, expected_lease=None):
         held = row.lease or {}
         if lease_expired(held) or any(str(held.get(k) or "") != str(v) for k, v in expected_lease.items()):
             raise ValueError("resource_account_missing")
+        if held.get("app_id") and held["app_id"] != s["app_id"]:
+            raise ValueError("web_auth_account_scope_mismatch")
+        if held.get("platform") and held["platform"] != "web":
+            raise ValueError("web_auth_platform_invalid")
+        if held.get("env_surface") and held["env_surface"] != s["surface"]:
+            raise ValueError("web_auth_account_scope_mismatch")
+        if held.get("target_package") and origin(held["target_package"]) != s["origin"]:
+            raise ValueError("web_auth_account_scope_mismatch")
     return row
 
 

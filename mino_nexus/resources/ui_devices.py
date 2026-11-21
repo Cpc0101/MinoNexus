@@ -142,7 +142,11 @@ def ui_devices(
     for row in out:
         row["isolation"] = isolated.get(str(row.get("sn") or "")) or {"state": ""}
     from mino_nexus.resources.device_targets import evaluate
-    return [evaluate(row) for row in out]
+    rows = [evaluate(row) for row in out]
+    for row in rows:
+        row["online"] = str(row.get("status") or "").lower() == "online"
+        row["ready"] = row["online"] and bool(row.get("executable"))
+    return rows
 
 
 def _isolation_index() -> dict[str, dict[str, str]]:

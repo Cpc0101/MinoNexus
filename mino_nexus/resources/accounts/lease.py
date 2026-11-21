@@ -231,8 +231,13 @@ def format_accounts_brief(row: dict[str, Any]) -> str:
     return "；".join(bits)
 
 
-def _login_kind_for_ctx(ctx: Any, env_doc: dict[str, Any], *, prompt: str = "") -> str:
-    from mino_nexus.resources.otp_resolve import login_kind_from_secrets, resolve_effective_secrets
+def _effective_secrets_for_ctx(
+    ctx: Any,
+    env_doc: dict[str, Any],
+    *,
+    prompt: str = "",
+) -> dict[str, Any]:
+    from mino_nexus.resources.otp_resolve import resolve_effective_secrets
 
     env_profile = str(getattr(ctx, "env_profile", "") or "").strip() or "test"
     surface = str(getattr(ctx, "env_surface", "") or "").strip()
@@ -244,13 +249,24 @@ def _login_kind_for_ctx(ctx: Any, env_doc: dict[str, Any], *, prompt: str = "") 
             prompt=str(prompt or "").strip(),
             env_profile=env_profile,
         )
-    secrets = resolve_effective_secrets(
+    return resolve_effective_secrets(
         env_doc,
         env_profile=env_profile,
         env_surface=surface,
         app_id=str(getattr(ctx, "app_id", "") or ""),
     )
-    return login_kind_from_secrets(secrets)
+
+
+def _login_kind_for_ctx(ctx: Any, env_doc: dict[str, Any], *, prompt: str = "") -> str:
+    from mino_nexus.resources.otp_resolve import login_kind_from_secrets
+
+    return login_kind_from_secrets(_effective_secrets_for_ctx(ctx, env_doc, prompt=prompt))
+
+
+def _login_mode_for_ctx(ctx: Any, env_doc: dict[str, Any], *, prompt: str = "") -> str:
+    from mino_nexus.resources.otp_resolve import login_mode_from_secrets
+
+    return login_mode_from_secrets(_effective_secrets_for_ctx(ctx, env_doc, prompt=prompt))
 
 
 def _row_matches_ctx_login_kind(
@@ -267,6 +283,16 @@ def _row_matches_ctx_login_kind(
         return False
     kind = _login_kind_for_ctx(ctx, env_doc, prompt=prompt)
     return account_row_matches_login_kind(row, kind)
+
+
+def _lease_failure_base(env_doc: dict[str, Any], ctx: Any | None, *, prompt: str = "") -> str:
+    if ctx is not None:
+        mode = _login_mode_for_ctx(ctx, env_doc, prompt=prompt)
+        if mode == "pool":
+            return "当前应用登录策略为 pool：不会自动补号；号池中没有满足 Requirement 的可用账号，请人工添加或释放账号"
+        if mode == "hitl":
+            return "当前应用登录策略为 hitl：不会自动补号；请人工提供或处理账号后重试"
+    return "没有满足 Requirement 的可用账号（可能都被占用或状态不符）"
 
 
 def _lease_unavailable_hint(
@@ -1241,6 +1267,8 @@ def _lease_for_context(
     if not accounts and not gmail_alias_lease_enabled(env_doc, ctx) and not phone_pool_lease_enabled(
         env_doc, ctx
     ):
+        if ctx is not None and _login_mode_for_ctx(ctx, env_doc, prompt=prompt) != "auto":
+            return None, _lease_failure_base(env_doc, ctx, prompt=prompt)
         return None, "号池为空，请先在项目里添加测试账号"
 
     _purge_expired_leases(project_id)
@@ -1331,7 +1359,7 @@ def _lease_for_context(
             ctx=ctx,
             prompt=prompt,
         )
-        base = "没有满足 Requirement 的可用账号（可能都被占用或状态不符）"
+        base = _lease_failure_base(env_doc, ctx, prompt=prompt)
         from mino_nexus.resources.resource_allocation_log import append_allocation_log
 
         append_allocation_log(

@@ -1,17 +1,31 @@
 """Owner-scoped dispatch receipts and last acknowledged Scout summaries."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import update, text
+from sqlalchemy import and_, or_, text, update
 
 from mino_nexus.core.database import session_scope
 from mino_nexus.models.scout_record import ScoutRecord
 from mino_nexus.platform.identity import require_user_id
 
 TERMINAL = frozenset({"pass", "fail", "blocked", "declined", "skipped", "cancelled"})
+_WEB_STOP_MODES = frozenset({"same_process", "retired_generation"})
+_TERMINAL_SCAN_CURSORS: dict[str, tuple[str, str]] = {}
+_ACTIVE_HOLDINGS_SQL = """
+  (EXISTS (SELECT 1 FROM execution_resources e
+            WHERE e.run_id=scout_record_index.task_id AND e.state!='released')
+   OR EXISTS (SELECT 1 FROM pool_accounts a
+              WHERE json_extract(a.lease,'$.run_id') IN
+                    (scout_record_index.task_id,scout_record_index.session_id))
+   OR EXISTS (SELECT 1 FROM device_resource_leases l
+              WHERE l.run_id IN (scout_record_index.task_id,scout_record_index.session_id))
+   OR EXISTS (SELECT 1 FROM device_reservations v
+              WHERE v.run_id=scout_record_index.task_id))
+"""
 _SUMMARY_FIELDS = frozenset({
     "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
     "task_id", "run_id", "session_id", "attempt_id", "case_id", "owner_user_id", "node_id", "sn", "platform",
@@ -33,6 +47,153 @@ def _view(row: ScoutRecord) -> dict[str, Any]:
     )}
     out.update(payload=deepcopy(row.payload), context=deepcopy(row.context), summary=deepcopy(row.summary))
     return out
+
+
+def view(record: ScoutRecord | dict[str, Any]) -> dict[str, Any]:
+    """Return an immutable snapshot for ORM rows or already projected records."""
+    return _view(record) if isinstance(record, ScoutRecord) else deepcopy(record)
+
+
+def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -> bool:
+    """Validate a fresh Web stop receipt against this exact durable attempt."""
+    if not isinstance(proof, dict) or record.get("status") not in TERMINAL:
+        return False
+    summary = record.get("summary") or {}
+    payload = record.get("payload") or {}
+    stop = proof.get("resource_stop")
+    if (record.get("status") != proof.get("status")
+            or payload.get("platform") != "web" or proof.get("platform") != "web"
+            or summary.get("platform") != "web"
+            or summary.get("status") != record.get("status")
+            or summary.get("sealed") is not True
+            or summary.get("execution_stopped") is not True
+            or summary.get("browser_closed") is not True
+            or proof.get("sealed") is not True
+            or proof.get("execution_stopped") is not True
+            or proof.get("browser_closed") is not True
+            or proof.get("resource_isolated") is True
+            or not isinstance(stop, dict)):
+        return False
+    for key in ("task_id", "session_id", "attempt_id", "owner_user_id", "node_id", "sn", "case_id"):
+        expected = str(record.get(key) or "")
+        if not expected or str(proof.get(key) or "") != expected:
+            return False
+    version = proof.get("summary_version")
+    if (type(version) is not int or version < 1
+            or version != int(record.get("summary_version") or 0)
+            or type(summary.get("summary_version")) is not int
+            or summary.get("summary_version") != version):
+        return False
+    summary_generation = summary.get("scout_process_generation")
+    if (not isinstance(summary_generation, str) or not summary_generation.strip()
+            or proof.get("scout_process_generation") != summary_generation):
+        return False
+    generation = stop.get("scout_process_generation")
+    started = stop.get("process_started_at")
+    mode = stop.get("mode")
+    if (stop.get("contract") != "script_resource_stop.v1"
+            or stop.get("stop_confirmed") is not True
+            or stop.get("worker_active") is not False
+            or stop.get("browser_closed") is not True
+            or stop.get("reason_code") != "web_lane_stopped"
+            or mode not in _WEB_STOP_MODES
+            or not isinstance(generation, str) or not generation.strip()
+            or type(started) not in (int, float) or isinstance(started, bool) or started <= 0):
+        return False
+    if mode == "same_process":
+        return generation == summary_generation
+    return generation != summary_generation
+
+
+def stop_evidence_confirmed(record: dict[str, Any]) -> bool:
+    """Whether execution and Web browser lifetime are known to have stopped."""
+    summary = record.get("summary") or {}
+    if record.get("status") not in TERMINAL or summary.get("sealed") is not True:
+        return False
+    if summary.get("resource_isolated") is True:
+        return False
+    if summary.get("execution_started") == "no":
+        return True
+    if summary.get("execution_stopped") is not True:
+        return False
+    if (record.get("payload") or {}).get("platform") == "web":
+        proof = (record.get("context") or {}).get("resource_stop")
+        return web_stop_proof_valid(record, proof)
+    return True
+
+
+def release_evidence_confirmed(record: dict[str, Any]) -> bool:
+    """Conservative gate shared by projection, recovery, and run finalization."""
+    if record.get("status") not in TERMINAL:
+        return False
+    summary = record.get("summary") or {}
+    if summary.get("sealed") is not True:
+        return False
+    resolution = (record.get("context") or {}).get("resource_resolution") or {}
+    if resolution.get("state") == "released":
+        return True
+    if (summary.get("resource_isolated") is True
+            or summary.get("execution_started") == "unknown"
+            or summary.get("state") == "interrupted"
+            or summary.get("reason_code") == "write_outcome_unknown"):
+        return False
+    if summary.get("execution_started") == "no":
+        return True
+    if summary.get("execution_stopped") is not True:
+        return False
+    if summary.get("browser_closed") is False:
+        return False
+    if ((record.get("payload") or {}).get("platform") == "web"
+            and record.get("cancel_requested") is True):
+        return stop_evidence_confirmed(record)
+    return True
+
+
+def web_stop_recovery_candidate(record: dict[str, Any]) -> bool:
+    """Whether a terminal Web record still needs a stop receipt fetched from Scout."""
+    summary = record.get("summary") or {}
+    if (record.get("status") not in TERMINAL or record.get("cancel_requested") is not True
+            or (record.get("payload") or {}).get("platform") != "web"):
+        return False
+    if (summary.get("sealed") is not True
+            or summary.get("execution_started") in {None, "no", "unknown"}
+            or summary.get("execution_stopped") is not True
+            or summary.get("browser_closed") is not True
+            or summary.get("resource_isolated") is True
+            or summary.get("state") == "interrupted"
+            or summary.get("reason_code") == "write_outcome_unknown"):
+        return False
+    return not stop_evidence_confirmed(record)
+
+
+def save_resource_stop(session_id: str, proof: dict[str, Any]) -> dict[str, Any]:
+    """Persist only a validated, version-matched Web stop receipt."""
+    owner = require_user_id()
+    with session_scope() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        row = db.get(ScoutRecord, str(session_id))
+        if row is None or row.owner_user_id != owner:
+            raise PermissionError("record_not_found")
+        current = _view(row)
+        if not web_stop_proof_valid(current, proof):
+            raise ValueError("stop_evidence_invalid")
+        previous = (row.context or {}).get("resource_stop") or {}
+        if int(previous.get("summary_version") or 0) > int(proof["summary_version"]):
+            raise ValueError("stop_evidence_stale")
+        stop = proof.get("resource_stop") or {}
+        snapshot = {
+            key: deepcopy(proof.get(key)) for key in (
+                "task_id", "session_id", "attempt_id", "owner_user_id", "node_id", "sn",
+                "case_id", "platform", "status", "summary_version", "sealed",
+                "execution_stopped", "browser_closed", "scout_process_generation",
+                "resource_isolated",
+            )
+        }
+        snapshot.update(resource_stop=deepcopy(stop), recorded_at=_now())
+        row.context = {**(row.context or {}), "resource_stop": snapshot}
+        row.updated_at = _now()
+        db.flush()
+        return _view(row)
 
 
 def register(*, node_id: str, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -214,48 +375,72 @@ def settle_resources(record: dict[str, Any]) -> None:
         latest = db.get(ScoutRecord, record["session_id"])
         if latest is None or latest.owner_user_id != record["owner_user_id"] or latest.status not in TERMINAL:
             return
-        request = latest.context.get("resource_request") or {}
-        if not request or not latest.summary.get("sealed"):
+        current = _view(latest)
+        if not release_evidence_confirmed(current):
             return
-        run = db.get(AppRegressionRun, latest.task_id)
-        summary = latest.summary
-        resolved = latest.context.get("resource_resolution", {}).get("state") == "released"
-        isolated = (not resolved and (summary.get("resource_isolated") is True
-                    or summary.get("execution_started") == "unknown" or summary.get("state") == "interrupted"
-                    or summary.get("reason_code") == "write_outcome_unknown"
-                    or summary.get("execution_stopped") is False or summary.get("browser_closed") is False))
+        request = current["context"].get("resource_request") or {}
+        if not request:
+            return
+        run = db.get(AppRegressionRun, current["task_id"])
         # Expiry alone is not an unknown write when this exact attempt has a
         # sealed, safe result. Actual pending/isolated write intents still win.
-        isolated = isolated or bool(unresolved(run.payload if run else {}, record["sn"]))
+        isolated = bool(unresolved(run.payload if run else {}, current["sn"]))
         for key, epoch in (request.get("resource_epochs") or {}).items():
             row = db.get(ExecutionResource, key)
             if (row is None or row.epoch != epoch or row.attempt_id != request.get("attempt_id")
-                    or row.run_id != record["task_id"] or row.owner_user_id != record["owner_user_id"]):
+                    or row.run_id != current["task_id"] or row.owner_user_id != current["owner_user_id"]):
                 continue
             row.state = "isolated" if isolated else "released"
             if not isolated:
                 row.expires_at = 0
 
 
+def _terminal_scan_page(
+    scan_key: str,
+    limit: int,
+    predicate: Callable[[dict[str, Any]], bool],
+) -> list[dict[str, Any]]:
+    """Scan bounded pages with a keyset cursor so old invalid rows cannot starve later work."""
+    page_size = max(1, limit) * 8
+    cursor = _TERMINAL_SCAN_CURSORS.get(scan_key)
+
+    def query_page(db):
+        query = (db.query(ScoutRecord)
+                 .filter(ScoutRecord.status.in_(TERMINAL), text(_ACTIVE_HOLDINGS_SQL)))
+        if cursor:
+            updated_at, session_id = cursor
+            query = query.filter(or_(
+                ScoutRecord.updated_at > updated_at,
+                and_(ScoutRecord.updated_at == updated_at, ScoutRecord.session_id > session_id),
+            ))
+        return (query.order_by(ScoutRecord.updated_at, ScoutRecord.session_id)
+                .distinct().limit(page_size).all())
+
+    with session_scope() as db:
+        rows = query_page(db)
+        if not rows and cursor:
+            _TERMINAL_SCAN_CURSORS.pop(scan_key, None)
+            cursor = None
+            rows = query_page(db)
+        page = [_view(row) for row in rows]
+
+    if not page:
+        return []
+    candidates = [row for row in page if predicate(row)]
+    selected = candidates[:max(1, limit)]
+    marker = selected[-1] if selected else page[-1]
+    _TERMINAL_SCAN_CURSORS[scan_key] = (str(marker["updated_at"]), str(marker["session_id"]))
+    return selected
+
+
 def terminal_records_for_settlement(limit: int = 32) -> list[dict[str, Any]]:
     """Bounded recovery of committed terminal results whose release was interrupted."""
-    with session_scope() as db:
-        rows = (db.query(ScoutRecord).filter(ScoutRecord.status.in_(TERMINAL), text("""
-          (COALESCE(json_extract(scout_record_index.summary,'$.resource_isolated'),0)!=1
-            AND COALESCE(json_extract(scout_record_index.summary,'$.execution_started'),'')!='unknown'
-            AND COALESCE(json_extract(scout_record_index.summary,'$.state'),'')!='interrupted'
-            AND COALESCE(json_extract(scout_record_index.summary,'$.reason_code'),'')!='write_outcome_unknown'
-            AND COALESCE(json_extract(scout_record_index.summary,'$.execution_stopped'),1)!=0
-            AND COALESCE(json_extract(scout_record_index.summary,'$.browser_closed'),1)!=0
-            OR json_extract(scout_record_index.context,'$.resource_resolution.state')='released')
-          AND (EXISTS (SELECT 1 FROM execution_resources e WHERE e.run_id=scout_record_index.task_id AND e.state!='released')
-            OR EXISTS (SELECT 1 FROM pool_accounts a WHERE json_extract(a.lease,'$.run_id') IN
-              (scout_record_index.task_id,scout_record_index.session_id))
-            OR EXISTS (SELECT 1 FROM device_resource_leases l WHERE l.run_id IN (scout_record_index.task_id,scout_record_index.session_id))
-            OR EXISTS (SELECT 1 FROM device_reservations v WHERE v.run_id=scout_record_index.task_id))
-        """))
-                .order_by(ScoutRecord.updated_at).distinct().limit(limit).all())
-        return [_view(row) for row in rows]
+    return _terminal_scan_page("settlement", limit, release_evidence_confirmed)
+
+
+def terminal_records_for_recovery(limit: int = 32) -> list[dict[str, Any]]:
+    """Bounded scan for canceled Web attempts that need a fresh stop receipt."""
+    return _terminal_scan_page("recovery", limit, web_stop_recovery_candidate)
 
 
 def save_resources(session_id: str, request: dict[str, Any]) -> None:

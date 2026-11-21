@@ -47,22 +47,32 @@ class DebugControlRequest(BaseModel):
 
 @router.post("/debug")
 def start_debug(body: DebugStartRequest, sess: dict = Depends(current_session)):
-    from mino_nexus.loop.debug_cases import start
+    from mino_nexus.loop.debug_cases import DebugCallError, start
     try:
         app = ps.require_app(body.app_id)
         require_project_write(str(app.get("project_id") or ""), sess)
         return ok(start(app, body.model_dump()))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="App not found") from exc
+    except DebugCallError as exc:
+        raise HTTPException(
+            status_code=504 if exc.transport else 409,
+            detail={"reason_code": exc.reason_code, "message": exc.message, "transport": exc.transport},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"reason_code": str(exc), "message": str(exc)}) from exc
 
 
 @router.post("/debug/{session_id}/{operation}")
 def control_debug(session_id: str, operation: str, body: DebugControlRequest, _sess: dict = Depends(current_session)):
-    from mino_nexus.loop.debug_cases import control
+    from mino_nexus.loop.debug_cases import DebugCallError, control
     try:
         return ok(control(session_id, operation, body.model_dump()))
+    except DebugCallError as exc:
+        raise HTTPException(
+            status_code=504 if exc.transport else 409,
+            detail={"reason_code": exc.reason_code, "message": exc.message, "transport": exc.transport},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail={"reason_code": str(exc), "message": str(exc)}) from exc
 

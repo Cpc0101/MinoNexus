@@ -264,6 +264,8 @@ def _norm_login_policies(raw: Any, env_keys: set[str]) -> list[dict]:
         raise ValueError("login_policies_invalid")
     out: list[dict] = []
     seen: set[str] = set()
+    selected_app_owner: dict[str, str] = {}
+    default_policy_id = ""
     for item in raw:
         if not isinstance(item, dict):
             raise ValueError("login_policy_object_required")
@@ -276,11 +278,27 @@ def _norm_login_policies(raw: Any, env_keys: set[str]) -> list[dict]:
             raise ValueError("login_policy_apply_invalid")
         app_ids: list[str] = []
         if apply == "selected":
-            for app_id in item.get("app_ids") or []:
-                text = str(app_id or "").strip()[:80]
-                if text and text not in app_ids:
+            raw_app_ids = item.get("app_ids")
+            if not isinstance(raw_app_ids, list) or not raw_app_ids:
+                raise ValueError("login_policy_app_ids_required")
+            if len(raw_app_ids) > 200:
+                raise ValueError("login_policy_app_ids_too_many")
+            for app_id in raw_app_ids:
+                if not isinstance(app_id, str) or not app_id.strip() or len(app_id.strip()) > 80:
+                    raise ValueError("login_policy_app_ids_invalid")
+                text = app_id.strip()
+                if text not in app_ids:
                     app_ids.append(text)
-            app_ids = app_ids[:200]
+            if not app_ids:
+                raise ValueError("login_policy_app_ids_required")
+            for app_id in app_ids:
+                if app_id in selected_app_owner:
+                    raise ValueError("login_policy_app_ambiguous")
+                selected_app_owner[app_id] = pid
+        else:
+            if default_policy_id:
+                raise ValueError("login_policy_default_ambiguous")
+            default_policy_id = pid
         secrets_in = item.get("secrets") if isinstance(item.get("secrets"), dict) else {}
         phone_in = item.get("phone_seq") if isinstance(item.get("phone_seq"), dict) else {}
         gmail_in = item.get("gmail_alias") if isinstance(item.get("gmail_alias"), dict) else {}
@@ -322,8 +340,11 @@ def _policies_from_channels(
 
 
 def login_policy_matches(policy: dict, app_id: str) -> bool:
-    if str(policy.get("apply") or "all") != "selected":
+    apply = str(policy.get("apply") or "all")
+    if apply == "all":
         return True
+    if apply != "selected":
+        return False
     wanted = str(app_id or "").strip()
     return bool(wanted) and wanted in {str(item) for item in policy.get("app_ids") or []}
 
@@ -332,10 +353,23 @@ def matching_login_policy(env_doc: dict | None, app_id: str = "") -> dict | None
     policies = (env_doc or {}).get("login_policies")
     if not isinstance(policies, list):
         return None
+    selected: list[dict] = []
+    defaults: list[dict] = []
     for policy in policies:
-        if isinstance(policy, dict) and login_policy_matches(policy, app_id):
-            return policy
-    return None
+        if not isinstance(policy, dict):
+            continue
+        if str(policy.get("apply") or "all") == "selected":
+            if login_policy_matches(policy, app_id):
+                selected.append(policy)
+        elif login_policy_matches(policy, app_id):
+            defaults.append(policy)
+    if len(selected) > 1:
+        raise ValueError("login_policy_app_ambiguous")
+    if selected:
+        return selected[0]
+    if len(defaults) > 1:
+        raise ValueError("login_policy_default_ambiguous")
+    return defaults[0] if defaults else None
 
 
 def policy_seq_slot(env_doc: dict | None, key: str, env_key: str, app_id: str = "") -> dict[str, str]:
@@ -1111,6 +1145,8 @@ def validate_environment_write(doc: dict) -> None:
     if not isinstance(envs,list) or not envs: raise ValueError("environments_required")
     seen_env=set()
     for row in envs: _norm_environment(row,seen_env)
+    if "login_policies" in doc:
+        _norm_login_policies(doc.get("login_policies"), seen_env)
     if doc.get("default_profile") not in seen_env: raise ValueError("default_profile_invalid")
     pipeline_keys(doc)
     profiles=doc.get("profiles")

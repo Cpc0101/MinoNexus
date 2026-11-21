@@ -97,6 +97,15 @@ def login_kind_from_secrets(secrets: dict | None) -> str:
     return _norm_env_secrets(secrets)["login"]["kind"]
 
 
+def login_mode_from_secrets(secrets: dict | None) -> str:
+    return _norm_env_secrets(secrets)["login"]["mode"]
+
+
+def login_allows_auto_provision(secrets: dict | None) -> bool:
+    """Only login.mode=auto may create accounts implicitly."""
+    return login_mode_from_secrets(secrets) == "auto"
+
+
 def account_row_matches_login_kind(row: dict | None, kind: str) -> bool:
     r = row if isinstance(row, dict) else {}
     k = str(kind or "phone").strip().lower()

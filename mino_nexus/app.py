@@ -120,6 +120,8 @@ async def lifespan(app: FastAPI):
     from mino_nexus.casework import run_store
     from mino_nexus.loop.case_exec import _run_in_background
     from mino_nexus.resources.scout_record_store import resumable_task_ids
+    # reconcile_stale_running_runs skips record-backed runs; this recovery pass
+    # resumes their wait_attempt path so terminal release can finish the task.
     for rid in dict.fromkeys([*stale, *resumable_task_ids()]):
         recovered = run_store.get(rid)
         if not recovered or not run_store.task_is_live(recovered):

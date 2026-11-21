@@ -11,19 +11,20 @@ from mino_nexus.platform.identity import execution_user, require_user_id
 from mino_nexus.resources import scout_record_store as records
 
 
-def project(row: dict[str, Any]) -> None:
+def project(row: dict[str, Any]) -> bool:
     """Project only the last durable summary; evidence remains on the original node."""
     from mino_nexus.casework import run_store
     summary = row.get("summary") or {}
+    if row["status"] in records.TERMINAL and not records.release_evidence_confirmed(row):
+        return False
     with execution_user(row["owner_user_id"]):
-        if row["status"] in records.TERMINAL:
-            records.settle_resources(row)
         doc = run_store.get(row["task_id"])
         if not doc or not run_store.task_is_live(doc):
             if doc and doc.get("finished_at"):
                 from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
                 settle_terminal_task(row["task_id"], row["owner_user_id"])
-            return
+                return True
+            return False
         fields = {key: summary[key] for key in (
             "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
             "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
@@ -63,6 +64,7 @@ def project(row: dict[str, Any]) -> None:
                     emit_testing_task({"event": "task_finished", "run_id": row["task_id"],
                                        "task_id": row["task_id"], "status": finished["status"],
                                        "app_id": finished.get("app_id") or ""})
+        return True
 
 
 def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
@@ -157,7 +159,6 @@ def wait_attempt(row: dict[str, Any]) -> dict[str, Any]:
     while True:
         row = records.get(row["session_id"]) or row
         if row["status"] in records.TERMINAL:
-            records.settle_resources(row)
             project(row)
             return {**row["summary"], "status": row["status"], "steps": []}
         if run_store.cancel_requested(row["task_id"]) and not row["cancel_requested"]:
