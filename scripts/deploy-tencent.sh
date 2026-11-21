@@ -108,18 +108,55 @@ else
   MINO_NEXUS_IMAGE_TAG="$image_tag" docker compose --env-file .env.next -f docker-compose.yml.next.validated pull nexus
 fi
 
+capture_failure_diagnostics() {
+  echo "Collecting Nexus deployment diagnostics." >&2
+  docker compose ps -a >&2 || true
+  docker compose logs --no-color --tail 200 nexus >&2 || true
+  failed_container=$(docker compose ps -aq nexus 2>/dev/null | head -n 1 || true)
+  if [ -n "$failed_container" ]; then
+    docker inspect --format 'image={{.Config.Image}}' "$failed_container" >&2 || true
+    docker inspect --format 'healthcheck={{json .Config.Healthcheck}}' "$failed_container" >&2 || true
+    docker inspect --format 'state={{json .State}}' "$failed_container" >&2 || true
+  fi
+  echo "Direct loopback health probe:" >&2
+  curl --silent --show-error --max-time 5 http://127.0.0.1:50104/health >&2 || true
+  echo >&2
+}
+
+wait_for_nexus() {
+  timeout_seconds=${1:-180}
+  deadline=$((SECONDS + timeout_seconds))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    current_container=$(docker compose ps -q nexus 2>/dev/null | head -n 1 || true)
+    if [ -n "$current_container" ]; then
+      state=$(docker inspect --format '{{.State.Status}}' "$current_container" 2>/dev/null || true)
+      case "$state" in
+        exited|dead) return 1 ;;
+      esac
+      if curl --fail --silent --max-time 5 http://127.0.0.1:50104/health > /dev/null; then
+        return 0
+      fi
+    fi
+    sleep 3
+  done
+  return 1
+}
+
 rollback() {
   status=$?
   trap - ERR
   set +e
+  capture_failure_diagnostics
   echo "Deployment failed; attempting rollback." >&2
   if [ -n "$previous_compose" ] && [ -f "$previous_compose" ]; then cp "$previous_compose" docker-compose.yml; fi
   if [ -n "$previous_env" ] && [ -f "$previous_env" ]; then cp "$previous_env" .env; fi
   if [ -n "$previous_image_tag" ]; then
-    MINO_NEXUS_IMAGE_TAG="$previous_image_tag" docker compose up -d --no-build --pull never --wait --wait-timeout 180
+    MINO_NEXUS_IMAGE_TAG="$previous_image_tag" docker compose up -d --no-build --pull never
+    wait_for_nexus 180
     echo "Rollback attempted with immutable image tag $previous_image_tag." >&2
   elif [ -n "$previous_version" ]; then
-    MINO_NEXUS_VERSION="$previous_version" docker compose up -d --no-build --pull never --wait --wait-timeout 180
+    MINO_NEXUS_VERSION="$previous_version" docker compose up -d --no-build --pull never
+    wait_for_nexus 180
     echo "Rollback attempted with legacy version $previous_version." >&2
   fi
   exit "$status"
@@ -146,7 +183,8 @@ mv docker-compose.yml.next.validated docker-compose.yml
 mv .env.next .env
 updated=1
 
-MINO_NEXUS_IMAGE_TAG="$image_tag" docker compose up -d --no-build --pull never --wait --wait-timeout 180
+MINO_NEXUS_IMAGE_TAG="$image_tag" docker compose up -d --no-build --pull never
+wait_for_nexus 180
 test "$(docker compose ps -q nexus | xargs -r docker inspect --format '{{.Config.Image}}')" = "$image"
 health=$(curl --fail --silent --show-error --retry 10 --retry-delay 3 --max-time 10 http://127.0.0.1:50104/health)
 printf '%s' "$health" | grep -Fq "\"nexus_version\":\"$version\""
