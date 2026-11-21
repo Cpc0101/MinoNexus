@@ -4,7 +4,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from mino_nexus.core.protocol import normalize_case_tags as _normalize_case_tags
+
 ConflictAction = Literal["overwrite", "skip"]
+
+
+def normalize_case_tags(value: Any) -> list[str]:
+    """Normalize execution tags while keeping their display spelling stable."""
+    return _normalize_case_tags(value)
 
 
 def _now() -> str:
@@ -29,6 +36,7 @@ def _public(row) -> dict[str, Any]:
         "point_ids": list(row.point_ids or extra.get("point_ids") or []),
         "source": row.source or extra.get("source") or "",
         "requirement_id": row.requirement_id or extra.get("requirement_id") or "",
+        "tags": normalize_case_tags(extra.get("tags")),
         "index": row.sort_index,
         "updated_at": row.updated_at or "",
     }
@@ -96,6 +104,7 @@ def list_case_page(project_id: str, *, limit: int, offset: int = 0, search: str 
                     "precondition": (row.precondition or "")[:2000],
                     "steps": [str(value)[:2000] for value in (row.steps or [])],
                     "expected": [str(value)[:2000] for value in (row.expected or [])],
+                    "tags": normalize_case_tags(public.get("tags")),
                     "meta": dict(public.get("meta") or {}),
                 }
             )
@@ -212,6 +221,7 @@ def _row_fields(
     sort_index: int,
     force_recompile_resource_key: bool = False,
     compiled: bool = False,
+    tags_fallback: Any = None,
 ) -> dict[str, Any]:
     from copy import deepcopy
     raw = deepcopy(raw)
@@ -223,6 +233,9 @@ def _row_fields(
         raw[field + "_raw"] = str(raw.get(field + "_raw") or "")
     raw["platform"] = str(raw.get("platform") or "")
     raw["meta"] = dict(raw.get("meta") or {})
+    raw["tags"] = normalize_case_tags(
+        raw.get("tags") if "tags" in raw and raw.get("tags") is not None else tags_fallback
+    )
     if force_recompile_resource_key:
         raw.pop("resource_key", None)
         raw["meta"].pop("resource_key", None)
@@ -295,6 +308,7 @@ def save_case(project_id: str, row: dict[str, Any], *, requirement_id: str = "")
         requirement_id=rid,
         sort_index=int(row.get("index") or 0),
         force_recompile_resource_key=force_rk,
+        tags_fallback=(existing or {}).get("tags") if "tags" not in row else None,
     )
     from sqlalchemy import text
     with session_scope() as db:
@@ -328,7 +342,17 @@ def upsert_cases(
         return list_cases(pid, rid)
     from sqlalchemy import text
     expected_rows = {raw["case_id"]: get_case(pid, raw["case_id"]) for raw in incoming}
-    prepared = [_row_fields(raw, project_id=pid, requirement_id=rid, sort_index=i) for i, raw in enumerate(incoming)]
+    prepared = [
+        _row_fields(
+            raw,
+            project_id=pid,
+            requirement_id=rid,
+            sort_index=i,
+            tags_fallback=(expected_rows.get(raw["case_id"]) or {}).get("tags")
+            if "tags" not in raw else None,
+        )
+        for i, raw in enumerate(incoming)
+    ]
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
         for fields in prepared:
@@ -379,7 +403,8 @@ def prepare_import_row(project_id, requirement_id, row, *, on_conflict="skip", c
     case_id = str(existing["case_id"]) if existing else case_id or allocate_case_id(project_id)
     payload.update(case_id=case_id, source=payload.get("source") or "import")
     fields = _row_fields(payload, project_id=project_id, requirement_id=requirement_id,
-        sort_index=int(payload.get("index") or (existing or {}).get("index") or 0), compiled=compiled)
+        sort_index=int(payload.get("index") or (existing or {}).get("index") or 0), compiled=compiled,
+        tags_fallback=(existing or {}).get("tags") if "tags" not in payload else None)
     return {"fields": fields, "expected_updated_at": existing.get("updated_at") if existing else None,
             "expected_exists": bool(existing)}
 

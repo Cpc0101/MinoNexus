@@ -80,6 +80,7 @@ def control_debug(session_id: str, operation: str, body: DebugControlRequest, _s
 class CaseResultsBody(BaseModel):
     app_id: str
     case_ids: list[str] = Field(default_factory=list, max_length=200)
+    history_limit: int = Field(default=20, ge=1, le=100)
 
 
 @router.post("/case-results")
@@ -91,7 +92,15 @@ def case_results(body: CaseResultsBody, _sess: dict = Depends(current_session)):
     from mino_nexus.casework.case_store import get_case_ids
 
     allowed = set(get_case_ids(str(app.get("project_id") or ""), body.case_ids))
-    return ok({"items": run_store.last_case_results(body.app_id, [cid for cid in body.case_ids if cid in allowed])})
+    case_ids = [cid for cid in body.case_ids if cid in allowed]
+    from mino_nexus.casework.failure_analysis import analyze_app_history
+
+    return ok({
+        "items": run_store.last_case_results(body.app_id, case_ids),
+        "failure_analysis": analyze_app_history(
+            body.app_id, case_ids=case_ids, history_limit=body.history_limit,
+        ),
+    })
 
 
 def _plugin_user(sess: dict[str, Any]) -> str:
@@ -109,6 +118,8 @@ class RunRequest(BaseModel):
     coverage: str = ""
     platform: str = "android"
     case_ids: Optional[List[str]] = None
+    include_tags: List[str] = Field(default_factory=list, max_length=32)
+    exclude_tags: List[str] = Field(default_factory=list, max_length=32)
     start_index: int = 0
     async_exec: bool = True
     use_persisted_baseline: bool = True
@@ -244,6 +255,8 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             coverage=cov,
             platform=body.platform or "android",
             case_ids=body.case_ids,
+            include_tags=body.include_tags,
+            exclude_tags=body.exclude_tags,
             start_index=body.start_index or 0,
             async_exec=body.async_exec,
             run_type=(body.run_type or "manual").lower(),

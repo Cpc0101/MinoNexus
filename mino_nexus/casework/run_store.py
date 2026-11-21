@@ -204,7 +204,7 @@ def _upsert_run(doc: dict[str, Any]) -> None:
                 doc["cancel_requested"] = True
             for field in ("owner_user_id", "plugin_user_id", "client_request_id", "request_digest", "derived_from",
                           "source_context", "debug_origin", "execution_kind", "workspace", "debug_app_key", "debug_node_id", "debug_start_request", "case_inputs", "requested_total", "skipped_cases", "coverage", "sns", "device_targets", "platforms_by_sn",
-                          "environment_baseline_digest", "execution_policy", "retry_contract"):
+                          "environment_baseline_digest", "execution_policy", "execution_selection", "retry_contract"):
                 if field in frozen:
                     doc[field] = copy.deepcopy(frozen[field])
             before = {case.get("execution_unit_id"): case for case in frozen.get("cases") or []}
@@ -463,6 +463,7 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "total": doc.get("total") or 0,
         "requested_total": doc.get("requested_total", doc.get("total") or 0),
         "skipped_cases": copy.deepcopy(doc.get("skipped_cases") or []),
+        "execution_selection": copy.deepcopy(doc.get("execution_selection") or {}),
         "completed": doc.get("completed") or 0,
         "passed": doc.get("passed") or 0,
         "failed": doc.get("failed") or 0,
@@ -525,6 +526,7 @@ _CASE_BRIEF_KEYS = (
     "detail_availability", "status_sync_at", "summary_version", "assertions", "source_coverage",
     "elapsed_ms", "module", "platform", "hitl", "test_report", "run_purpose",
     "execution_started", "started_at", "finished_at", "sealed", "last_event_seq", "reason_code", "source_hash", "script_path", "revision",
+    "failure_stage", "case_step",
 )
 
 

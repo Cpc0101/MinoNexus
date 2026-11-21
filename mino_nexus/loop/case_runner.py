@@ -80,6 +80,8 @@ def run_cases(
     coverage: str = "",
     platform: str = "android",
     case_ids: Optional[list[str]] = None,
+    include_tags: Optional[list[str]] = None,
+    exclude_tags: Optional[list[str]] = None,
     start_index: int = 0,
     async_exec: bool = True,
     run_type: str = "manual",
@@ -114,8 +116,14 @@ def run_cases(
     require_user_id(plugin_user_id or None)
     from mino_nexus.core.stable_digest import digest
     from mino_nexus.loop.script_targets import normalize_script_targets
+    from mino_nexus.casework.case_selection import select_cases_by_tags, tags_requested
+    from mino_nexus.casework.case_store import normalize_case_tags
 
     targets = normalize_script_targets(script_targets)
+    include_tags = normalize_case_tags(include_tags)
+    exclude_tags = normalize_case_tags(exclude_tags)
+    if (debug or targets) and tags_requested(include_tags, exclude_tags):
+        raise ValueError("tag_filters_require_case_library")
     from mino_nexus.core.protocol import validate_case_inputs, validate_source_context
     case_inputs = validate_case_inputs(case_inputs)
     source_context = validate_source_context(source_context)
@@ -133,7 +141,8 @@ def run_cases(
         app, requested_sns, surface=env_surface, profile=env_profile,
     )
     request_digest = digest({"app_id": app.get("id"), "sn": device_sns[0] if device_sns else "", "sns": device_sns, "coverage": coverage,
-        "platform": platform, "case_ids": case_ids, "start_index": start_index, "run_type": run_type,
+        "platform": platform, "case_ids": case_ids, "include_tags": include_tags, "exclude_tags": exclude_tags,
+        "start_index": start_index, "run_type": run_type,
         "requirement_id": requirement_id, "release_id": release_id, "slot_id": slot_id,
         "provider_id": provider_id, "playwright_headless": playwright_headless, "env_profile": env_profile,
         "env_surface": env_surface, "action_scheme": action_scheme, "execution_mode": execution_mode, "expected_build": expected_build,
@@ -161,31 +170,46 @@ def run_cases(
     cov = cov or "once"
 
     skipped_cases: list[dict[str, Any]] = []
+    execution_selection: dict[str, Any]
     if debug:
         cases = [{"case_id": "debug", "name": "本机编写调试", "project_id": app.get("project_id"), "script_path": "debug.py", "run_purpose": "authoring"}]
         requested_total = 1
+        cases, execution_selection = select_cases_by_tags(cases, source_revision=revision)
     elif targets:
         cases = []
         requested_total = 0
+        execution_selection = {
+            "filters": {"include_tags": [], "exclude_tags": []}, "matched_count": 0,
+            "selected_case_ids": [], "skipped": [], "source_revision": str(revision or "").strip(),
+            "selected_case_revisions": {},
+        }
     else:
         all_cases = aas.list_app_cases(app)
         if case_ids is not None:
             by_id = {str(c.get("case_id")): c for c in all_cases if c.get("case_id")}
-            cases = [by_id[str(cid)] for cid in case_ids if str(cid) in by_id]
+            candidates = [by_id[str(cid)] for cid in case_ids if str(cid) in by_id]
             missing = [cid for cid in case_ids if str(cid) not in by_id]
             if missing:
                 raise ValueError("所选用例已删除或不属于当前项目，请重新选择；本次未创建任务。")
         else:
-            cases = list(all_cases)
-        if start_index > 0:
-            cases = cases[start_index:]
+            candidates = list(all_cases)
+        requested_total = len(candidates)
+        cases, execution_selection = select_cases_by_tags(
+            candidates,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            start_index=start_index,
+            source_revision=revision,
+        )
         if not cases:
+            if include_tags or exclude_tags:
+                raise ValueError("tag_filter_matched_no_cases")
             raise ValueError("没有可执行的用例草稿。请先在流程里生成用例，或指定 case_ids。")
-        requested_total = len(cases)
         from mino_nexus.casework.case_preflight import prepare_cases_for_execution
 
         cases, preflight = prepare_cases_for_execution(str(app.get("project_id") or ""),
             [str(case["case_id"]) for case in cases])
+        execution_selection["selected_case_ids"] = [str(case["case_id"]) for case in cases]
         skipped_cases = preflight["blocked"]
         if not cases:
             raise UiNotCoverable(skipped_cases, compilation_jobs=preflight.get("compilation_jobs"),
@@ -245,6 +269,7 @@ def run_cases(
             revision=str(revision or "").strip(),
         )
         requested_total = len(cases)
+        cases, execution_selection = select_cases_by_tags(cases, source_revision=revision)
         if not cases:
             raise ValueError("没有可执行的脚本。")
     known_inputs = {str(c.get("case_id") or "") for c in cases} | {str(c.get("script_path") or "") for c in cases}
@@ -340,6 +365,7 @@ def run_cases(
         "cases": seeded,
         "requested_total": requested_total,
         "skipped_cases": skipped_cases,
+        "execution_selection": execution_selection,
         "error": "",
         "total": len(seeded),
         "completed": 0,
