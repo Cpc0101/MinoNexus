@@ -278,20 +278,37 @@ def _resolve_one(resolver: str, value: str, *, user_id: str = "", scope: dict[st
         from mino_nexus.assistant.assistant_targets import compatible_devices, device_brief
 
         rows = []
-        for device in compatible_devices(scope, _visible_devices(user_id)):
-            if str(device.get("sn") or "") == text:
-                return text, device_brief(device)["display_label"], [], False
-            if not device.get("executable"):
-                continue
-            rows.append({
+        devices = compatible_devices(scope, _visible_devices(user_id))
+        exact = [
+            device for device in devices
+            if text in {str(device.get("sn") or ""), str(device.get("physical_sn") or "")}
+        ]
+        if len(exact) == 1:
+            device = exact[0]
+            return str(device.get("sn") or ""), device_brief(device)["display_label"], [], False
+        if len(exact) > 1:
+            rows = [{
                 "id": device.get("sn"),
                 "name": device_brief(device)["display_label"],
                 "alias": device.get("alias") or device.get("model") or device.get("name"),
                 "sn": device.get("sn"),
-            })
+                "physical_sn": device.get("physical_sn"),
+            } for device in exact]
+        for device in devices:
+            if not device.get("executable"):
+                continue
+            candidate = {
+                "id": device.get("sn"),
+                "name": device_brief(device)["display_label"],
+                "alias": device.get("alias") or device.get("model") or device.get("name"),
+                "sn": device.get("sn"),
+                "physical_sn": device.get("physical_sn"),
+            }
+            if candidate not in rows:
+                rows.append(candidate)
     else:
         return text, text, [], False
-    hits = _match_name(rows, text, "id", "name", "sn", "alias", "label", "app_identifier")
+    hits = _match_name(rows, text, "id", "name", "sn", "physical_sn", "alias", "label", "app_identifier")
     if len(hits) == 1:
         return str(hits[0].get("id") or ""), str(hits[0].get("name") or hits[0].get("id") or ""), [], False
     if not hits:
@@ -852,7 +869,7 @@ def forward_tool_specs() -> list[dict[str, Any]]:
                 "properties": {
                     "capability_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "params": {"type": "object", "default": {}},
-                    "sn": {"type": "string", "description": "设备 SN；设备动作必须给"},
+                    "sn": {"type": "string", "description": "物理 SN，或 device.list 返回的应用级逻辑 SN；设备动作必须给"},
                     "node_id": {"type": "string", "description": "目标节点；不给时按 sn 解析"},
                     "platform": {"type": "string", "enum": ["android", "ios", "web", "mac", "win", ""]},
                     "timeout_sec": {"type": "number", "minimum": 1, "maximum": 1800, "default": 60},
@@ -874,7 +891,10 @@ def forward_tool_specs() -> list[dict[str, Any]]:
             ),
             "inputSchema": {
                 "type": "object",
-                "properties": {"sn": {"type": "string"}, "node_id": {"type": "string"}},
+                "properties": {
+                    "sn": {"type": "string", "description": "物理 SN，或 device.list 返回的应用级逻辑 SN"},
+                    "node_id": {"type": "string"},
+                },
             },
             "annotations": {"title": "查询目标", "readOnlyHint": True, "destructiveHint": False,
                             "idempotentHint": True, "openWorldHint": False},

@@ -62,18 +62,40 @@ def is_package_cap(capability_id: str) -> bool:
 
 
 def resolve_target(sn: str, node_id: str):
-    """→ (node, sn)。设备优先按 sn 找；只给 node_id 时直接落到该节点。"""
+    """→ (node, physical_sn, identity)。逻辑 SN 只用于寻址展示，执行句柄始终是物理 SN。"""
+    requested_sn = str(sn or "").strip()
+    try:
+        from mino_nexus.resources.device_targets import parse_web_target_sn
+
+        parsed = parse_web_target_sn(requested_sn)
+    except ValueError as exc:
+        raise ForwardError(
+            "device_target_invalid", "设备目标格式无效", status=400,
+            detail={"requested_sn": requested_sn, "reason_code": str(exc)},
+        ) from exc
+    physical_sn = str((parsed or {}).get("physical_sn") or requested_sn).strip()
+    identity = {
+        "sn": requested_sn,
+        "physical_sn": physical_sn,
+        "resource_sn": physical_sn,
+    }
+    if parsed:
+        identity.update({
+            "app_id": parsed["app_id"],
+            "env_surface": parsed["env_surface"],
+            "target_surface": parsed["target_surface"],
+        })
     reg = get_registry()
-    if sn:
-        node, reason = reg.resolve(sn)
+    if physical_sn:
+        node, reason = reg.resolve(physical_sn)
         if node is None:
             raise ForwardError(OFFLINE_DEVICE if "未登记" in reason else OFFLINE_NODE, reason)
-        return node, sn
+        return node, physical_sn, identity
     if node_id:
         node = reg.get_node(node_id)
         if node is None or not node.alive or node.send is None:
             raise ForwardError(OFFLINE_NODE, f"节点 {node_id} 不在线")
-        return node, ""
+        return node, "", identity
     raise ForwardError(OFFLINE_UNKNOWN)
 
 
@@ -216,16 +238,17 @@ async def forward_async(
     cap = str(capability_id or "").strip()
     if not cap:
         raise ForwardError("target_unresolved", "capability_id 不能为空", status=400)
-    node, sn = resolve_target(str(sn or "").strip(), str(node_id or "").strip())
+    node, physical_sn, identity = resolve_target(str(sn or "").strip(), str(node_id or "").strip())
     require_owner(node, user_id)
     payload = build_execute(
-        capability_id=cap, params=params, sn=sn, node=node, platform=platform,
+        capability_id=cap, params=params, sn=physical_sn, node=node, platform=platform,
         timeout_sec=timeout_sec, executor_order=executor_order, selected_impl=selected_impl,
     )
-    writer = _evidence_open(session_id, cap, sn, node.node_id)
+    writer = _evidence_open(session_id, cap, physical_sn, node.node_id)
     started = time.time()
     _record(writer, "tool/call", {
-        "capability_id": cap, "sn": sn, "node_id": node.node_id,
+        "capability_id": cap, "sn": physical_sn, "requested_sn": identity["sn"],
+        "app_id": identity.get("app_id") or "", "node_id": node.node_id,
         "params_keys": sorted((params or {}).keys()),
     })
     try:
@@ -263,10 +286,11 @@ async def forward_async(
         raise ForwardError(error or "scout_rejected", summary or error or "Scout 拒绝了这次调用",
                            status=502, detail={
                                "capability_id": cap, "node_id": node.node_id,
+                               "sn": identity["sn"], "physical_sn": physical_sn,
                                "executor_used": str(getattr(result, "executor_used", "") or ""),
                                "data": data, "extra": extra,
                            })
-    return {"capability_id": cap, "node_id": node.node_id, "sn": sn,
+    return {"capability_id": cap, "node_id": node.node_id, **identity,
             "elapsed_ms": elapsed, "summary": summary, "data": data, "extra": extra}
 
 
@@ -286,11 +310,13 @@ def forward_sync(*, user_id: str = "", **kwargs: Any) -> dict[str, Any]:
 
 def resolve_async(*, sn: str = "", node_id: str = "", user_id: str = "") -> dict[str, Any]:
     """只查目标落在哪个节点、是否在线，不执行。"""
-    node, sn = resolve_target(str(sn or "").strip(), str(node_id or "").strip())
+    node, physical_sn, identity = resolve_target(str(sn or "").strip(), str(node_id or "").strip())
     require_owner(node, user_id)
-    return {"sn": sn, "node_id": node.node_id, "online": bool(node.alive),
-            "platform": str(getattr(node, "host", {}) or {}).get("os")
-                        or str(getattr(node.devices.get(sn) if sn else None, "platform", "") or "")}
+    host = getattr(node, "host", {}) or {}
+    platform = str(host.get("os") or "") if isinstance(host, dict) else ""
+    return {**identity, "node_id": node.node_id, "online": bool(node.alive),
+            "platform": platform
+                        or str(getattr(node.devices.get(physical_sn) if physical_sn else None, "platform", "") or "")}
 
 
 def resolve_sync(*, user_id: str = "", sn: str = "", node_id: str = "") -> dict[str, Any]:

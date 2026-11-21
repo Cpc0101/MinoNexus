@@ -29,21 +29,6 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _normalize_sns(sn: str = "", sns: Optional[list[str]] = None) -> list[str]:
-    raw: list[str] = []
-    if sn:
-        raw.append(str(sn).strip())
-    for item in sns or []:
-        raw.append(str(item or "").strip())
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
 def _pick_online_sns() -> list[str]:
     return [str(d.get("sn") or "") for d in ui_devices.ui_devices() if d.get("status") == "online" and d.get("sn")]
 
@@ -136,7 +121,18 @@ def run_cases(
     source_context = validate_source_context(source_context)
     if client_request_id and (len(client_request_id) > 160 or not all(character.isalnum() or character in "_.:-" for character in client_request_id)):
         raise ValueError("run_request_id_invalid")
-    request_digest = digest({"app_id": app.get("id"), "sn": sn, "sns": sns, "coverage": coverage,
+    requested_sn = str(sn or "").strip()
+    requested_sns: list[str] = []
+    for item in [requested_sn, *(sns or [])]:
+        value = str(item or "").strip()
+        if value and value not in requested_sns:
+            requested_sns.append(value)
+    from mino_nexus.resources.device_targets import normalize_target_sns
+
+    device_sns, env_surface = normalize_target_sns(
+        app, requested_sns, surface=env_surface, profile=env_profile,
+    )
+    request_digest = digest({"app_id": app.get("id"), "sn": device_sns[0] if device_sns else "", "sns": device_sns, "coverage": coverage,
         "platform": platform, "case_ids": case_ids, "start_index": start_index, "run_type": run_type,
         "requirement_id": requirement_id, "release_id": release_id, "slot_id": slot_id,
         "provider_id": provider_id, "playwright_headless": playwright_headless, "env_profile": env_profile,
@@ -155,7 +151,6 @@ def run_cases(
                     raise ValueError("run_receipt_target_missing")
                 return run_store.to_task_json(original)
     from mino_nexus.resources.access_scope import require_owned_device
-    device_sns = _normalize_sns(sn, sns)
     for owned_sn in device_sns:
         require_owned_device(owned_sn)
     cov = str(coverage or "").strip().lower()
@@ -285,9 +280,6 @@ def run_cases(
     for seeded_case in seeded:
         seeded_case["platform"] = platforms_by_sn[seeded_case["sn"]]
 
-    from mino_nexus.resources.access_scope import require_owned_device
-    for owned_sn in device_sns:
-        require_owned_device(owned_sn)
     provider, gate = resolve_regression_provider(str(provider_id or "").strip() or None)
     from mino_nexus.loop.step_pointer import compute_case_wall_budget_sec
     batch_budget = sum(compute_case_wall_budget_sec(case) + 130 for case in seeded)
@@ -321,6 +313,9 @@ def run_cases(
         "project_id": project_id,
         "sn": device_sns[0] if device_sns else "",
         "sns": device_sns,
+        "requested_sn": requested_sn,
+        "requested_sns": requested_sns,
+        "requested_device_targets": requested_sns,
         "coverage": cov,
         "platform": task_platform,
         "platforms_by_sn": platforms_by_sn,

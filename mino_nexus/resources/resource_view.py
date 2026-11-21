@@ -269,6 +269,19 @@ def account_otp(
 
     env_key = str(env_profile or row.get("env") or "test").strip() or "test"
     surface = str(env_surface or "").strip()
+    requested_sn = str(sn or "").strip()
+    physical_sn = ""
+    if requested_sn:
+        from mino_nexus.resources.device_targets import normalize_target_sns
+
+        app = ps.require_app(app_id)
+        physical_sns, resolved_surface = normalize_target_sns(
+            app, [requested_sn], surface=surface, profile=env_key,
+        )
+        if len(physical_sns) != 1:
+            raise ValueError("device_target_invalid")
+        physical_sn = physical_sns[0]
+        surface = resolved_surface
     secrets = resolve_effective_secrets(
         doc,
         env_profile=env_key,
@@ -294,7 +307,7 @@ def account_otp(
     if plugin_user_id:
         try:
             inbox = gmail_inbox_address(
-                doc, plugin_user_id=plugin_user_id, node_id=node_id, sn=sn,
+                doc, plugin_user_id=plugin_user_id, node_id=node_id, sn=physical_sn,
             )
         except Exception:
             inbox = ""
@@ -311,6 +324,8 @@ def account_otp(
         "hint": "",
         "env_profile": env_key,
         "env_surface": surface,
+        "sn": requested_sn,
+        "physical_sn": physical_sn,
         "gmail": {
             "configured": bool(inbox),
             "inbox": inbox,

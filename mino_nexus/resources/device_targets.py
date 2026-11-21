@@ -9,6 +9,115 @@ _NATIVE_OS = {"mac": "macos", "macos": "macos", "win": "windows", "pc": "windows
 _REQUIRED = {"screenshot", "tap_xy", "input_text"}
 
 
+def web_target_sn(physical_sn: str, app_id: str, surface: str) -> str:
+    """Web 设备的应用级逻辑身份；物理资源和执行句柄仍是 physical_sn。"""
+    physical = str(physical_sn or "").strip()
+    app = str(app_id or "").strip()
+    channel = str(surface or "").strip()
+    if not physical or not app or not channel or any(":" in value for value in (physical, app, channel)):
+        raise ValueError("device_target_invalid")
+    return f"{physical}:{app}:{channel}"
+
+
+def parse_web_target_sn(sn: str) -> dict[str, str] | None:
+    """解析 `<physical_sn>:<app_id>:<surface>`；普通物理 SN 返回 None。"""
+    value = str(sn or "").strip()
+    if not value or ":" not in value:
+        return None
+    parts = value.split(":")
+    if len(parts) != 3 or any(not part.strip() for part in parts):
+        raise ValueError("device_target_invalid")
+    physical, app_id, surface = (part.strip() for part in parts)
+    if not physical.startswith("web"):
+        raise ValueError("device_target_invalid")
+    return {
+        "sn": value,
+        "physical_sn": physical,
+        "resource_sn": physical,
+        "app_id": app_id,
+        "env_surface": surface,
+        "target_surface": surface,
+    }
+
+
+def normalize_target_sns(
+    app: dict,
+    sns: list[str],
+    *,
+    surface: str = "",
+    profile: str = "",
+) -> tuple[list[str], str]:
+    """把应用级逻辑 SN 归一成物理 SN，并解析本次唯一的应用渠道。"""
+    app_id = str(app.get("id") or "").strip()
+    requested_surface = str(surface or "").strip()
+    logical_surfaces: set[str] = set()
+    physical_sns: list[str] = []
+    seen: set[str] = set()
+    for raw in sns or []:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        parsed = parse_web_target_sn(value)
+        if parsed is not None:
+            if parsed["app_id"] != app_id:
+                raise ValueError("device_target_app_mismatch")
+            if requested_surface and parsed["env_surface"] != requested_surface:
+                raise ValueError("device_target_surface_mismatch")
+            logical_surfaces.add(parsed["env_surface"])
+            physical = parsed["physical_sn"]
+        else:
+            physical = value
+        if physical not in seen:
+            seen.add(physical)
+            physical_sns.append(physical)
+    if len(logical_surfaces) > 1:
+        raise ValueError("device_target_surface_mismatch")
+    resolved_surface = requested_surface or next(iter(logical_surfaces), "")
+    if not resolved_surface and physical_sns:
+        from mino_nexus.resources.ui_devices import ui_devices
+
+        roster = {str(row.get("sn") or ""): row for row in ui_devices()}
+        surfaces: set[str] = set()
+        for physical in physical_sns:
+            row = roster.get(physical)
+            if row is None:
+                continue
+            channel = target_channel(app, row, surface="", profile=profile)
+            resolved = str(channel.get("id") or "").strip()
+            if resolved:
+                surfaces.add(resolved)
+        if len(surfaces) > 1:
+            raise ValueError("device_target_surface_mismatch")
+        resolved_surface = next(iter(surfaces), "")
+    return physical_sns, resolved_surface
+
+
+def apply_target_identity(row: dict, *, app: dict | None = None, surface: str = "", profile: str = "") -> dict:
+    """给展示行补应用级 Web 身份；不改变资源、槽位和隔离使用的物理 SN。"""
+    out = dict(row)
+    physical = str(row.get("physical_sn") or row.get("resource_sn") or row.get("sn") or "").strip()
+    if not physical:
+        return out
+    out["physical_sn"] = physical
+    out["resource_sn"] = physical
+    app_id = str((app or {}).get("id") or row.get("app_id") or "").strip()
+    app_name = str((app or {}).get("name") or row.get("app_name") or "").strip()
+    target_surface = str(surface or row.get("target_surface") or row.get("env_surface") or "").strip()
+    target_profile = str(profile or row.get("target_env_profile") or row.get("env_profile") or "").strip()
+    if app_id:
+        out["app_id"] = app_id
+    if app_name:
+        out["app_name"] = app_name
+    if target_surface:
+        out["env_surface"] = target_surface
+        out["target_surface"] = target_surface
+    if target_profile:
+        out["target_env_profile"] = target_profile
+    if str(row.get("platform") or "") == "web" and app_id and target_surface:
+        out["sn"] = web_target_sn(physical, app_id, target_surface)
+    return out
+
+
 def target_channel(app: dict, row: dict, *, surface="", profile="", env_doc=None) -> dict:
     from mino_nexus.resources.app_automation import get_automation_config
     from mino_nexus.resources.project_env import resolve_run_env_profile
@@ -99,6 +208,7 @@ def evaluate(row: dict, *, app: dict | None = None, surface="", profile="", head
             channel = target_channel(app, row, surface=surface, profile=profile)
             out["target_surface"] = channel.get("id") or ""
             out["target_platform"] = channel.get("platform") or ""
+            out["target_env_profile"] = channel.get("env_profile") or ""
         except (ValueError, KeyError) as exc:
             code, reason = "app_incompatible", str(exc)
     if not code and not (allow_queue and platform == "web" and headless):

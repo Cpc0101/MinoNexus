@@ -151,7 +151,7 @@ class TaskAccountTemplateStateBody(BaseModel):
 
 @router.get("/devices")
 def list_devices(only_online: bool = Query(False), compatible_only: bool = False, app_id: str = "", env_surface: str = "", env_profile: str = "", playwright_headless: bool = True, _sess: dict = Depends(current_session)):
-    from mino_nexus.resources.device_targets import evaluate
+    from mino_nexus.resources.device_targets import apply_target_identity, evaluate
     app = None
     if app_id:
         try:
@@ -203,6 +203,8 @@ def list_devices(only_online: bool = Query(False), compatible_only: bool = False
             row["web_parallel_max"] = 0
             row["web_parallel_full"] = False
             row["busy_task_id"] = ids[0] if ids else ""
+    # 槽位与运行索引必须先按物理 SN 统计，最后才把 Agent 可见身份切到应用维度。
+    items = [apply_target_identity(row, app=app, surface=env_surface, profile=env_profile) for row in items]
     return ok({"count": len(items), "items": items})
 
 

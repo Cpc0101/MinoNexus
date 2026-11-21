@@ -15,7 +15,7 @@
       },
       "sn": {
         "type": "string",
-        "description": "设备序列号或别名"
+        "description": "设备目标；优先传 device.list 返回的应用级逻辑 SN，也可传 physical_sn。不要自行拼接应用名和渠道。"
       },
       "node_id": {
         "type": "string",

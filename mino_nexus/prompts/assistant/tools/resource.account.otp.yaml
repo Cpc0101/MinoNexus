@@ -34,7 +34,7 @@ params_schema:
       description: 可选；持有 Gmail 配置的本人 Scout 节点 id
     sn:
       type: string
-      description: 可选；按设备序列号定位 Gmail 节点
+      description: 可选；优先传 device.list 返回的应用级逻辑 SN，也可传 physical_sn，用于定位 Gmail 节点。不要自行拼接。
     since_ts:
       type: number
       minimum: 0

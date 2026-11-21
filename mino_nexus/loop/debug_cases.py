@@ -19,6 +19,7 @@ def _call(node, capability, params, *, run_id="", sn="", platform=""):
 def start(app, args):
     from mino_nexus.loop.case_runner import run_cases
     from mino_nexus.resources import repo_apps, project_store
+    from mino_nexus.resources.device_targets import normalize_target_sns, select
     from mino_nexus.resources.project_env import resolve_run_env_profile
     owner = require_user_id()
     for key in ("sn", "node_id", "app_key", "workspace", "client_request_id"):
@@ -37,22 +38,27 @@ def start(app, args):
     project_id = str(app.get("project_id") or "")
     if args.get("project_id") and args["project_id"] != project_id:
         raise ValueError("project_scope_invalid")
-    node, _ = get_registry().resolve(args["sn"])
+    env = project_store.project_env(project_id)
+    profile = resolve_run_env_profile(env, requested=args.get("env_profile", ""))
+    physical_sns, resolved_surface = normalize_target_sns(
+        app, [args["sn"]], surface=args.get("env_surface", ""), profile=profile,
+    )
+    if len(physical_sns) != 1:
+        raise ValueError("debug_target_invalid")
+    physical_sn = physical_sns[0]
+    node, _ = get_registry().resolve(physical_sn)
     if node is None or node.node_id != args["node_id"] or node.owner_user_id != owner or not node.send or node.record_api_version != 1:
         raise ValueError("debug_local_node_mismatch")
     key = repo_apps.key_for_app(project_id, str(app["id"]))
     if key and key != args["app_key"]:
         raise ValueError("debug_app_key_mismatch")
-    env = project_store.project_env(project_id)
-    profile = resolve_run_env_profile(env, requested=args.get("env_profile", ""))
-    from mino_nexus.resources.device_targets import select
-    _, targets = select(app, [args["sn"]], surface=args.get("env_surface", ""), profile=profile, headless=False, allow_queue=False)
-    platform = targets[args["sn"]]["platform"]
+    _, targets = select(app, [physical_sn], surface=resolved_surface, profile=profile, headless=False, allow_queue=False)
+    platform = targets[physical_sn]["platform"]
     prepared = _call(node, "debug.prepare", {"owner_user_id": owner, "workspace": args["workspace"], "app_key": args["app_key"], "platform": platform, "env_profile": profile})
     if prepared.get("debug_api_version") != 1:
         raise ValueError("debug_api_required")
-    result = run_cases(app, sn=args["sn"], platform=platform, env_profile=profile,
-        env_surface=args.get("env_surface", ""), plugin_user_id=owner, client_request_id=args["client_request_id"],
+    result = run_cases(app, sn=physical_sn, platform=platform, env_profile=profile,
+        env_surface=resolved_surface, plugin_user_id=owner, client_request_id=args["client_request_id"],
         playwright_headless=False, debug={**{key: args[key] for key in ("workspace", "node_id", "app_key")}, "request": args})
     from mino_nexus.casework import run_store
     task_id = result.get("task_id") or result.get("run_id")

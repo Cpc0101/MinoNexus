@@ -98,7 +98,7 @@ def channel_candidates(args: dict[str, Any], user_id: str, *, require_available:
 
 def compatible_devices(args: dict[str, Any], devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from mino_nexus.resources import project_store as ps
-    from mino_nexus.resources.device_targets import evaluate, target_channel
+    from mino_nexus.resources.device_targets import apply_target_identity, evaluate, target_channel
 
     app = ps.require_app(str(args["app_id"])) if args.get("app_id") else None
     out = []
@@ -108,23 +108,31 @@ def compatible_devices(args: dict[str, Any], devices: list[dict[str, Any]]) -> l
                 target_channel(app, device, surface=str(args.get("env_surface") or ""), profile=str(args.get("env_profile") or ""))
             except (ValueError, KeyError):
                 continue
-        out.append(evaluate(device, app=app, surface=str(args.get("env_surface") or ""),
+        row = evaluate(device, app=app, surface=str(args.get("env_surface") or ""),
             profile=str(args.get("env_profile") or ""), action_scheme=str(args.get("action_scheme") or "dom_preferred"),
-            headless=bool(args.get("playwright_headless", True))))
+            headless=bool(args.get("playwright_headless", True)))
+        out.append(apply_target_identity(row, app=app, surface=str(args.get("env_surface") or ""),
+            profile=str(args.get("env_profile") or "")))
     return out
 
 
 def device_brief(row: dict[str, Any]) -> dict[str, Any]:
     """online/offline 只表示连通性；ready 是单独的桌面就绪事实。"""
-    out = {k: row.get(k) for k in ("sn", "platform", "os", "model", "node_name", "status", "executable", "blocking_code", "blocked_reason") if row.get(k) is not None}
+    out = {k: row.get(k) for k in (
+        "sn", "physical_sn", "resource_sn", "app_id", "app_name", "env_surface", "target_surface",
+        "target_env_profile", "platform", "os", "model", "node_name", "status", "executable",
+        "blocking_code", "blocked_reason",
+    ) if row.get(k) is not None}
     platform = str(row.get("platform") or "")
     family = {"desktop": "PC 桌面", "web": "Web 浏览器", "android": "Android", "ios": "iOS"}.get(platform, platform)
     os_name = {"macos": "macOS", "windows": "Windows", "linux": "Linux"}.get(str(row.get("os") or ""), "")
+    app_name = str(row.get("app_name") or row.get("app_id") or "")
+    surface = str(row.get("env_surface") or row.get("target_surface") or "")
     state = str(row.get("desktop_state") or "")
     if platform == "desktop":
         out["desktop_state"] = state
         out["desktop_state_label"] = "桌面就绪" if state == "ready" else str(row.get("blocked_reason") or state or "桌面未就绪")
-    out["display_label"] = " · ".join(str(x) for x in (family, os_name, row.get("node_name"),
+    out["display_label"] = " · ".join(str(x) for x in (family, os_name, app_name, surface, row.get("node_name"),
         f"状态 {row.get('status') or 'offline'}", out.get("desktop_state_label"), row.get("sn")) if x)
     return out
 
@@ -134,4 +142,5 @@ def device_result(rows: list[dict[str, Any]], *, targeted: bool) -> dict[str, An
     blocked = [device_brief(r) for r in rows if not r.get("executable")]
     return {"count": len(available), "items": available, "unavailable": blocked,
             "target_filtered": targeted,
-            "status_meaning": "status=online/offline 表示设备通道连通性；desktop_state=ready 表示桌面就绪，两者独立。"}
+            "status_meaning": "status=online/offline 表示设备通道连通性；desktop_state=ready 表示桌面就绪，两者独立。",
+            "identity_meaning": "sn 是应用级逻辑身份；physical_sn/resource_sn 是实际执行、槽位和隔离使用的物理设备。"}
