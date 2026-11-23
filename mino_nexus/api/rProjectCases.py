@@ -106,6 +106,7 @@ class CaseUpdateBody(BaseModel):
     posttest: str | None = None
     script_platform: str = ""
     script_path: str = ""
+    web_capabilities: list[str] = Field(default_factory=list)
 
 
 class ProjectScriptBody(BaseModel):

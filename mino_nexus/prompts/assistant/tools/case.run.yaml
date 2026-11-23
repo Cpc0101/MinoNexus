@@ -1,6 +1,6 @@
 id: case.run
 title: 跑用例
-description: 在指定设备上执行用例，返回任务 id。所有目标 Android/iOS/Web/桌面软件、浏览器页面、截图、界面结构和 UI 操作必须写进用例并经本工具交给 Mino Scout；不得用平台 Computer Use、浏览器控制、Playwright、adb、Appium 或 WDA 替代。用户说跑一下、执行、回归时用。
+description: 在指定设备上执行用例，返回任务 id。所有目标 Android/iOS/Web/桌面软件、浏览器页面、截图、界面结构和 UI 操作必须写进用例并经本工具交给 Mino Scout；不得用平台 Computer Use、浏览器控制、Playwright、adb、Appium 或 WDA 替代。script_targets[].case_ids 为空只表示执行 tests/<需求ID>/ 下当前已有脚本，不表示原文用例全集；用户要求“所有用例”时先核对 workflow 的 expected_units/coverage。用户说跑一下、执行、回归时用。
 route: POST /case-runner/run
 risk: write
 async: true
@@ -54,7 +54,7 @@ params_schema:
       description: 明确选择的用例 id，空列表不会执行全部
     script_targets:
       type: array
-      description: 按需求直接下发脚本。有此字段时不再从用例正文展开。每一项是 requirement_id 加 case_ids；case_ids 为空则执行 tests/<需求ID>/ 下的全部脚本。脚本路径为 tests/<需求ID>/<用例ID>.py。
+      description: 按需求直接下发脚本。有此字段时不再从用例正文展开。每一项是 requirement_id 加 case_ids；case_ids 为空只执行 tests/<需求ID>/ 下当前已有的全部脚本，不等于原文 expected_units 全集。脚本路径为 tests/<需求ID>/<用例ID>.py。
       items:
         type: object
         properties:

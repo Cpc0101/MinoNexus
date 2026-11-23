@@ -95,7 +95,7 @@ def runtime_contract_diagnostics(capabilities: dict[str, Capability]) -> list[di
     explicit, and target-specific connectivity still belongs to live binding.
     """
     from mino_nexus.contract.interrupt_caps import BUILTIN_INTERRUPT_CAPS
-    from mino_nexus.contract.executor_sets import CHILDREN
+    from mino_nexus.contract.executor_sets import CATALOG_CHILDREN
     expected = {cid: {"prep", "do"} for cid in BUILTIN_INTERRUPT_CAPS}
     expected.update({cid: {"prep", "do", "check", "cleanup"}
                      for cid in ("wake_screen", "dismiss_keyguard", "probe_device_state", "get_foreground_app")})
@@ -103,7 +103,7 @@ def runtime_contract_diagnostics(capabilities: dict[str, Capability]) -> list[di
     for parent in capabilities.values():
         if not parent.enabled or parent.lifecycle != "active":
             continue
-        for child in CHILDREN.get(parent.id, ()):
+        for child in CATALOG_CHILDREN.get(parent.id, ()):
             expected.setdefault(child, set()).update(parent.phases)
             sources.setdefault(child, set()).add(parent.id)
     issues = []
@@ -121,12 +121,39 @@ def runtime_contract_diagnostics(capabilities: dict[str, Capability]) -> list[di
     return issues
 
 
+def framework_contract_diagnostics() -> list[dict[str, Any]]:
+    """Check framework command names against the shared wire contract.
+
+    Framework commands such as hierarchy/screenshot are not catalog rows. They
+    therefore must not be checked for capability lifecycle, phases or
+    implementations; only their protocol-level dispatch names are relevant.
+    """
+    from mino_nexus.contract.binding import READ_EVENTS
+    from mino_nexus.contract.executor_sets import FRAMEWORK_CHILDREN
+    from mino_nexus.core.protocol import OBSERVE_CAPS
+
+    known = set(READ_EVENTS) | set(OBSERVE_CAPS) | set(OBSERVE_CAPS.values())
+    issues: list[dict[str, Any]] = []
+    for parent, children in sorted(FRAMEWORK_CHILDREN.items()):
+        for child in children:
+            if child in known:
+                continue
+            issues.append({
+                "capability_id": child,
+                "reason_code": "framework_capability_unknown",
+                "required_by": [parent],
+                "target_binding_required": True,
+            })
+    return issues
+
+
 def health_summary() -> dict[str, Any]:
     loader = get_loader()
     return {
         "root": str(loader.root),
         "capabilities_count": len(loader.capabilities),
         "runtime_contract_gaps": runtime_contract_diagnostics(loader.capabilities),
+        "framework_contract_gaps": framework_contract_diagnostics(),
         "recovery_count": len(loader.recovery_rules),
         "errors": [e.model_dump() for e in loader.errors],
     }

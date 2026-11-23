@@ -105,6 +105,7 @@ def list_case_page(project_id: str, *, limit: int, offset: int = 0, search: str 
                     "steps": [str(value)[:2000] for value in (row.steps or [])],
                     "expected": [str(value)[:2000] for value in (row.expected or [])],
                     "tags": normalize_case_tags(public.get("tags")),
+                    "web_capabilities": list(public.get("web_capabilities") or []),
                     "meta": dict(public.get("meta") or {}),
                 }
             )
@@ -224,6 +225,8 @@ def _row_fields(
     tags_fallback: Any = None,
 ) -> dict[str, Any]:
     from copy import deepcopy
+    from mino_nexus.core.protocol import validate_web_capabilities
+
     raw = deepcopy(raw)
     cid = str(raw.get("case_id") or "").strip()
     raw["name"] = str(raw.get("name") or raw.get("title") or cid)
@@ -232,6 +235,9 @@ def _row_fields(
         raw[field] = list(raw.get(field) or [])
         raw[field + "_raw"] = str(raw.get(field + "_raw") or "")
     raw["platform"] = str(raw.get("platform") or "")
+    raw["web_capabilities"] = validate_web_capabilities(raw.get("web_capabilities", []))
+    if raw["platform"] != "web" and raw["web_capabilities"]:
+        raise ValueError("web_capability_platform_invalid")
     raw["meta"] = dict(raw.get("meta") or {})
     raw["tags"] = normalize_case_tags(
         raw.get("tags") if "tags" in raw and raw.get("tags") is not None else tags_fallback

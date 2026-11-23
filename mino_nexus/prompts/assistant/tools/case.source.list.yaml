@@ -1,0 +1,25 @@
+id: case.source.list
+title: 项目用例来源列表
+description: 列出项目的用例来源及当前 generation。Agent 初始化工作流前先调用；读取来源时必须使用这里返回的 source_id 和 generation。
+route: GET /project/{project_id}/case-sources
+risk: read
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+      description: 项目 id 或项目名
+  required:
+  - project_id
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

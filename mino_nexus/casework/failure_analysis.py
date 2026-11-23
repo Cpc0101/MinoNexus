@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timezone
 import re
 from typing import Any, Iterable
 
@@ -13,7 +14,45 @@ _UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-
 _ISO_RE = re.compile(r"\b20\d{2}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?\b")
 _EPOCH_RE = re.compile(r"\b(?:1[7-9]|2[0-1])\d{11}\b")
 _REQUEST_ID_RE = re.compile(r"(?i)\b(request[_-]?id|trace[_-]?id|span[_-]?id)\s*[:=]\s*[A-Za-z0-9_.:-]+")
-_EPHEMERAL_PORT_RE = re.compile(r"(?<=\d):\d{2,5}\b")
+_PREFIXED_BUSINESS_ID_RE = re.compile(
+    r"(?i)\b(order|case|user|item|product|object|record|resource|entity|account)"
+    r"[_-]?id\s*[:=]\s*[A-Za-z0-9_.:-]+"
+)
+_PATH_ID_RE = re.compile(r"(?<=/)(?:\d{6,}|[A-Za-z]*\d[A-Za-z0-9_-]{7,})(?=/|[?#]|$)")
+_ENDPOINT_PORT_RE = re.compile(
+    r"(?i)(?<![\w.-])"
+    r"(?P<host>"
+    r"\[[0-9a-f:.]+\]"
+    r"|(?:\d{1,3}\.){3}\d{1,3}"
+    r"|(?=[a-z0-9.-]*[a-z])[a-z0-9-]+(?:\.[a-z0-9-]+)*"
+    r"):(?P<port>\d{1,5})\b"
+)
+
+
+def _canonical_endpoint_port(match: re.Match[str]) -> str:
+    host, port_text = match.group("host"), match.group("port")
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return match.group(0)
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", host):
+        if any(int(part) > 255 for part in host.split(".")):
+            return match.group(0)
+    return f"{host}:<port>"
+
+
+def _timestamp_sort_key(value: Any) -> tuple[int, float, str]:
+    """Order valid timestamps chronologically; keep unknown values deterministic."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0, 0.0, ""
+    normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return 1, parsed.timestamp(), raw
+    except (OverflowError, ValueError):
+        return 0, 0.0, raw
 
 
 def canonicalize_failure_text(value: Any) -> str:
@@ -25,7 +64,9 @@ def canonicalize_failure_text(value: Any) -> str:
     text = _ISO_RE.sub("<timestamp>", text)
     text = _EPOCH_RE.sub("<timestamp>", text)
     text = _REQUEST_ID_RE.sub(lambda match: f"{match.group(1)}=<request-id>", text)
-    text = _EPHEMERAL_PORT_RE.sub(":<port>", text)
+    text = _PREFIXED_BUSINESS_ID_RE.sub(lambda match: f"{match.group(1)}_id=<business-id>", text)
+    text = _PATH_ID_RE.sub("<business-id>", text)
+    text = _ENDPOINT_PORT_RE.sub(_canonical_endpoint_port, text)
     return " ".join(text.split())
 
 
@@ -81,6 +122,7 @@ def case_failure_fact(doc: dict[str, Any], case: dict[str, Any]) -> dict[str, An
     summary = str(case.get("summary") or case.get("error") or failure.get("summary") or failure.get("message") or "")
     canonical = {
         "source": str(case.get("source_hash") or case.get("source_revision_id") or ""),
+        "stage": canonicalize_failure_text(stage),
         "step": canonicalize_failure_text(step),
         "reason": canonicalize_failure_text(reason),
         "assertion": canonicalize_failure_text(assertion or summary),
@@ -109,7 +151,7 @@ def case_failure_fact(doc: dict[str, Any], case: dict[str, Any]) -> dict[str, An
         "tested_build": str(case.get("tested_build") or case.get("app_version") or doc.get("tested_build") or doc.get("expected_build") or ""),
         "execution_mode": str(doc.get("execution_mode") or ""),
         "case_identity": _case_source_identity(doc, case),
-        "fixture_data": _fixture_digest(doc, case),
+        "fixture_digest": _fixture_digest(doc, case),
     }
 
 
@@ -124,7 +166,7 @@ def comparability_reasons(left: dict[str, Any], right: dict[str, Any]) -> list[s
         ("tested_build", "tested_build"),
         ("execution_mode", "execution_mode"),
         ("case_identity", "case_identity"),
-        ("fixture_data", "fixture_data"),
+        ("fixture_digest", "fixture_digest"),
     )
     for field, label in checks:
         before, after = str(left.get(field) or ""), str(right.get(field) or "")
@@ -140,7 +182,7 @@ def analyze_failure_history(run_docs: Iterable[dict[str, Any]], *, case_ids: Ite
     wanted = set(str(case_id) for case_id in (case_ids or []) if str(case_id).strip())
     ordered_docs = sorted(
         [doc for doc in run_docs if isinstance(doc, dict)],
-        key=lambda doc: (str(doc.get("started_at") or ""), str(doc.get("run_id") or "")),
+        key=lambda doc: (_timestamp_sort_key(doc.get("started_at")), str(doc.get("run_id") or "")),
     )
     by_case: dict[str, list[dict[str, Any]]] = defaultdict(list)
     runs_scanned = 0
@@ -164,7 +206,10 @@ def analyze_failure_history(run_docs: Iterable[dict[str, Any]], *, case_ids: Ite
     cases_scanned = 0
     for case_id, facts in sorted(by_case.items()):
         cases_scanned += 1
-        ordered = sorted(facts, key=lambda fact: (fact["started_at"], fact["run_id"], fact["execution_unit_id"], fact["attempt_id"]))
+        ordered = sorted(facts, key=lambda fact: (
+            _timestamp_sort_key(fact["started_at"]), fact["run_id"],
+            fact["execution_unit_id"], fact["attempt_id"],
+        ))
         case_groups: list[dict[str, Any]] = []
         for fact in ordered:
             if fact["status"] == "failed":
@@ -209,9 +254,15 @@ def analyze_failure_history(run_docs: Iterable[dict[str, Any]], *, case_ids: Ite
                 obs["status"] == "failed" and obs["signature"] == group["signature"]
                 for obs in group["observations"]
             )
-            recovered_after_failure = any(obs["status"] == "passed" for obs in group["observations"])
+            pass_indices = [index for index, obs in enumerate(group["observations"]) if obs["status"] == "passed"]
+            first_pass = pass_indices[0] if pass_indices else None
+            failed_after_pass = first_pass is not None and any(
+                obs["status"] == "failed" and index > first_pass
+                for index, obs in enumerate(group["observations"])
+            )
             group["classification"] = (
-                "fail_then_pass" if recovered_after_failure
+                "recurrent_failure" if failed_after_pass
+                else "fail_then_pass" if first_pass is not None
                 else "stable_repeated_failure" if same_failures >= 2
                 else "single_failure"
             )
@@ -219,7 +270,12 @@ def analyze_failure_history(run_docs: Iterable[dict[str, Any]], *, case_ids: Ite
 
     rendered_groups = sorted(
         groups.values(),
-        key=lambda group: (group["classification"] != "stable_repeated_failure", group["case_id"], group["signature"]),
+        key=lambda group: ({
+            "stable_repeated_failure": 0,
+            "recurrent_failure": 1,
+            "fail_then_pass": 2,
+            "single_failure": 3,
+        }[group["classification"]], group["case_id"], group["signature"]),
     )
     return {
         "groups": rendered_groups,
@@ -229,6 +285,7 @@ def analyze_failure_history(run_docs: Iterable[dict[str, Any]], *, case_ids: Ite
             "cases_scanned": cases_scanned,
             "groups": len(rendered_groups),
             "stable_repeated_failures": sum(group["classification"] == "stable_repeated_failure" for group in rendered_groups),
+            "recurrent_failures": sum(group["classification"] == "recurrent_failure" for group in rendered_groups),
             "fail_then_pass": sum(group["classification"] == "fail_then_pass" for group in rendered_groups),
             "single_failures": sum(group["classification"] == "single_failure" for group in rendered_groups),
             "incomparable_observations": len(incomparable),

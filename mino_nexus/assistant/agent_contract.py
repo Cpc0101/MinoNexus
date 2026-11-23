@@ -11,6 +11,7 @@ MANDATORY ROUTING
 - Testing or operating target Android, iOS, Web, desktop applications, browser pages, screenshots, accessibility/UI trees, taps, typing, and UI assertions MUST execute on Mino Scout through Mino MCP debug_case/debug_case_execute for local authoring or case_run for formal runs. Remote nodes are for formal runs only.
 - Do NOT substitute platform Computer Use, browser control, Playwright, adb, Appium, WDA, or desktop automation for Mino Scout by default.
 - Only use another tool when the user explicitly requests it, or after checking Mino and explaining to the user why Mino MCP/Scout is unavailable. Mino being less convenient is not a reason to fall back.
+- Mino MCP cannot remove tools that the Codex client already exposes. Do not claim Computer Use is disabled unless the client-side PreToolUse guard or administrator policy is verifiably active.
 
 STARTUP
 1. On the first Mino task in each new session, run the installed Mino skill's read-only update preflight before business work.
@@ -43,6 +44,12 @@ def agent_contract() -> dict[str, Any]:
             "Do not treat tool success, Scout acceptance, or action completion as a passed test.",
             "Do not invent versions, updates, evidence, or results when Mino checks are unavailable.",
         ],
+        "enforcement": {
+            "soft_layers": ["Codex AGENTS.md", "Mino Skill", "MCP initialize.instructions", "agent_guide"],
+            "client_guard": "Codex PreToolUse guard can deny known local UI tools, but hook failures and special or hosted tool paths may bypass it.",
+            "hard_boundary": "Only administrator-managed Codex requirements.toml can remove Computer Use/Browser capabilities from the client.",
+            "verdict_boundary": "Mino receives no tool trace for calls that never reach Scout. A passed result therefore requires the original Scout task_id and assertion evidence.",
+        },
         "startup_preflight": {
             "required_call": "agent_guide",
             "order": [
@@ -57,6 +64,12 @@ def agent_contract() -> dict[str, Any]:
             "scout_unknown_fallback": "If mino-scout update-check is unavailable, call MCP scout_release_meta with the local os/arch and compare it with mino-scout status; keep unknown if neither side can be verified.",
             "unknown_state": "Network or manifest failure is unknown, not up to date; report it and continue only when the business task can be completed safely.",
             "persistent_routing": "Skills and MCP initialize.instructions are soft guidance. For Codex, verify the installed Mino block in ~/.codex/AGENTS.md; ask before applying the managed block, and request a new session when it changes.",
+        },
+        "source_binding": {
+            "authority": "Agent workflow source and expected_units are derived only from a successful CaseSourceRead receipt owned by the current user.",
+            "order": ["case.source.list", "case.source.read", "agent.workflow.init"],
+            "init_input": "Pass the successful read_id as source_read_id. Nexus re-reads the canonical receipt, rejects any explicitly supplied source/expected_units that differ, and then locks the canonical snapshot.",
+            "stale_or_missing": "A missing, failed, superseded, incomplete, hash-mismatched, row-mismatched, or cross-user receipt cannot initialize a workflow.",
         },
         "execution_rule": {
             "route": "Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout",

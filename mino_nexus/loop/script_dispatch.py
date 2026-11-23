@@ -34,9 +34,23 @@ def dispatch_script_case(
     from mino_nexus.records.eventlog.writer import SessionPersistenceError, open_session
     from mino_nexus.runtime.run_context import bind_case_project, build_run_context
 
+    t0 = time.time()
+    try:
+        capabilities = P.validate_web_capabilities(case.get("web_capabilities", []))
+    except ValueError as exc:
+        return _outcome(
+            "blocked", "Web capability declaration is invalid", t0,
+            reason_code=str(exc), failure_stage="admission", started="no",
+        )
+    effective_platform = str(platform or case.get("platform") or "")
+    if effective_platform != "web" and capabilities:
+        return _outcome(
+            "blocked", "Web capability cannot be used for non-Web case", t0,
+            reason_code="web_capability_platform_invalid", failure_stage="admission", started="no",
+        )
+    case = {**case, "platform": effective_platform, "web_capabilities": capabilities}
     cid = str(case.get("case_id") or "")
     stream_id = str(case.get("report_run_id") or "").strip() or run_id
-    t0 = time.time()
     ctx = build_run_context(sn, run_id=run_id, app_id=app_id, provider_id=provider_id, target_package=package)
     ctx.session_id = stream_id
     ctx.case_id = cid
@@ -66,7 +80,18 @@ def dispatch_script_case(
         SLog.w(TAG, f"restore lease failed case={cid}: {exc!r}")
     # Persist admission before the short ACK. Long execution belongs to Scout.
     from mino_nexus.resources.node_registry import get_registry
-    node, _ = get_registry().resolve(sn)
+    node, node_reason = get_registry().resolve(sn)
+    if node is not None:
+        runtime_error = _web_runtime_capability_error(node, effective_platform, capabilities)
+        if runtime_error:
+            return _outcome(
+                "blocked",
+                "目标 Scout 不支持当前 Web 执行合同",
+                t0,
+                reason_code=runtime_error,
+                failure_stage="admission",
+                started="no",
+            )
     if doc.get("debug_origin"):
         from mino_nexus.loop.debug_cases import _call
         try:
@@ -80,7 +105,7 @@ def dispatch_script_case(
     if not project_error and node is not None and node.record_api_version == 1:
         from mino_nexus.loop.scout_record_tasks import dispatch
         return dispatch(run_id=run_id, case=case, sn=sn, app_id=app_id, package=package,
-                        provider_id=provider_id, platform=platform, project_id=project_id,
+                        provider_id=provider_id, platform=effective_platform, project_id=project_id,
                         repo=repo or {}, doc=doc, ctx=ctx, node=node)
     try:
         writer = open_session(
@@ -95,7 +120,7 @@ def dispatch_script_case(
                 "goal": str(case.get("name") or cid),
                 "execution_kind": "script_run",
                 "project_id": project_id,
-                "platform": str(platform or ""),
+                "platform": effective_platform,
             },
         )
     except SessionPersistenceError as exc:
@@ -116,24 +141,22 @@ def dispatch_script_case(
             if not repo_url.strip():
                 status, summary, reason_code = "fail", "项目还没有配置用例脚本仓库", "script_repo_missing"
             else:
-                from mino_nexus.resources.node_registry import get_registry
-
-                node, reason = get_registry().resolve(sn)
                 if node is None or getattr(node, "send", None) is None:
-                    status, summary, reason_code = "fail", (reason or "节点不在线")[:240], "node_offline"
+                    status, summary, reason_code = "fail", (node_reason or "节点不在线")[:240], "node_offline"
                 else:
                     payload = P.load_script_run(P.dump_script_run(P.ScriptRun(
                         run_id=run_id,
                         session_id=stream_id,
                         case_id=cid,
                         sn=sn,
-                        platform=str(platform or ""),
+                        platform=effective_platform,
                         repo_url=repo_url,
                         branch=str((repo or {}).get("branch") or ""),
                         revision=str(doc.get("revision") or ""),
                         script_path=str(case.get("script_path") or ""),
                         inputs=case.get("inputs") or {},
                         source_context=doc.get("source_context") or {},
+                        web_capabilities=capabilities,
                     )))
                     body = P.dump_script_run(payload)
                     admission = ScriptAdmission(
@@ -146,7 +169,7 @@ def dispatch_script_case(
                         app_id=app_id,
                         provider_id=str(provider_id or ""),
                         owner_user_id=str(current_user_id() or doc.get("plugin_user_id") or ""),
-                        platform=str(platform or ""),
+                        platform=effective_platform,
                         case=case,
                         ctx=ctx,
                         writer=writer,
@@ -159,12 +182,12 @@ def dispatch_script_case(
                         step_idx=-1,
                         sn=sn,
                         capability_id=P.SCRIPT_RUN_CAPABILITY,
-                        platform=str(platform or ""),
+                        platform=effective_platform,
                         params=body,
                         timeout_sec=budget,
                         executor_order=[],
                         device_hint=_device_hint(
-                            node, sn, str(platform or ""),
+                            node, sn, effective_platform,
                             str(getattr(ctx, "env_profile", "") or ""),
                             app_id, project_id=project_id,
                         ),
@@ -235,6 +258,42 @@ def _device_hint(node: Any, sn: str, platform: str, env: str, app_id: str,
     elif platform == "ios":
         hint["udid"] = sn
     return hint
+
+
+def _web_runtime_capability_error(node: Any, platform: str, requested: list[str]) -> str:
+    """Require a Scout contract that actually enforces ScriptRun.web_capabilities."""
+    if platform != "web":
+        return ""
+    rows = getattr(node, "runtime_capabilities", None)
+    if not isinstance(rows, list):
+        return "web_runtime_capability_required"
+    declared = [
+        row for row in rows
+        if isinstance(row, dict)
+        and row.get("id") == "web.capabilities"
+    ]
+    if len(declared) != 1:
+        return "web_runtime_capability_required"
+    row = declared[0]
+    if not (
+        row.get("executor") == "playwright"
+        and row.get("platform") == "web"
+        and type(row.get("contract_version")) is int
+        and row.get("contract_version") == 1
+    ):
+        return "web_runtime_capability_required"
+    features = row.get("features")
+    if (
+        not isinstance(features, list)
+        or len(features) > 20
+        or any(not isinstance(item, str) or not item for item in features)
+        or len(features) != len(set(features))
+    ):
+        return "web_runtime_capability_required"
+    supported = set(features)
+    if supported != set(P.WEB_CAPABILITIES) or not set(requested).issubset(supported):
+        return "web_runtime_capability_unsupported"
+    return ""
 
 
 def _map_status(value: str) -> str:

@@ -1,0 +1,35 @@
+id: case.source.read
+title: 刷新并读取项目用例来源
+description: 从 source.list 指定的用例来源读取当前完整用例清单，成功后返回带 read_id 的 CaseSourceRead 收据。agent.workflow.init 只接受该成功收据绑定的来源和 expected_units。
+route: POST /project/{project_id}/case-sources/{source_id}/refresh
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+      description: 项目 id 或项目名
+    source_id:
+      type: string
+      minLength: 1
+      description: case.source.list 返回的来源 id
+    expected_generation:
+      type: integer
+      minimum: 1
+      description: case.source.list 返回的 generation；用于防止覆盖并发来源变更
+  required:
+  - project_id
+  - source_id
+  - expected_generation
+param_resolvers:
+  project_id: project.by_name
+result_pick:
+- data
+card: answer
+surfaces:
+- mcp
+enabled: true

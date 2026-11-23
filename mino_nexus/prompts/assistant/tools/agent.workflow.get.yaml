@@ -1,6 +1,6 @@
 id: agent.workflow.get
 title: 读取 Agent 进度
-description: 读取当前用户四阶段进度、预算、尝试历史和未知写入引用。仅为 Agent 进度，正式结论读取原 Scout 任务。
+description: 读取当前用户四阶段进度、预算、expected_units/source、coverage、尝试历史和未知写入引用。missing 是未实现的非终态条目，verification_missing 是未有正式 Scout 证据的非终态条目，next_units 优先返回前者。implementation_complete/verification_complete 表示当前阶段已无未处理项但可能仍有 blocked_units；只有 all_implemented=true 才表示脚本全集写齐，只有 all_verified=true 才表示正式全集通过。complete 仅为 implementation_complete 的兼容别名；正式结论读取原 Scout 任务。
 route: GET /assistant/workflows/{workflow_id}
 risk: read
 async: false

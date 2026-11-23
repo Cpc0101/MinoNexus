@@ -122,7 +122,8 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
         revision=doc.get("revision") or "", script_path=case.get("script_path") or "",
         execution_kind=doc.get("execution_kind", "case"), workspace=doc.get("workspace", ""),
         debug_origin=doc.get("debug_origin") or {},
-        execution_timeout_sec=budget, inputs=case.get("inputs") or {}, source_context=doc.get("source_context") or {}))))
+        execution_timeout_sec=budget, inputs=case.get("inputs") or {}, source_context=doc.get("source_context") or {},
+        web_capabilities=case.get("web_capabilities", [])))))
     from mino_nexus.resources.resource_claim_tx import _claim
     resource_request = dict(_claim.get() or {})
     row = records.register(node_id=node.node_id, payload=payload, context={

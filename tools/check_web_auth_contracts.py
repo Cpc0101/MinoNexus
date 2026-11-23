@@ -22,6 +22,47 @@ def rejected(fn, code):
         raise AssertionError("expected " + code)
 
 
+def check_runtime_contract_diagnostics() -> None:
+    from mino_nexus.catalog.models import Capability, Implementation
+    from mino_nexus.catalog.registry import (
+        framework_contract_diagnostics,
+        runtime_contract_diagnostics,
+    )
+    from mino_nexus.contract.executor_sets import CATALOG_CHILDREN, FRAMEWORK_CHILDREN
+
+    assert 'read_web_auth' not in CATALOG_CHILDREN['confirm_login_state']
+    assert set(FRAMEWORK_CHILDREN['confirm_login_state']) >= {'read_web_auth', 'hierarchy', 'screenshot'}
+    assert 'hierarchy' not in CATALOG_CHILDREN['operation.check_box']
+    assert 'screenshot' not in CATALOG_CHILDREN['operation.check_box']
+    assert framework_contract_diagnostics() == []
+
+    local = [Implementation(id='fixture.local', executor='internal')]
+    capabilities = {
+        'confirm_login_state': Capability(
+            id='confirm_login_state', kind='generic', display_name='login', caller='internal',
+            phases=['prep', 'do'], implementations=local,
+        ),
+        'operation.check_box': Capability(
+            id='operation.check_box', kind='generic', display_name='check box', caller='internal',
+            phases=['prep', 'do'], implementations=local,
+        ),
+    }
+
+    def child_issues(rows):
+        parents = {'confirm_login_state', 'operation.check_box'}
+        return [row for row in rows if parents.intersection(row['required_by'])]
+
+    missing = {row['capability_id']: row for row in child_issues(runtime_contract_diagnostics(capabilities))}
+    assert missing['tap_element']['reason_code'] == 'capability_missing'
+    assert not {'read_web_auth', 'hierarchy', 'screenshot'}.intersection(missing)
+
+    capabilities['tap_element'] = Capability(
+        id='tap_element', kind='generic', display_name='tap', caller='case',
+        phases=['prep', 'do'], implementations=[Implementation(id='fixture.tap', executor='playwright')],
+    )
+    assert child_issues(runtime_contract_diagnostics(capabilities)) == []
+
+
 def check():
     from mino_nexus import models
     from mino_nexus.core import database
@@ -105,6 +146,7 @@ def check():
         rejected(lambda: script_callback._web_auth(admission, "web_auth_get", {"account_id": "account-a"}), "web_auth_account_not_leased")
     finally:
         account_lease.leased_account_for_slot = old
+    check_runtime_contract_diagnostics()
     print("PASS: encrypted snapshots, scope isolation, exact identity, TTL, revision-safe invalidation, lease rejection, redaction")
 
 

@@ -24,7 +24,10 @@ router = APIRouter(prefix="/assistant", tags=["Assistant"])
 class WorkflowBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     scope: str | None = None
+    source_read_id: str | None = None
+    expected_units: list[str] | None = None
     units: list[str] | None = None
+    source: dict[str, Any] | None = None
     stage_budget: int | None = None
     total_budget: int | None = None
     attempt_id: str | None = None
@@ -42,10 +45,13 @@ class WorkflowBody(BaseModel):
 
 def _workflow(uid: str, workflow_id: str, operation: str, args: dict):
     from mino_nexus.assistant.agent_workflow import operate
+    from mino_nexus.platform.identity import execution_user
     try:
-        return ok(operate(uid, workflow_id, operation, args))
+        with execution_user(uid):
+            return ok(operate(uid, workflow_id, operation, args))
     except ValueError as exc:
-        raise HTTPException(status_code=404 if str(exc) == "Unknown workflow" else 422, detail=str(exc)) from exc
+        status_code = 404 if str(exc) in {"Unknown workflow", "source_read_missing"} else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.get("/workflows/{workflow_id}")
@@ -57,7 +63,9 @@ def get_workflow(workflow_id: str, sess: dict = Depends(current_session)):
 def update_workflow(workflow_id: str, operation: str, body: WorkflowBody, sess: dict = Depends(current_session)):
     if operation not in {"init", "start", "finish", "resolve"}:
         raise HTTPException(status_code=404, detail="Unknown operation")
-    return _workflow(_uid(sess), workflow_id, operation, body.model_dump(exclude_unset=True))
+    uid = _uid(sess)
+    args = body.model_dump(exclude_unset=True)
+    return _workflow(uid, workflow_id, operation, args)
 
 
 class ProfileBody(BaseModel):

@@ -31,12 +31,15 @@ def agent_guide() -> dict[str, Any]:
         "first_call": "agent_guide",
         "agent_workflow": {
             "owner": "agent",
-            "tools": ["agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get"],
+            "tools": ["case_source_list", "case_source_read", "agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get"],
             "storage": "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；使用 Python SQLite，不使用 Agent 本地数据库",
             "stages": ["analysis", "authoring", "preparation", "verification"],
-            "contract": "每轮调查 start 占用预算、finish 保存事实，allowed=false 按原因改变方案或交付阶段。重复阻塞须有新事实或明确不同方案；写结果未知先核对原任务并 resolve。普通状态轮询不算新调查。进度不是测试判定。",
+            "contract": "init 前必须先用 case_source_list 取得来源 generation，再用 case_source_read 读取并取得成功快照的 read_id；init 只传 source_read_id，Nexus 从成功 CaseSourceRead 回执绑定 source 并锁定 expected_units；显式自报的来源或全集不一致时拒绝。units 只是首批 delivery hint，默认预算至少为 expected_units × 4。coverage.missing 是未实现的非终态条目，verification_missing 是未有正式 Scout 证据的非终态条目，next_units 按 missing 后 verification_missing 取下一批。implementation_complete/verification_complete 表示当前交付阶段已无未处理工作项，但终态阻塞/失败/延期仍单独计入 blocked_units；只有 all_implemented=true 才能说脚本全集写齐，只有 all_verified=true 才能说正式全集通过。complete 仅为 implementation_complete 的兼容别名。每轮调查 start 占用预算、finish 保存事实，allowed=false 按原因改变方案或交付阶段。重复阻塞须有新事实或明确不同方案；写结果未知先核对原任务并 resolve。普通状态轮询不算新调查。进度不是测试判定。",
         },
         "boundaries": [
+            "读取飞书需求正文、用例表格或 Wiki 节点必须调用 Mino MCP `cli_query` 且 `plugin=feishu`（wiki +node-get → sheets +sheet-list → sheets +cells-get）；禁止用平台 Computer Use、浏览器页面、截图识别或手工抄录代替正文读取。正文读取不完整时停止并说明缺口，不能猜全集。",
+            "编写“所有用例”前必须通过 case_source_list → case_source_read 取得成功 read_id 并由 Nexus 回执锁定 expected_units；不得用 tests/ 当前文件反推全集，也不得把 Agent 扫描或手抄结果当作全集。coverage.missing 或 verification_missing 非空时只能报告 X/Y 和剩余 ID，不能报告需求已全部完成；存在 blocked_units 时必须逐条列出，不能用 implementation_complete=true 掩盖。只有 all_implemented=true 才表示脚本全集写齐，只有 all_verified=true 才表示正式全集通过；二者都必须结合原 Scout task_id/断言证据。",
+            "case_run 的 script_targets[].case_ids=[] 只表示 tests/<需求ID>/ 下当前已有脚本全集，不表示原文 expected_units 全集；用户要求执行“所有用例”前必须先用 agent_workflow_get.coverage 对账。",
             "缺数据后的查找、构造、替代和重试决策只属于 Agent；脚本仓不内置 get_or_create、缺数据自动补数或自动换号。flows 只执行明确业务操作、识别阶段、等待、定位指定对象和复用验证方法。",
             "账号业务标签与资产记忆是选号线索，缺省、未知或未命中不得单独阻塞执行。申请账号时用 case.nexus.account(data_need=描述) 留存所需数据；resource_account_data_list/save/delete 管理独立对象引用记忆，不创建被测业务数据、不进行全量盘点。",
             "业务测试账号的唯一事实源是 Nexus 号池；账号元数据通过 resource_account_* 维护，执行时只由租约把本次所需字段交给 Scout。不要从 macOS Keychain、本地明文、环境变量或其他钥匙串读取业务测试账号。飞书 CLI、SMB、AI Provider、Scout Gmail 和插件密钥等本地专属或系统配置继续按各自现有边界保存，不进入号池。",
@@ -78,8 +81,8 @@ def agent_guide() -> dict[str, Any]:
             },
             {
                 "name": "按需求链接编写并执行脚本",
-                "tools": ["requirement_list", "device_list", "debug_case", "debug_case_execute", "debug_case_status", "debug_case_close", "case_run", "task_get"],
-                "then": "requirement_list 返回需求 id、名称和渠道链接。从链接读原文，在本机 debug_case 中先观察和验证 pages/公共路径，再完成 tests/<需求ID>/<用例ID>.py。静态检查通过、结束调试并确认停止后，push 固定版本。case_run 传 script_targets：[{requirement_id, case_ids}]，revision 传已 push 的 commit，从独立初始状态正式验证。case_ids 为空时执行该需求目录下的全部脚本。",
+                "tools": ["requirement_list", "cli_query", "device_list", "debug_case", "debug_case_execute", "debug_case_status", "debug_case_close", "case_run", "task_get"],
+                "then": "requirement_list 返回需求 id、名称和渠道链接。飞书正文必须调用 cli_query(plugin=feishu)，依次用 wiki +node-get、sheets +sheet-list、sheets +cells-get 机器读取完整用例 ID；禁止用 Computer Use、浏览器截图或手工抄录代替。先锁定 agent workflow 的 expected_units；在本机 debug_case 中先观察和验证 pages/公共路径，再完成 tests/<需求ID>/<用例ID>.py。静态检查通过、结束调试并确认停止后，push 固定版本。case_run 传 script_targets：[{requirement_id, case_ids}]，revision 传已 push 的 commit，从独立初始状态正式验证。case_ids 为空只执行该需求目录下当前已有脚本，不等于原文全集；每批从 coverage.next_units 继续，脚本全集写齐看 all_implemented=true，正式全集通过看 all_verified=true。implementation_complete/verification_complete 只能表示当前阶段无未处理项，blocked_units 仍须单列，不能用其掩盖缺口。",
             },
             {
                 "name": "让 Scout 跑整份脚本",

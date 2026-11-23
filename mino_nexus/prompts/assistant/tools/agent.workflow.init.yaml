@@ -1,11 +1,11 @@
 id: agent.workflow.init
 title: 初始化 Agent 进度
-description: 在 Nexus 保存当前用户的范围、独立工作项和调查预算，不执行用例或创建业务数据。相同 workflow_id 的范围与预算不可改写。
+description: 在 Nexus 保存当前用户的范围、调查预算和权威原文来源。必须先依次调用 case.source.list 与 case.source.read，再把成功 CaseSourceRead 收据中的 read_id 作为 source_read_id；Nexus 从该成功快照读取并锁定 expected_units 与 source，不使用 Agent 自报内容。相同 workflow_id 的范围、来源收据与预算不可改写。此工具不执行用例或创建业务数据。
 route: POST /assistant/workflows/{workflow_id}/init
 risk: write
 async: false
-version: 1
-params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"scope":{"type":"string","minLength":1,"maxLength":2000},"units":{"type":"array","minItems":1,"maxItems":1000,"items":{"type":"string","minLength":1,"maxLength":128}},"stage_budget":{"type":"integer","minimum":1,"maximum":10000,"default":6},"total_budget":{"type":"integer","minimum":1,"maximum":10000,"default":24}},"required":["workflow_id","scope","units"]}
+version: 3
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"scope":{"type":"string","minLength":1,"maxLength":2000},"source_read_id":{"type":"string","minLength":1,"maxLength":128,"description":"case.source.read 成功回执中的 read_id；Nexus 会校验 owner、generation、内容哈希与完整用例行"},"units":{"type":"array","maxItems":1000,"items":{"type":"string","minLength":1,"maxLength":128},"description":"首批 delivery hint，必须是服务端 expected_units 的子集；省略时登记全部，后续 start 可继续 expected_units 内条目"},"stage_budget":{"type":"integer","minimum":1,"maximum":10000,"default":6},"total_budget":{"type":"integer","minimum":1,"maximum":10000}},"required":["workflow_id","scope","source_read_id"]}
 result_pick: [data]
 card: answer
 surfaces: [mcp]

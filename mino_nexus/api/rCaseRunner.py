@@ -94,12 +94,15 @@ def case_results(body: CaseResultsBody, _sess: dict = Depends(current_session)):
     allowed = set(get_case_ids(str(app.get("project_id") or ""), body.case_ids))
     case_ids = [cid for cid in body.case_ids if cid in allowed]
     from mino_nexus.casework.failure_analysis import analyze_app_history
+    from mino_nexus.core.protocol import validate_failure_analysis
 
+    analysis = analyze_app_history(
+        body.app_id, case_ids=case_ids, history_limit=body.history_limit,
+    )
+    validate_failure_analysis(analysis)
     return ok({
         "items": run_store.last_case_results(body.app_id, case_ids),
-        "failure_analysis": analyze_app_history(
-            body.app_id, case_ids=case_ids, history_limit=body.history_limit,
-        ),
+        "failure_analysis": analysis,
     })
 
 

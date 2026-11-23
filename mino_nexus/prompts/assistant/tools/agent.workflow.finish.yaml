@@ -1,6 +1,6 @@
 id: agent.workflow.finish
 title: 记录 Agent 调查结果
-description: 固定调查结果及事实证据，已结束记录不可改写。写入结果未知须记录原 task_id；阶段进度不等于测试通过。
+description: 固定调查结果及事实证据，已结束记录不可改写，并返回最新 coverage。写入结果未知须记录原 task_id；verification complete 只有带原 Scout task_id 才计为 formal_verified，无 task_id 只计 path_validated。missing/verification_missing 分列未处理实现与正式验证缺口；implementation_complete/verification_complete 可能包含 blocked_units，只有 all_implemented=true 才能说脚本全集写齐，只有 all_verified=true 才能说正式全集通过。阶段进度不等于测试通过。
 route: POST /assistant/workflows/{workflow_id}/finish
 risk: write
 async: false

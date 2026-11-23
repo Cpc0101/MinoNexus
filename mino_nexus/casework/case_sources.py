@@ -129,6 +129,95 @@ def history(project_id, source_id, *, limit=50, offset=0):
             "rows": [{key: deepcopy(getattr(item, key)) for key in ("external_case_no", "case_id", "source_position", "retired_candidate", "detached")} for item in mappings]}
 
 
+def _canonical_source(source):
+    """Derive the Agent-visible source identity without trusting Agent input."""
+    config = source.configuration or {}
+    if source.kind == "file":
+        reference = str(config.get("path") or "")
+    elif source.kind == "sheets":
+        reference = f"{config.get('spreadsheet_token', '')}#{config.get('sheet_id', '')}!{config.get('range', '')}"
+    elif source.kind == "case_api":
+        reference = str(config.get("remote_project_id") or config.get("service_url") or config.get("node_id") or "")
+    else:
+        reference = source.source_id
+    out = {
+        "source_id": source.source_id,
+        "kind": source.kind,
+        "reference": reference,
+        "revision": str(source.generation),
+        "content_hash": source.content_digest,
+    }
+    for key in ("spreadsheet_token", "sheet_id", "range"):
+        if config.get(key):
+            out[key] = str(config[key])
+    return out
+
+
+def _resolve_successful_read(db, read_id, owner_user_id):
+    """Resolve a successful read against one caller-owned transaction."""
+    read_id = str(read_id or "").strip()
+    owner = str(owner_user_id or "").strip()
+    if not read_id or not owner:
+        raise ValueError("source_read_required")
+    read = db.get(CaseSourceRead, read_id)
+    if read is None:
+        raise ValueError("source_read_missing")
+    source = db.get(CaseSource, read.source_id)
+    if source is None or source.owner_user_id != owner:
+        raise ValueError("source_read_scope_mismatch")
+    actor = owned(db, source.project_id, write=False)
+    if actor != owner or actor != source.owner_user_id:
+        raise ValueError("source_read_scope_mismatch")
+    if read.status != "succeeded" or read.generation != source.generation:
+        raise ValueError("source_read_not_current_success")
+    receipt = deepcopy(read.receipt or {})
+    if receipt.get("source_id") != source.source_id or receipt.get("read_id") != read.read_id:
+        raise ValueError("source_read_identity_mismatch")
+    if receipt.get("complete") is not True:
+        raise ValueError("source_read_incomplete")
+    if receipt.get("generation") != source.generation:
+        raise ValueError("source_read_generation_mismatch")
+    content_hash = str(receipt.get("content_hash") or "")
+    if not content_hash or content_hash != source.content_digest:
+        raise ValueError("source_read_content_hash_mismatch")
+    rows = db.query(CaseSourceRow).filter(
+        CaseSourceRow.source_id == source.source_id,
+        CaseSourceRow.detached == 0,
+        CaseSourceRow.retired_candidate == 0,
+    ).all()
+    expected_units = sorted(str(item.external_case_no) for item in rows)
+    receipt_units = receipt.get("units")
+    if (
+        not isinstance(receipt_units, list)
+        or any(type(item) is not str or not item for item in receipt_units)
+        or sorted(receipt_units) != expected_units
+    ):
+        raise ValueError("source_read_units_mismatch")
+    return {
+        "project_id": source.project_id,
+        "source_id": source.source_id,
+        "read_id": read.read_id,
+        "generation": source.generation,
+        "content_hash": content_hash,
+        "kind": source.kind,
+        "source": _canonical_source(source),
+        "expected_units": expected_units,
+        "receipt": receipt,
+    }
+
+
+def resolve_successful_read(read_id, owner_user_id, *, db=None):
+    """Return the authoritative source snapshot bound to one successful read.
+
+    Callers that already hold a write transaction pass ``db`` so source
+    validation and workflow creation observe the same generation.
+    """
+    if db is not None:
+        return _resolve_successful_read(db, read_id, owner_user_id)
+    with session_scope() as own_db:
+        return _resolve_successful_read(own_db, read_id, owner_user_id)
+
+
 def claim(project_id, source_id, expected_generation):
     with session_scope() as db:
         db.execute(text("BEGIN IMMEDIATE"))
@@ -271,7 +360,14 @@ def finish(snapshot, result=None, *, error_code=""):
                     retired.append(mapping.case_id)
             source.failures = 0
             source.content_digest = digest(sorted((item["number"], digest(item["fields"])) for item in rows))
-            read.status, read.receipt = "succeeded", {"read_id": read.read_id, "generation": source.generation,
+            units = sorted({item.external_case_no for item in db.query(CaseSourceRow).filter(
+                CaseSourceRow.source_id == source.source_id,
+                CaseSourceRow.detached == 0,
+                CaseSourceRow.retired_candidate == 0,
+            ).all()})
+            read.status, read.receipt = "succeeded", {"source_id": source.source_id,
+                "read_id": read.read_id, "generation": source.generation, "units": units,
+                "content_hash": source.content_digest,
                 "rows": len(rows), "changed_case_ids": changes, "retired_candidates": retired,
                 "jobs": jobs, "complete": True, "empty_snapshot": not rows}
         source.last_receipt = deepcopy(read.receipt)
