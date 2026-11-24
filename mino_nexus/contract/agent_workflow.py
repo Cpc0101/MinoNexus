@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from typing import Any
 
 STAGES = ("analysis", "authoring", "preparation", "verification")
@@ -49,6 +50,52 @@ def workflow_source(value: Any) -> dict | None:
     if not source.get("kind") or not (source.get("url") or source.get("reference")):
         raise ValueError("Source requires kind and url/reference")
     return source
+
+
+def _time(value: str) -> float:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("Timestamp must include timezone")
+        return parsed.timestamp()
+    except (TypeError, AttributeError, ValueError, OverflowError, OSError) as exc:
+        raise ValueError("Invalid investigation timestamp") from exc
+
+
+def time_budget(state: dict, now: str) -> dict:
+    _time(now)
+    spent, per_stage, overdue = 0.0, {}, []
+    for attempt in state["attempts"]:
+        duration = max(0.0, _time(attempt.get("finished_at") or now) - _time(attempt["started_at"]))
+        spent += duration
+        key = (attempt["unit"], attempt["stage"])
+        per_stage[key] = per_stage.get(key, 0.0) + duration
+    stage_limit = state.get("stage_time_budget_sec", 300)
+    total_limit = state.get("total_time_budget_sec", max(1800, len(state.get("expected_units", state["units"])) * 120))
+    for attempt in state["attempts"]:
+        if not attempt["outcome"] and (per_stage[(attempt["unit"], attempt["stage"])] >= stage_limit or spent >= total_limit):
+            overdue.append({"unit": attempt["unit"], "stage": attempt["stage"], "attempt_id": attempt["attempt_id"],
+                            "task_id": attempt["task_id"], "next": "report_and_reconcile_active_attempt"})
+    return {"stage_limit_sec": stage_limit, "total_limit_sec": total_limit,
+            "used_sec": round(spent, 3), "remaining_sec": round(max(0.0, total_limit - spent), 3),
+            "stages": [{"unit": unit, "stage": stage, "used_sec": round(used, 3),
+                        "remaining_sec": round(max(0.0, stage_limit - used), 3)}
+                       for (unit, stage), used in sorted(per_stage.items())],
+            "overdue_attempts": overdue, "exhausted": spent >= total_limit,
+            "measured_at": now, "scope": "summed_investigation_elapsed_including_waits"}
+
+
+def help_request(value: Any, expected: list[str], unit: str) -> dict | None:
+    if value is None:
+        return None
+    keys = {"question", "missing", "checked_sources", "affected_units"}
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("Help request requires question, missing, checked_sources and affected_units")
+    affected = unit_list(value["affected_units"], "affected_units")
+    if unit not in affected or not set(affected) <= set(expected):
+        raise ValueError("Help request affected_units must include this unit and belong to expected_units")
+    return {"question": text(value["question"], "question"), "missing": text(value["missing"], "missing"),
+            "checked_sources": facts(value["checked_sources"]), "affected_units": affected}
 
 
 def _latest(attempts: list[dict], unit: str, stage: str) -> dict | None:
@@ -134,7 +181,7 @@ def coverage(state: dict) -> dict:
     }
 
 
-def summary(state: dict) -> dict:
+def summary(state: dict, now: str | None = None) -> dict:
     attempts = state["attempts"]
     stages = {stage: {status: 0 for status in ("pending", "in_progress", *OUTCOMES)} for stage in STAGES}
     rows, independent = [], []
@@ -155,8 +202,15 @@ def summary(state: dict) -> dict:
         if progress["verification"]["status"] != "complete" and not any(
                 p["status"] in {"blocked", "failed", "deferred", "in_progress"} for p in progress.values()):
             independent.append(unit)
+    requests = []
+    for unit in expected:
+        latest = next((a for a in reversed(attempts) if a["unit"] == unit), None)
+        if latest and latest["outcome"] in {"blocked", "deferred"} and latest.get("help_request"):
+            requests.append({"unit": unit, "attempt_id": latest["attempt_id"], **deepcopy(latest["help_request"])})
     return {"workflow_id": state["workflow_id"], "scope": state["scope"], "source": state.get("source"),
-            "source_read_id": state.get("source_read_id", ""),
+            "help_requests": requests,
+            **({"time_budget": time_budget(state, now)} if now else {}),
+            "source_read_id": state.get("source_read_id", ""), "project_id": state.get("project_id", ""),
             "expected_units": expected, "coverage": coverage(state), "stages": stages, "units": rows,
             "attempts_used": len(attempts), "total_remaining": max(0, state["total_budget"] - len(attempts)),
             "unresolved_writes": unknown, "independent_units": [u for u in independent if u not in {a["unit"] for a in unknown}],
@@ -165,6 +219,7 @@ def summary(state: dict) -> dict:
 
 def transition(old: dict | None, operation: str, workflow_id: str, args: dict, now: str) -> tuple[dict, dict]:
     workflow_id = text(workflow_id, "workflow_id", 128)
+    _time(now)
     state = deepcopy(old)
     if operation == "init":
         scope = text(args.get("scope"), "scope")
@@ -188,6 +243,14 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         if not source_read_id and not state:
             raise ValueError("source_read_id is required")
         minimum_total = len(expected_units) * len(STAGES)
+        time_limits = {"stage_time_budget_sec": 300, "total_time_budget_sec": max(1800, len(expected_units) * 120)}
+        for key, default in time_limits.items():
+            value = args.get(key, state.get(key, default) if state else default)
+            if type(value) is not int or not 1 <= value <= 604800:
+                raise ValueError("Invalid time budgets")
+            if state and key in args and value != state.get(key, default):
+                raise ValueError("Existing workflow time budget differs")
+            time_limits[key] = value
         if state:
             if state["scope"] != scope:
                 raise ValueError("Existing workflow scope differs")
@@ -220,12 +283,18 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                      "expected_units": expected_units, "source": source,
                      "stage_budget": stage_budget, "total_budget": total_budget, "units": [], "attempts": [],
                      "resolutions": {}, "created_at": now}
+        project_id = text(args.get("project_id", ""), "project_id", 128, required=False)
+        if project_id:
+            if state.get("project_id") and state["project_id"] != project_id:
+                raise ValueError("Existing workflow project differs")
+            state["project_id"] = project_id
+        state.update(time_limits)
         state["units"] = sorted(set(state["units"]) | set(units))
-        return state, summary(state)
+        return state, summary(state, now)
     if not state:
         raise ValueError("Unknown workflow")
     if operation == "get":
-        return state, summary(state)
+        return state, summary(state, now)
     attempt_id = text(args.get("attempt_id"), "attempt_id", 128)
     attempt = next((a for a in state["attempts"] if a["attempt_id"] == attempt_id), None)
     evidence = facts(args.get("evidence", []))
@@ -242,10 +311,18 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
             return state, {"allowed": False, "reason": "attempt_exists", "attempt": attempt, "next": "read_existing_attempt"}
         active = next((a for a in state["attempts"] if a["unit"] == unit and not a["outcome"]), None)
         if active:
-            return state, {"allowed": False, "reason": "attempt_in_progress", "attempt_id": active["attempt_id"], "next": "read_existing_attempt"}
+            return state, {"allowed": False, "reason": "attempt_in_progress", "attempt_id": active["attempt_id"], "time_budget": time_budget(state, now),
+                           "requires_visible_receipt": bool(time_budget(state, now)["overdue_attempts"]),
+                           "next": "read_existing_attempt"}
         unknown = [a for a in summary(state)["unresolved_writes"] if a["unit"] == unit]
         if writes and unknown:
             return state, {"allowed": False, "reason": "write_outcome_unknown", "attempts": unknown, "next": "reconcile_existing_task"}
+        timing = time_budget(state, now)
+        stage_spent = next((row["used_sec"] for row in timing["stages"] if row["unit"] == unit and row["stage"] == stage), 0)
+        if timing["exhausted"] or stage_spent >= timing["stage_limit_sec"]:
+            return state, {"allowed": False, "reason": "time_budget_exhausted", "time_budget": timing,
+                           "coverage": coverage(state), "requires_visible_receipt": True,
+                           "next": "report_coverage_gap_not_complete" if timing["exhausted"] else "ask_for_missing_information_or_continue_independent_units"}
         used = len(state["attempts"])
         stage_used = sum(a["unit"] == unit and a["stage"] == stage for a in state["attempts"])
         if used >= state["total_budget"] or stage_used >= state["stage_budget"]:
@@ -266,11 +343,16 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                                   "note": "", "started_at": now, "finished_at": ""})
         return state, {"allowed": True, "attempt_id": attempt_id, "stage_remaining": state["stage_budget"] - stage_used - 1,
                        "total_remaining": state["total_budget"] - used - 1, "coverage": coverage(state),
-                       "next": "perform_declared_investigation"}
+                       "time_budget": time_budget(state, now), "next": "perform_declared_investigation"}
     if not attempt:
         raise ValueError("Unknown attempt")
     if operation == "finish":
         outcome, write_outcome = args.get("outcome"), args.get("write_outcome", "known")
+        request = help_request(args.get("help_request"), state.get("expected_units", state["units"]), attempt["unit"])
+        if request and outcome not in {"blocked", "deferred"}:
+            raise ValueError("Help request requires blocked or deferred outcome")
+        if _time(now) < _time(attempt["started_at"]):
+            raise ValueError("Investigation finished before it started")
         blocker = text(args.get("blocker", ""), "blocker", required=False)
         task_id = text(args.get("task_id", ""), "task_id", 128, required=False)
         note = text(args.get("note", ""), "note", required=False)
@@ -284,12 +366,15 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         if write_outcome == "unknown" and (not attempt["writes"] or not task_id):
             raise ValueError("Unknown write outcome requires a writing attempt and its original task ID")
         values = {"outcome": outcome, "write_outcome": write_outcome, "blocker": blocker, "task_id": task_id, "note": note, "evidence": evidence}
+        if request is not None or "help_request" in attempt:
+            values["help_request"] = request
         if attempt["outcome"]:
-            if any(attempt[k] != v for k, v in values.items()):
+            if any(attempt.get(k) != v for k, v in values.items()):
                 raise ValueError("Finished attempt is immutable")
         else:
             attempt.update(values, finished_at=now)
-        return state, {**deepcopy(attempt), "coverage": coverage(state)}
+        return state, {**deepcopy(attempt), "coverage": coverage(state), "time_budget": time_budget(state, now),
+                       "requires_visible_receipt": True}
     if operation == "resolve":
         task_id = text(args.get("task_id"), "task_id", 128)
         if not evidence or attempt["write_outcome"] != "unknown" or task_id != attempt["task_id"]:

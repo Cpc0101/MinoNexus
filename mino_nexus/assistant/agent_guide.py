@@ -48,6 +48,17 @@ def agent_guide() -> dict[str, Any]:
             "改了 config.yaml 的 apps 后必须 push 并调用 repo_apps_sync（只传 platform 与包名/URL，不要传 otp；可不传 app_id，Nexus 按 key 对齐或自动创建应用）；选应用前可先调 repo_apps_get。Nexus 不保存 Git 令牌，也不拉取脚本仓库。",
             "开跑后整份脚本在 Scout 执行。账号、步骤和失败直接写入 Nexus。登录方式、验证码策略、Gmail 收件箱和自动新增序号由 Nexus 项目环境配置下发；只有 login.mode=auto 才会在缺号时自动补号，pool 只使用号池已有账号，hitl 转人工。应用级 login_policies 的 selected 优先于 all。脚本仓 config.yaml 只保留应用 key、platform、package/bundle_id/url；otp.code 仅兼容旧仓库，不应作为新项目配置。模型在 Scout 本机完成。脚本里不要自己连接 adb、WDA、Playwright 或 Appium。",
         ],
+        "quality_contract": {
+            "objective": "verify_original_expectations",
+            "formal_completion": {"requires_scout_task_id": True, "requires_sealed_original_assertions": True,
+                                  "requires_full_source_coverage": True, "requires_matching_context": True,
+                                  "requires_same_project": True, "all_matching_devices_must_pass": True},
+            "investigation": {"stage_time_budget_sec": 300, "total_time_budget_sec": "max(1800,expected_total*120)",
+                              "scope": "summed_attempt_elapsed_including_waits", "cancels_device_tasks": False},
+            "help_request_fields": ["question", "missing", "checked_sources", "affected_units"],
+            "receipts": {"path": "task_get.observability.case_receipts", "deduplicate_by": "receipt_id",
+                         "display_owner": "calling_agent_or_client", "tool_return_is_delivery_ack": False},
+        },
         "workbench": _workbench(),
         "flows": [
             {

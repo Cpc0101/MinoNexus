@@ -30,6 +30,8 @@ class WorkflowBody(BaseModel):
     source: dict[str, Any] | None = None
     stage_budget: int | None = None
     total_budget: int | None = None
+    stage_time_budget_sec: int | None = None
+    total_time_budget_sec: int | None = None
     attempt_id: str | None = None
     unit: str | None = None
     stage: str | None = None
@@ -41,6 +43,7 @@ class WorkflowBody(BaseModel):
     task_id: str | None = None
     write_outcome: str | None = None
     note: str | None = None
+    help_request: dict[str, Any] | None = None
 
 
 def _workflow(uid: str, workflow_id: str, operation: str, args: dict):

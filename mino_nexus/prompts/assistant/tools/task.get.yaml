@@ -1,6 +1,6 @@
 id: task.get
 title: 任务详情
-description: 查看一次跑批任务的结果和失败原因。
+description: 读取任务索引、正式结果与observability。每个未发送过的case_receipts按receipt_id去重后立即输出到对话，不能等整批结束；工具返回不等于已发送。formal_verdict为空是调试或准备，不算正式通过；UNVERIFIED必须保留。execution_pending或status_issue非空不能宣称全部结束。离线证据注明detail_availability。
 route: GET /case-runner/tasks/{task_id}
 risk: read
 async: false

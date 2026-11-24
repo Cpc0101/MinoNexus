@@ -39,7 +39,31 @@ def operate(owner_user_id: str, workflow_id: str, operation: str, args: dict) ->
             # Use only the validated receipt snapshot. The transition still
             # compares it with any already-locked workflow identity.
             args = {**args, "source_read_id": canonical["read_id"],
-                    "expected_units": expected_units, "source": canonical["source"]}
+                    "expected_units": expected_units, "source": canonical["source"], "project_id": canonical["project_id"]}
+        if operation == "finish" and args.get("outcome") == "complete" and old:
+            attempt = next((a for a in old["attempts"] if a["attempt_id"] == args.get("attempt_id")), None)
+            if attempt and attempt["stage"] == "verification":
+                from mino_nexus.casework import run_store
+                from mino_nexus.contract.case_receipts import require_verified_unit
+                from mino_nexus.platform.identity import execution_user
+
+                task_id = text(args.get("task_id", ""), "task_id", 128, required=False)
+                if not task_id:
+                    raise ValueError("formal_verification_requires_task_id")
+                with execution_user(owner):
+                    task = run_store.get(task_id)
+                    if task is None:
+                        raise ValueError("formal_verification_task_missing")
+                    project_id = old.get("project_id")
+                    if not project_id:
+                        from mino_nexus.models.case_source import CaseSource
+                        source = db.get(CaseSource, (old.get("source") or {}).get("source_id", ""))
+                        if source is None or source.owner_user_id != owner:
+                            raise ValueError("formal_verification_source_scope_missing")
+                        project_id = source.project_id
+                    if task.get("project_id") != project_id:
+                        raise ValueError("formal_verification_project_mismatch")
+                    require_verified_unit(run_store.to_task_json(task), attempt["unit"])
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         state, result = transition(old, operation, workflow_id, args, now)
         if state != old and operation != "get":

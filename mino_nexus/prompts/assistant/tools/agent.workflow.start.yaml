@@ -1,6 +1,6 @@
 id: agent.workflow.start
 title: 记录 Agent 调查开始
-description: 原子消耗调查预算并识别重复阻塞，返回当前 coverage。预算耗尽且 missing/verification_missing 非空时必须报告缺口；存在 blocked_units 时逐条列出。只有 all_implemented=true 才能说脚本全集写齐，只有 all_verified=true 才能说正式全集通过；implementation_complete/verification_complete 不是全通过的同义词。allowed=true 仅表示预算允许，不授予新的执行权限。
+description: 原子消耗调查轮数，检查累计时间、重复阻塞和未知写入。allowed=false不能继续相同调查；time_budget_exhausted或overdue_attempts须立即可见回执，报告未核验项并求助或继续独立用例。预算不取消正在执行的测试，不把未核验改为通过或SKIPPED。
 route: POST /assistant/workflows/{workflow_id}/start
 risk: write
 async: false

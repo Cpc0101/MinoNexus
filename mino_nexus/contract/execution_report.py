@@ -18,23 +18,46 @@ def purpose(case, doc):
     return "authoring" if value == "authoring" else "formal" if value in {"verification", "regression"} or not value else "unclassified"
 
 
-def result(case):
+def has_formal_evidence(case, doc=None):
+    doc = doc or {}
+    report = case.get("test_report") or {}
+    counts, assertions = report.get("counts") or {}, case.get("assertions") or {}
+    context, coverage = report.get("context") or {}, case.get("source_coverage") or {}
+    expected_context = {"case_id": case.get("case_id"), "session_id": case.get("session_id"),
+                        "attempt_id": case.get("attempt_id"), "revision": case.get("revision") or doc.get("revision"),
+                        "source_hash": case.get("source_hash")}
+    task_id = doc.get("task_id") or doc.get("run_id") or case.get("task_id")
+    if task_id:
+        expected_context["task_id"] = task_id
+    return (case.get("record_source") == "scout" and case.get("sealed") is True
+            and all(type(values.get("total")) is int and values["total"] > 0
+                    and type(values.get("pass")) is int and values["pass"] == values["total"]
+                    and all(type(values.get(k)) is int and values[k] == 0 for k in zero_keys)
+                    for values, zero_keys in ((counts, ("fail", "unknown", "not_run")), (assertions, ("fail", "unknown"))))
+            and type(coverage.get("expected")) is int and coverage["expected"] > 0 and coverage.get("missing") == []
+            and bool(context.get("task_id"))
+            and all(bool(expected) and context.get(key) == expected for key, expected in expected_context.items()))
+
+
+def result(case, doc=None):
     status = ALIASES.get(case.get("status"), case.get("status"))
     if status in LIVE:
         return "pending"
-    if status == "pass" and case.get("record_source") == "scout":
-        assertions = case.get("assertions") or {}
-        report = case.get("test_report") or {}
-        counts = report.get("counts") or {}
-        if case.get("sealed") is not True or not assertions.get("total") or assertions.get("fail") or assertions.get("unknown") or any(counts.get(k) for k in ("fail", "unknown", "not_run")):
-            return "unverified"
+    if status == "pass":
+        if purpose(case, doc or {}) == "formal":
+            if not has_formal_evidence(case, doc):
+                return "unverified"
+        elif case.get("record_source") == "scout":
+            assertions = case.get("assertions") or {}
+            if case.get("sealed") is not True or not assertions.get("total") or assertions.get("fail") or assertions.get("unknown"):
+                return "unverified"
     return {"pass": "passed", "fail": "failed"}.get(status, status if status in STATES else "unverified")
 
 
-def bucket(cases):
+def bucket(cases, doc=None):
     out = {"total": len(cases), "completed": 0, "executed": 0, "not_run": 0, "execution_unknown": 0, **dict.fromkeys(STATES, 0)}
     for case in cases:
-        state = result(case)
+        state = result(case, doc)
         out[state] += 1
         out["completed"] += state != "pending"
         # execution_started is a DEVICE WRITE receipt, not proof the script ran.
@@ -53,7 +76,7 @@ def outcome(cases, doc=None):
     selected = [c for c in cases if purpose(c, doc or {}) == "formal"]
     if not selected:
         return "done"
-    counts = bucket(selected)
+    counts = bucket(selected, doc)
     if counts["pending"]:
         return "running"
     for key, status in (("failed", "fail"), ("blocked", "blocked"), ("cancelled", "cancelled"), ("declined", "declined")):
@@ -76,7 +99,7 @@ def timestamp(value):
 
 def task_report(doc):
     cases = [c for c in doc.get("cases") or [] if isinstance(c, dict)]
-    groups = {key: bucket([c for c in cases if purpose(c, doc) == key]) for key in ("formal", "authoring", "preparation", "unclassified")}
+    groups = {key: bucket([c for c in cases if purpose(c, doc) == key], doc) for key in ("formal", "authoring", "preparation", "unclassified")}
     expected = {"total": 0, "pass": 0, "fail": 0, "unknown": 0, "not_run": 0, "cases_reported": 0, "cases_missing": 0}
     assertions = {"total": 0, "pass": 0, "fail": 0, "unknown": 0, "cases_reported": 0, "cases_missing": 0}
     auxiliary = dict(assertions)
@@ -97,8 +120,8 @@ def task_report(doc):
     issue = "" if all(not c.get(k) or timestamp(c[k]) is not None for c in cases for k in ("started_at", "finished_at")) else "timestamp_timezone_missing_or_invalid"
     if any(timestamp(c.get("finished_at")) is not None and timestamp(c.get("started_at")) is not None and timestamp(c["finished_at"]) < timestamp(c["started_at"]) for c in cases):
         issue = "timestamp_order_invalid"
-    duration = int((max(known_ends) - min(known_starts)) * 1000 + 0.5) if not issue and not bucket(cases)["execution_unknown"] and bucket(cases)["executed"] == len(known_starts) and known_starts and len(known_ends) == len(known_starts) and all(result(c) != "pending" for c in cases) else None
-    return {"version": 1, "unit": "case_execution", "execution_units": bucket(cases), **groups,
+    duration = int((max(known_ends) - min(known_starts)) * 1000 + 0.5) if not issue and not bucket(cases, doc)["execution_unknown"] and bucket(cases, doc)["executed"] == len(known_starts) and known_starts and len(known_ends) == len(known_starts) and all(result(c, doc) != "pending" for c in cases) else None
+    return {"version": 1, "unit": "case_execution", "execution_units": bucket(cases, doc), **groups,
             "expectations": expected, "assertions": assertions, "auxiliary_assertions": auxiliary, "result_status": outcome(cases, doc),
             "timing": {"submitted_at": doc.get("created_at") or doc.get("started_at") or None,
                        "execution_started_at": min((c["started_at"] for c in cases if timestamp(c.get("started_at")) == min(known_starts)), default=None) if known_starts else None,

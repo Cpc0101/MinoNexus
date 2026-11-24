@@ -517,6 +517,9 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
             task["title"] = names[0]
         elif names:
             task["title"] = f"{names[0]} 等 {len(cases)} 条"
+    if include_cases:
+        from mino_nexus.contract.case_receipts import project
+        task["observability"] = project(task)
     return task
 
 

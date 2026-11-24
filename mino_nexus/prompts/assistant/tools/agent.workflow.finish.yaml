@@ -1,11 +1,11 @@
 id: agent.workflow.finish
 title: 记录 Agent 调查结果
-description: 固定调查结果及事实证据，已结束记录不可改写，并返回最新 coverage。写入结果未知须记录原 task_id；verification complete 只有带原 Scout task_id 才计为 formal_verified，无 task_id 只计 path_validated。missing/verification_missing 分列未处理实现与正式验证缺口；implementation_complete/verification_complete 可能包含 blocked_units，只有 all_implemented=true 才能说脚本全集写齐，只有 all_verified=true 才能说正式全集通过。阶段进度不等于测试通过。
+description: 保存调查事实、coverage、耗时和结构化help_request；求助仅用于blocked/deferred，列出缺口、已查来源和受影响原文ID。返回requires_visible_receipt时立即在对话输出，不等最终报告。verification complete必须引用本人原Scout任务，服务端核验该用例所有设备执行的封存原文断言、覆盖与上下文；局部通过、调试或准备不计正式通过。
 route: POST /assistant/workflows/{workflow_id}/finish
 risk: write
 async: false
 version: 1
-params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["progress","blocked","complete","failed","deferred"]},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}},"blocker":{"type":"string","maxLength":2000},"task_id":{"type":"string","maxLength":128},"write_outcome":{"type":"string","enum":["known","unknown"],"default":"known"},"note":{"type":"string","maxLength":2000}},"required":["workflow_id","attempt_id","outcome"]}
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"outcome":{"type":"string","enum":["progress","blocked","complete","failed","deferred"]},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}},"blocker":{"type":"string","maxLength":2000},"task_id":{"type":"string","maxLength":128},"write_outcome":{"type":"string","enum":["known","unknown"],"default":"known"},"note":{"type":"string","maxLength":2000},"help_request":{"type":"object","additionalProperties":false,"properties":{"question":{"type":"string","minLength":1,"maxLength":2000},"missing":{"type":"string","minLength":1,"maxLength":2000},"checked_sources":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}},"affected_units":{"type":"array","minItems":1,"maxItems":1000,"items":{"type":"string","minLength":1,"maxLength":128}}},"required":["question","missing","checked_sources","affected_units"]}},"required":["workflow_id","attempt_id","outcome"]}
 result_pick: [data]
 card: answer
 surfaces: [mcp]
