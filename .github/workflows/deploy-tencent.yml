@@ -173,7 +173,7 @@ jobs:
               trap 'docker logout $TCR_REGISTRY >/dev/null 2>&1 || true' EXIT
               docker login '$TCR_REGISTRY' --username '$TCR_USERNAME' --password-stdin > /dev/null
               for attempt in 1 2 3 4 5 6; do
-                echo "Pulling $image (attempt \$attempt)"
+                echo Pulling '$image' attempt \$attempt
                 if timeout 10m docker pull --platform linux/amd64 '$image'; then
                   exit 0
                 fi
