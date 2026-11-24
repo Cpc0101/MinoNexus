@@ -177,6 +177,7 @@ def _events(requirements, device=None):
 def resolve_live(requirements, target_context):
     """Preflight and attempt use the same fresh authenticated snapshots."""
     from mino_nexus.resources.access_scope import require_owned_device
+    from mino_nexus.contract.execution.device import is_physical_platform
     from mino_nexus.resources.device_targets import target_channel
     from mino_nexus.resources.node_registry import get_registry, NodeSession
     from mino_nexus.core import protocol as P
@@ -204,7 +205,9 @@ def resolve_live(requirements, target_context):
     if app.get('project_id') != requirements.get('project_id'):
         raise BindingAdmissionError('binding_project_mismatch')
     snapshot = get_registry().execution_snapshot(sn)
-    if not snapshot or snapshot.get('owner_user_id') != uid:
+    physical = bool(snapshot) and is_physical_platform(snapshot['device'].get('platform'))
+    # 实体手机跟随当前接入节点，不比较节点认证账号；虚拟槽仍按账号隔离。
+    if not snapshot or (not physical and snapshot.get('owner_user_id') != uid):
         return _unavailable('blocked', 'binding_target_unavailable', 'runtime')
     device = snapshot['device']
     node, _ = get_registry().resolve(sn)

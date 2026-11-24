@@ -4,7 +4,7 @@ import time
 from mino_nexus.core import protocol as P
 from mino_nexus.core.wire_identity import assign_execute_identity
 from mino_nexus.core.async_util import run_sync as _run_sync
-from mino_nexus.resources.node_registry import get_registry
+from mino_nexus.resources.node_registry import get_registry, heartbeat_liveness_window_sec
 
 
 def read_source(snapshot, *, operation="read"):
@@ -16,7 +16,7 @@ def read_source(snapshot, *, operation="read"):
         raise ValueError("source_node_contract_unsupported")
     if snapshot["kind"] == "case_api" and not any(row.get("contract_version") == 1 and "case_api" in row.get("features", []) for row in contracts):
         raise ValueError("source_node_case_api_unsupported")
-    if time.time() - node.last_seen > 2 * P.Registered.heartbeat_interval_sec:
+    if time.time() - node.last_seen > heartbeat_liveness_window_sec():
         raise ValueError("source_node_heartbeat_stale")
     params = {**snapshot["configuration"], "kind": snapshot["kind"], "source_id": snapshot["source_id"],
         "read_id": snapshot["read_id"], "generation": snapshot["generation"], "contract_version": 1, "operation": operation}

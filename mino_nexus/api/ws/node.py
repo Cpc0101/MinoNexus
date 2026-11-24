@@ -153,6 +153,9 @@ class NodeConnection:
                 await self.ws.close(code=1008, reason="节点会话已失效")
                 self.close()
                 return
+            # 任意已验证的上行帧都证明连接还活着。Scout 的心跳线程可能被设备
+            # 探测拖慢，但 RESULT / 框架事件仍在流动，不能因此判节点离线。
+            get_registry().note_seen(self.node_id)
 
         # RESULT 是应答，交给等待者
         if env.type is P.MsgType.RESULT:

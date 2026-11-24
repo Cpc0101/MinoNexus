@@ -95,7 +95,10 @@ def dispatch_script_case(
     if doc.get("debug_origin"):
         from mino_nexus.loop.debug_cases import _call
         try:
-            features = _call(node, "debug.capabilities", {"owner_user_id": doc["owner_user_id"]}) if node else {}
+            from mino_nexus.resources.scout_transport_owner import target_owner
+
+            features = _call(node, "debug.capabilities", {"owner_user_id": target_owner(
+                sn, effective_platform, str(doc["owner_user_id"]), node)}) if node else {}
             if features.get("formal_origin_verification") is not True:
                 raise ValueError("debug_origin_verification_required")
         except (ValueError, OSError):
@@ -144,12 +147,18 @@ def dispatch_script_case(
                 if node is None or getattr(node, "send", None) is None:
                     status, summary, reason_code = "fail", (node_reason or "节点不在线")[:240], "node_offline"
                 else:
+                    from mino_nexus.resources.scout_transport_owner import target_owner
+
                     payload = P.load_script_run(P.dump_script_run(P.ScriptRun(
                         run_id=run_id,
                         session_id=stream_id,
                         case_id=cid,
                         sn=sn,
                         platform=effective_platform,
+                        # Scout 记录绑定节点认证账号；实体手机跨账号时线路用它。
+                        owner_user_id=target_owner(
+                            sn, effective_platform,
+                            str(current_user_id() or doc.get("plugin_user_id") or ""), node),
                         repo_url=repo_url,
                         branch=str((repo or {}).get("branch") or ""),
                         revision=str(doc.get("revision") or ""),

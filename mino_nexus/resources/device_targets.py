@@ -175,14 +175,27 @@ def target_channel(app: dict, row: dict, *, surface="", profile="", env_doc=None
     return {**channel, "env_profile": resolved}
 
 
+_PLATFORM_ALIASES = {"adb": "android", "wda": "ios"}
+
+
 def evaluate(row: dict, *, app: dict | None = None, surface="", profile="", headless=True, action_scheme="dom_preferred", allow_queue=False) -> dict:
     from mino_nexus.resources.device_admission import busy_for
+    from mino_nexus.contract.execution.device import is_physical_platform
     out = dict(row)
     code, reason = "", ""
-    platform = str(row.get("platform") or row.get("type") or "")
+    platform = str(row.get("platform") or row.get("type") or "").strip().lower()
+    physical = is_physical_platform(platform)
+    platform = _PLATFORM_ALIASES.get(platform, platform)
     from mino_nexus.platform.identity import current_user_id
     owner = str(row.get("owner_user_id") or "")
-    if not owner:
+    if physical:
+        # 实体手机插在电脑上就可用；不校验历史归属，也未归属也不阻塞。
+        # 但仍要求接入节点在线、设备通道连通，否则选中的是一台执行不了的手机。
+        if not row.get("node_alive", row.get("status") == "online"):
+            code, reason = "node_offline", "所属 Scout 节点离线"
+        elif row.get("status") != "online":
+            code, reason = "channel_offline", "设备执行通道未连接"
+    elif not owner:
         code, reason = "unclaimed", "历史节点未归属，请由管理员认领后执行"
     elif current_user_id() and owner != current_user_id():
         code, reason = "not_owned", "设备不属于当前账号"

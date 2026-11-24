@@ -23,3 +23,12 @@ def is_per_node_web_sn(sn: str = "") -> bool:
     """`web` + [a-z0-9]+ —— 升级后的 Playwright 槽位，不是 `web-local`。"""
     s = str(sn or "").strip().lower()
     return s.startswith("web") and len(s) > 3 and s[3:].isalnum()
+
+
+# 实体手机：插在哪台电脑上就在哪展示/执行，不参与账号归属。
+PHYSICAL_PLATFORMS = frozenset({"android", "ios", "adb", "wda"})
+
+
+def is_physical_platform(platform: str) -> bool:
+    """Android / iOS 实体设备（含旧协议里 `adb` / `wda` 别名）。"""
+    return str(platform or "").strip().lower() in PHYSICAL_PLATFORMS

@@ -8,9 +8,23 @@ from mino_nexus.core import protocol as P
 from mino_nexus.core.async_util import run_sync
 from mino_nexus.platform.identity import require_user_id
 from mino_nexus.resources.node_registry import get_registry
+from mino_nexus.resources.scout_transport_owner import (
+    normalize_incoming, target_owner, wire_owner,
+)
 
 _CONTROL_NODE_RECONNECT_WAIT_SEC = 10.0
 _CONTROL_NODE_POLL_SEC = 0.25
+
+
+def _owned_by_node_account(node: Any, owner: str, sn: str) -> bool:
+    """节点账号一致即可；实体手机不归账号，插在该节点上就放行。"""
+    if node is None:
+        return False
+    if str(getattr(node, "owner_user_id", "") or "") == owner:
+        return True
+    from mino_nexus.resources.access_scope import is_physical_device
+
+    return is_physical_device(str(sn or ""))
 
 
 class DebugCallError(ValueError):
@@ -50,10 +64,12 @@ def _call(node, capability, params, *, run_id="", sn="", platform="", timeout=15
     return dict(response.data)
 
 
-def _scope(record: dict[str, Any]) -> dict[str, str]:
-    return {key: str(record.get(key) or "") for key in (
-        "task_id", "attempt_id", "session_id", "owner_user_id",
+def _scope(record: dict[str, Any], node: Any = None) -> dict[str, str]:
+    scope = {key: str(record.get(key) or "") for key in (
+        "task_id", "attempt_id", "session_id",
     )}
+    scope["owner_user_id"] = wire_owner(record, node) if node is not None else str(record.get("owner_user_id") or "")
+    return scope
 
 
 def _terminal_debug_error(record: dict[str, Any]) -> DebugCallError | None:
@@ -89,7 +105,7 @@ def _wait_control_node(record: dict[str, Any], owner_user_id: str) -> tuple[Any,
             raise terminal
         node = get_registry().get_node(str(current.get("node_id") or ""))
         if (node is not None and node.alive and node.send
-                and node.owner_user_id == owner_user_id):
+                and _owned_by_node_account(node, owner_user_id, str(current.get("sn") or ""))):
             return node, current
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -111,11 +127,12 @@ def _wait_control_node(record: dict[str, Any], owner_user_id: str) -> tuple[Any,
 
 def _persist_status(node_id: str, data: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
     from mino_nexus.resources import scout_record_store
+    from mino_nexus.resources.access_scope import node_owner_id
 
     version = data.get("summary_version")
     if (isinstance(version, int) and not isinstance(version, bool) and version > 0
             and data.get("session_id") == fallback.get("session_id")):
-        return scout_record_store.receive(node_id, data)
+        return scout_record_store.receive(node_id, normalize_incoming(fallback, data, node_owner_id(node_id)))
     return fallback
 
 
@@ -216,9 +233,10 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
         return state
 
     node = get_registry().get_node(str(record.get("node_id") or ""))
-    if (node is None or not node.alive or not node.send or node.owner_user_id != owner):
+    if (node is None or not node.alive or not node.send
+            or not _owned_by_node_account(node, owner, str(record.get("sn") or ""))):
         return _stopping(task_id, session_id, "stop_evidence_required")
-    params = _scope(record)
+    params = _scope(record, node)
     try:
         if not terminal:
             ack = _call(
@@ -233,7 +251,7 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
                 if remaining <= 0:
                     break
                 status = _call(
-                    node, "record.status", _scope(record), run_id=task_id,
+                    node, "record.status", _scope(record, node), run_id=task_id,
                     sn=str(record.get("sn") or ""),
                     platform=str((record.get("payload") or {}).get("platform") or ""),
                     timeout=max(0.5, min(2.5, remaining)),
@@ -247,7 +265,7 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
         if (not scout_record_store.stop_evidence_confirmed(record)
                 and scout_record_store.web_stop_recovery_candidate(record)):
             proof = _call(
-                node, "record.resource_status", _scope(record), run_id=task_id,
+                node, "record.resource_status", _scope(record, node), run_id=task_id,
                 sn=str(record.get("sn") or ""), platform="web", timeout=5,
             )
             if not scout_record_store.web_stop_proof_valid(record, proof):
@@ -290,14 +308,20 @@ def start(app, args):
         raise ValueError("debug_target_invalid")
     physical_sn = physical_sns[0]
     node, _ = get_registry().resolve(physical_sn)
-    if node is None or node.node_id != args["node_id"] or node.owner_user_id != owner or not node.send or node.record_api_version != 1:
+    if (node is None or node.node_id != args["node_id"] or not node.send
+            or node.record_api_version != 1
+            or not _owned_by_node_account(node, owner, physical_sn)):
         raise ValueError("debug_local_node_mismatch")
     key = repo_apps.key_for_app(project_id, str(app["id"]))
     if key and key != args["app_key"]:
         raise ValueError("debug_app_key_mismatch")
     _, targets = select(app, [physical_sn], surface=resolved_surface, profile=profile, headless=False, allow_queue=False)
     platform = targets[physical_sn]["platform"]
-    prepared = _call(node, "debug.prepare", {"owner_user_id": owner, "workspace": args["workspace"], "app_key": args["app_key"], "platform": platform, "env_profile": profile})
+    prepared = _call(node, "debug.prepare", {
+        "owner_user_id": target_owner(physical_sn, platform, owner, node),
+        "workspace": args["workspace"], "app_key": args["app_key"],
+        "platform": platform, "env_profile": profile,
+    })
     if prepared.get("debug_api_version") != 1:
         raise ValueError("debug_api_required")
     result = run_cases(app, sn=physical_sn, platform=platform, env_profile=profile,
@@ -332,8 +356,10 @@ def control(session_id, operation, args):
     if operation == "close":
         return _close(record)
     node, record = _wait_control_node(record, require_user_id())
-    params = {**args, **{key: record[key] for key in ("task_id", "attempt_id", "session_id", "owner_user_id")}}
+    params = {**args, **{key: record[key] for key in ("task_id", "attempt_id", "session_id")},
+              "owner_user_id": wire_owner(record, node)}
     data = _call(node, "debug." + operation, params, run_id=record["task_id"], sn=record["sn"], platform=record["payload"]["platform"])
+    data = normalize_incoming(record, data, node)
     if operation == "status":
         data["formal_runs"] = run_store.debug_formal_runs(session_id)
     return {**data, "task_id": record["task_id"], "session_id": session_id}

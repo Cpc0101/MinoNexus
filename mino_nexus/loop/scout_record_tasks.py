@@ -9,6 +9,16 @@ from mino_nexus.core.async_util import run_sync
 from mino_nexus.core.log import SLog
 from mino_nexus.platform.identity import execution_user, require_user_id
 from mino_nexus.resources import scout_record_store as records
+from mino_nexus.resources.scout_transport_owner import (
+    is_physical_record, normalize_incoming, wire_owner,
+)
+
+
+def _owner_or_physical(node: Any, row: dict[str, Any]) -> bool:
+    """实体手机跟随接入节点；Web/桌面仍要求节点认证账号一致。"""
+    if str(getattr(node, "owner_user_id", "") or "") == str(row.get("owner_user_id") or ""):
+        return True
+    return is_physical_record(row, node)
 
 
 def project(row: dict[str, Any]) -> bool:
@@ -68,6 +78,12 @@ def project(row: dict[str, Any]) -> bool:
 
 
 def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
+    row = records.for_node(str(incoming.get("session_id") or ""), node_id)
+    if row is not None:
+        from mino_nexus.resources.access_scope import node_owner_id
+
+        # Scout 记录绑定的是节点认证账号；实体手机的本地记录仍属于使用者。
+        incoming = normalize_incoming(row, incoming, node_owner_id(node_id))
     row = records.receive(node_id, incoming)
     project(row)
     return row
@@ -146,6 +162,10 @@ def dispatch(*, run_id, case, sn, app_id, package, provider_id, platform, projec
 
 def _request(row, node, cap, params):
     payload = row["payload"]
+    owner = wire_owner(row, node)
+    if owner != str(params.get("owner_user_id") or ""):
+        # 不改本地记录和不可变载荷，只在这次线路请求上换 owner。
+        params = {**params, "owner_user_id": owner}
     request = P.Execute(run_id=payload["run_id"], step_idx=-1, sn=row["sn"],
                         capability_id=cap, platform=payload.get("platform", ""), params=params,
                         timeout_sec=15, executor_order=[], device_hint=row["context"].get("device_hint") or {})
@@ -170,7 +190,7 @@ def wait_attempt(row: dict[str, Any]) -> dict[str, Any]:
             row = records.get(row["session_id"]) or row
         node = get_registry().get_node(row["node_id"])
         try:
-            if node and node.alive and node.send and node.owner_user_id == row["owner_user_id"]:
+            if node and node.alive and node.send and _owner_or_physical(node, row):
                 scope = {key: row[key] for key in ("task_id", "session_id", "attempt_id", "owner_user_id")}
                 result = _request(row, node, "record.cancel" if row["cancel_requested"] else "record.status", scope)
                 error = str(getattr(result, "error", "") or "")

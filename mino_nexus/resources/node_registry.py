@@ -23,6 +23,7 @@ from mino_nexus.core.log import SLog
 from mino_nexus.resources.node_store import get_node as stored_node, sanitize_id, upsert as persist_node
 from mino_nexus.contract.execution.device import (
     is_node_web_slot,
+    is_physical_platform,
 )
 
 TAG = "NodeRegistry"
@@ -30,6 +31,21 @@ TAG = "NodeRegistry"
 # 协议 §1：Scout 每 15s 心跳，Nexus 45s 未收到视为掉线
 HEARTBEAT_TIMEOUT_SEC = 45.0
 _ONLINE_CHANNEL = frozenset({"connected", "online", "available"})
+
+
+def heartbeat_liveness_window_sec(interval_sec: Any = None) -> float:
+    """节点判离线的存活窗口：至少 45s，且不少于 3 个心跳周期。
+
+    心跳可能因为设备探测、系统调度或网络抖动晚到一两拍；按 2 拍判定会在
+    正常抖动下把在线节点误判离线。放宽到 3 拍后仍然能在一个心跳周期内恢复。
+    """
+    try:
+        interval = float(interval_sec if interval_sec is not None else P.Registered.heartbeat_interval_sec)
+    except (TypeError, ValueError):
+        interval = 15.0
+    if interval <= 0:
+        interval = 15.0
+    return max(HEARTBEAT_TIMEOUT_SEC, 3.0 * interval)
 
 
 @dataclass
@@ -285,7 +301,7 @@ class NodeSession:
 
     @property
     def alive(self) -> bool:
-        return (time.time() - self.last_seen) < min(HEARTBEAT_TIMEOUT_SEC, 2 * P.Registered.heartbeat_interval_sec)
+        return (time.time() - self.last_seen) < heartbeat_liveness_window_sec()
 
     def available_executors(self) -> list[str]:
         return sorted(k for k, v in self.executors.items() if v.available)
@@ -450,8 +466,8 @@ class NodeRegistry:
 
             for d in accepted_devices:
                 self._place_device(d.sn, reg.node_id, device=d, session=session)
-                if d.sn not in session.devices and "部分设备归属未确认或不属于当前账号，已忽略" not in warnings:
-                    warnings.append("部分设备归属未确认或不属于当前账号，已忽略")
+                if d.sn not in session.devices and "部分设备仍挂在其他节点，已忽略迟到的离线上报" not in warnings:
+                    warnings.append("部分设备仍挂在其他节点，已忽略迟到的离线上报")
 
         avail = session.available_executors()
         SLog.i(
@@ -468,7 +484,10 @@ class NodeRegistry:
     def _record_device(self, session: NodeSession, device: P.DeviceManifest, *, status: str = "") -> None:
         owner_name = ""
         uid = session.owner_user_id
-        if uid:
+        if is_physical_platform(device.platform):
+            # 实体手机不归属账号；只落位置和硬件事实。
+            uid = ""
+        elif uid:
             try:
                 from mino_nexus.platform import auth_store
                 pub = auth_store.public_user_by_id(uid)
@@ -497,41 +516,57 @@ class NodeRegistry:
         device: P.DeviceManifest | None = None,
         session: NodeSession | None = None,
     ) -> None:
-        """实体设备保留首次归属；本节点 Web 虚拟槽跟随已认证节点。"""
+        """实体设备跟随物理所在的节点；本节点 Web 虚拟槽跟随已认证节点。
+
+        实体手机没有稳定的人-机绑定，也不该有账号归属：插在哪台电脑上就在哪
+        展示和执行，任何登录用户都可见。这里不用历史归属拒绝上报，也不写
+        owner；历史版本留下的归属会在落盘时清空。
+        """
         node = session or self._nodes.get(node_id)
+        if node is None:
+            return
         node_web_slot = bool(
-            node and node.owner_user_id and device and device.sn == sn
+            node.owner_user_id and device and device.sn == sn
             and is_node_web_slot(sn, device.platform, node.node_id)
         )
         persisted = get_device(sn)
-        if persisted is not None and not node_web_slot:
-            uid = str(persisted.get("owner_user_id") or "")
-            if not uid:
-                previous_node = stored_node(str(persisted.get("current_scout_id") or "")) or {}
-                uid = str(previous_node.get("owner_user_id") or "")
-            if node is None or not uid or uid != node.owner_user_id:
-                if node is not None:
-                    node.devices.pop(sn, None)
-                SLog.w(TAG, "忽略未确认或其他账号的设备上报")
-                return
         prev = self._owner.get(sn)
         current = prev or str((persisted or {}).get("current_scout_id") or "")
         if current and current != node_id and device is not None and not _channel_connected(device.channels):
             # 设备移到 B 后，A 迟到的 device_lost/离线心跳不能抢回当前位置。
-            if node is not None:
+            # 只有原节点还活着且仍握着一条连通通道时才算「迟到」；原节点已消失、
+            # 或那边也早已断开，就说明设备确实换位置了，必须接受本次上报。
+            previous = self._nodes.get(current)
+            previous_device = previous.devices.get(sn) if previous is not None else None
+            still_held = bool(
+                previous is not None
+                and previous.alive
+                and previous_device is not None
+                and _channel_connected(previous_device.channels)
+            )
+            if still_held:
                 node.devices.pop(sn, None)
-            return
+                SLog.d(TAG, f"设备 {sn} 仍在节点 {current} 上连通，忽略 {node_id} 的离线上报")
+                return
         if prev and prev != node_id:
             other = self._nodes.get(prev)
             if other is not None and sn in other.devices:
                 other.devices.pop(sn, None)
-            SLog.i(TAG, f"设备 {sn} 当前位置 {prev} → {node_id}（账号归属不改）")
+            SLog.i(TAG, f"设备 {sn} 当前位置 {prev} → {node_id}")
         self._owner[sn] = node_id
-        node = session or self._nodes.get(node_id)
-        if node is not None and device is not None:
+        if device is not None:
+            previous_owner = str((persisted or {}).get("owner_user_id") or "")
             self._record_device(node, device)
-            if node_web_slot and persisted and persisted.get("owner_user_id") != node.owner_user_id:
-                SLog.i(TAG, f"Web 虚拟槽归属已随节点同步 sn={sn} node={node_id}")
+            if node_web_slot:
+                if previous_owner != node.owner_user_id:
+                    SLog.i(TAG, f"Web 虚拟槽归属已随节点同步 sn={sn} node={node_id}")
+            elif is_physical_platform(device.platform) and previous_owner:
+                SLog.i(TAG, f"实体设备不归属账号，已清除历史归属 sn={sn}")
+            elif node.owner_user_id and previous_owner != node.owner_user_id:
+                SLog.i(
+                    TAG,
+                    f"设备 {sn} 归属随所在节点更新 {previous_owner or '未归属'} → {node.owner_user_id}",
+                )
 
 
 
@@ -633,6 +668,16 @@ class NodeRegistry:
                 "capability_revision": node.capability_revision,
                 "execution_binding_version": node.execution_binding_version,
                 "binding_unavailable_reason": node.binding_unavailable_reason})
+
+    def note_seen(self, node_id: str) -> None:
+        """任何已验证的上行帧都说明节点还活着，不必等下一次 HEARTBEAT。"""
+        nid = str(node_id or "").strip()
+        if not nid:
+            return
+        with self._lock:
+            node = self._nodes.get(nid)
+            if node is not None:
+                node.last_seen = time.time()
 
     def note_host_mode(self, node_id: str, mode: str) -> None:
         """休眠/启动的回执先于下一次心跳。立刻改 mode，避免列表还显示旧状态。"""

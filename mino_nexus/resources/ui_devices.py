@@ -11,7 +11,7 @@ from mino_nexus.resources.node_registry import NodeRegistry, NodeSession, get_re
 from mino_nexus.resources.node_store import list_nodes as stored_nodes
 from mino_nexus.resources.node_store import list_studios as stored_studios
 from mino_nexus.core.slots import web_lane_snapshot
-from mino_nexus.contract.execution.device import is_web_slot
+from mino_nexus.contract.execution.device import is_physical_platform, is_web_slot
 from mino_nexus.contract import runs as run_store
 
 _ONLINE_CHANNEL = frozenset({"connected", "online", "available"})
@@ -74,6 +74,15 @@ def _last_online(ts: Any) -> str:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
+def _resolve_owner(owner_id: str, stored_name: str) -> str:
+    name = str(stored_name or "").strip()
+    if owner_id and not name:
+        pub = auth_store.public_user_by_id(owner_id)
+        if pub:
+            name = str(pub.get("name") or pub.get("username") or "")
+    return name
+
+
 def ui_devices(
     registry: Optional[NodeRegistry] = None, *, account_scoped: bool = True,
     include_history: bool = True,
@@ -84,6 +93,7 @@ def ui_devices(
     node_snapshots = stored_nodes()
     reg = registry or get_registry()
     live_nodes = {node.node_id: node for node in reg.nodes()}
+    uid = current_user_id() if account_scoped else ""
     for row in reg.devices():
         raw = row.get("channels") if isinstance(row.get("channels"), dict) else {}
         channels = _ui_channels(raw)
@@ -91,16 +101,14 @@ def ui_devices(
         sn = row.get("sn") or ""
         secrets = lock_password_public(sn)
         persisted = get_device(sn) or {}
-        from mino_nexus.resources.access_scope import device_owner_id
-        from mino_nexus.platform.identity import current_user_id
-        owner_id = device_owner_id(sn, str(row.get("node_id") or persisted.get("current_scout_id") or ""))
-        if account_scoped and current_user_id() and owner_id != current_user_id():
+        platform = str(row.get("platform") or persisted.get("platform") or "")
+        physical = is_physical_platform(platform)
+        # 实体手机插在电脑上就对所有登录用户可见，不按账号归属过滤。
+        owner_id = "" if physical else device_owner_id(
+            sn, str(row.get("node_id") or persisted.get("current_scout_id") or ""))
+        if uid and not physical and owner_id != uid:
             continue
-        owner_name = str(persisted.get("owner_name") or "").strip()
-        if owner_id and not owner_name:
-            pub = auth_store.public_user_by_id(owner_id)
-            if pub:
-                owner_name = str(pub.get("name") or pub.get("username") or "")
+        owner_name = "" if physical else _resolve_owner(owner_id, persisted.get("owner_name") or "")
         out.append({
             "sn": sn,
             "node_id": row.get("node_id") or persisted.get("current_scout_id") or "",
@@ -110,7 +118,7 @@ def ui_devices(
             "status": "online" if online else "offline",
             "role": "node",
             "channels": channels,
-            "platform": row.get("platform") or persisted.get("platform") or "",
+            "platform": platform,
             "last_online": _last_online(row.get("last_seen")),
             "password_configured": bool(secrets.get("password_configured")),
             "owner_user_id": owner_id,
@@ -122,13 +130,12 @@ def ui_devices(
             **{k: row.get(k, persisted.get(k)) for k in ("os", "session_key", "session_generation", "desktop_state", "blocked_reason", "capabilities", "readiness")},
         })
     seen = {row["sn"] for row in out}
-    from mino_nexus.platform.identity import current_user_id
-    from mino_nexus.resources.access_scope import device_owner_id
     for persisted in (stored_devices().values() if include_history else []):
         sn = str(persisted.get("sn") or "")
         if not sn or sn in seen:
             continue
-        if account_scoped and current_user_id() and device_owner_id(sn) != current_user_id():
+        physical = is_physical_platform(str(persisted.get("platform") or persisted.get("type") or ""))
+        if uid and not physical and device_owner_id(sn) != uid:
             continue
         node_id = str(persisted.get("current_scout_id") or "")
         node = live_nodes.get(node_id)
@@ -172,12 +179,10 @@ def _isolation_index() -> dict[str, dict[str, str]]:
 def _offline_device_row(persisted: dict[str, Any], *, node_alive: bool = False, node_name: str = "") -> dict[str, Any]:
     row = public_device(persisted)
     from mino_nexus.resources.access_scope import device_owner_id
-    owner_id = device_owner_id(str(row.get("sn") or ""), str(row.get("current_scout_id") or ""))
-    owner_name = str(row.get("owner_name") or "").strip()
-    if owner_id and not owner_name:
-        pub = auth_store.public_user_by_id(owner_id)
-        if pub:
-            owner_name = str(pub.get("name") or pub.get("username") or "")
+    physical = is_physical_platform(str(row.get("platform") or row.get("type") or ""))
+    owner_id = "" if physical else device_owner_id(
+        str(row.get("sn") or ""), str(row.get("current_scout_id") or ""))
+    owner_name = "" if physical else _resolve_owner(owner_id, row.get("owner_name") or "")
     from mino_nexus.resources.device_targets import evaluate
     return evaluate({
         "sn": row.get("sn") or "",

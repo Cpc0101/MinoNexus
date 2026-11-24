@@ -99,9 +99,24 @@ def resolve_target(sn: str, node_id: str):
     raise ForwardError(OFFLINE_UNKNOWN)
 
 
-def require_owner(node: Any, user_id: str) -> None:
+def require_owner(node: Any, user_id: str, *, sn: str = "") -> None:
+    """节点归属校验；实体手机不归属账号，按其所在节点直接放行。"""
+    from mino_nexus.contract.execution.device import is_physical_platform
     from mino_nexus.resources.access_scope import node_owner_id
 
+    device = node.devices.get(sn) if sn and getattr(node, "devices", None) else None
+    if device is not None and is_physical_platform(device.platform):
+        return
+    if device is None and sn:
+        from mino_nexus.resources.access_scope import is_physical_device
+
+        # 设备行可能已从活节点清单里摘掉（迟到离线/重连窗口），
+        # 落盘的平台事实仍足以判定它是实体手机。
+        try:
+            if is_physical_device(str(sn)):
+                return
+        except Exception:
+            pass
     if node_owner_id(node.node_id) != user_id:
         raise ForwardError("target_unresolved", "没有这个节点", status=404)
 
@@ -239,7 +254,7 @@ async def forward_async(
     if not cap:
         raise ForwardError("target_unresolved", "capability_id 不能为空", status=400)
     node, physical_sn, identity = resolve_target(str(sn or "").strip(), str(node_id or "").strip())
-    require_owner(node, user_id)
+    require_owner(node, user_id, sn=physical_sn)
     payload = build_execute(
         capability_id=cap, params=params, sn=physical_sn, node=node, platform=platform,
         timeout_sec=timeout_sec, executor_order=executor_order, selected_impl=selected_impl,
@@ -311,7 +326,7 @@ def forward_sync(*, user_id: str = "", **kwargs: Any) -> dict[str, Any]:
 def resolve_async(*, sn: str = "", node_id: str = "", user_id: str = "") -> dict[str, Any]:
     """只查目标落在哪个节点、是否在线，不执行。"""
     node, physical_sn, identity = resolve_target(str(sn or "").strip(), str(node_id or "").strip())
-    require_owner(node, user_id)
+    require_owner(node, user_id, sn=physical_sn)
     host = getattr(node, "host", {}) or {}
     platform = str(host.get("os") or "") if isinstance(host, dict) else ""
     return {**identity, "node_id": node.node_id, "online": bool(node.alive),

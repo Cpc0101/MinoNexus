@@ -218,6 +218,7 @@ def _match_name(rows: list[dict[str, Any]], text: str, *keys: str) -> list[dict[
 
 def _visible_devices(user_id: str) -> list[dict[str, Any]]:
     from mino_nexus.platform import auth_store
+    from mino_nexus.contract.execution.device import is_physical_platform
     from mino_nexus.resources.node_registry import get_registry
     from mino_nexus.resources.node_store import get_node, node_visible
     from mino_nexus.resources.ui_devices import ui_devices
@@ -228,7 +229,8 @@ def _visible_devices(user_id: str) -> list[dict[str, Any]]:
         node_id = str(device.get("node_id") or device.get("current_scout_id") or "")
         node = get_registry().get_node(node_id)
         snapshot = node.brief() if node else (get_node(node_id) or {})
-        if node_visible(snapshot, sess):
+        # 实体手机不归节点账号所有：插在哪台 Scout 上就对该用户可见。
+        if is_physical_platform(device.get("platform")) or node_visible(snapshot, sess):
             rows.append(device)
     return rows
 

@@ -47,12 +47,19 @@ register_event_sink(broadcast_sync)
 
 def _event_owner(payload: dict[str, Any]) -> str:
     from mino_nexus.casework import run_store
-    from mino_nexus.resources.access_scope import node_owner_id, device_owner_id
+    from mino_nexus.resources.access_scope import (
+        device_owner_id,
+        is_physical_device,
+        node_owner_id,
+    )
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     rid = str(data.get("task_id") or data.get("run_id") or "").split("::", 1)[0]
     if rid:
         doc = run_store.get(rid)
         return str((doc or {}).get("owner_user_id") or "")
+    # 实体手机的实时事件不归账号：所有已登录用户的界面都能看到它。
+    if data.get("sn") and is_physical_device(str(data["sn"])):
+        return "*"
     if data.get("node_id"):
         return node_owner_id(str(data["node_id"]))
     if data.get("sn"):
@@ -73,7 +80,8 @@ async def _broadcast(payload: dict[str, Any]) -> None:
                 _CLIENTS.pop(ws, None)
                 await ws.close(code=1008, reason="登录已失效")
                 continue
-            if owner == uid:
+            # "*" 用于不归任何账号的实体手机事件，发给所有已登录会话。
+            if owner == "*" or owner == uid:
                 await ws.send_text(text)
         except Exception:
             _CLIENTS.pop(ws, None)

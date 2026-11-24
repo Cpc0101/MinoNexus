@@ -129,7 +129,13 @@ def _require(node_id: str, params: dict[str, Any]) -> ScriptAdmission:
     if not run_store.task_is_live(run_store.get(run_id)):
         raise PermissionError("这次运行已经结束")
     node, reason = get_registry().resolve(admission.sn)
-    if node is None or str(node.node_id) != str(node_id or "") or node.owner_user_id != admission.owner_user_id:
+    # 实体手机跟随当前接入节点，不比较节点认证账号。
+    from mino_nexus.contract.execution.device import is_physical_platform
+    from mino_nexus.resources.access_scope import is_physical_device
+
+    physical = is_physical_platform(admission.platform) or is_physical_device(admission.sn)
+    if (node is None or str(node.node_id) != str(node_id or "")
+            or (not physical and node.owner_user_id != admission.owner_user_id)):
         raise PermissionError(reason or "设备所在节点已变化")
     return admission
 

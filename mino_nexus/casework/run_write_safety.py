@@ -171,7 +171,13 @@ async def recover_stopped(task_id: str):
         node, _ = get_registry().resolve(sn)
         generation = str(item.get("scout_process_generation") or "")
         current_generation = str(getattr(node, "scout_process_generation", "") or "")
-        if node is None or not node.send or node.owner_user_id != actor or node.node_id != item.get("node_id") or not current_generation:
+        from mino_nexus.contract.execution.device import is_physical_platform
+        from mino_nexus.resources.access_scope import is_physical_device
+
+        # 实体手机不归账号：换个账号的节点接手后仍能核对停止证据。
+        owned = (node is not None and str(node.owner_user_id or "") == actor) or \
+            is_physical_platform(str(doc.get("platform") or "")) or is_physical_device(str(sn or ""))
+        if node is None or not node.send or not owned or node.node_id != item.get("node_id") or not current_generation:
             outcomes.append({"action_ref": ref, "recovered": False, "reason_code": "stop_evidence_unavailable"})
             continue
         mode = "same_process" if generation == current_generation else "retired_generation"

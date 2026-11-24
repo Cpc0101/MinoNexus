@@ -1,14 +1,15 @@
 """设备身份落盘：一条 SN 一行。
 
-实体设备账号归属按**首次出现**锁定，换 Scout 只改当前位置，不另开一行。
-Web 槽位是 `web`+scout_id，归属跟随已认证的节点并修正历史冲突。
+实体手机（Android / iOS）**不记录账号归属**：插在哪台 Scout 电脑上就在哪展示和
+执行，任何已登录用户都能看到并使用。落盘只保存当前位置与硬件事实；历史账
+号归属在下次心跳时清空。Web 槽位是 `web`+scout_id，归属仍跟随已认证节点。
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
-from mino_nexus.contract.execution.device import is_node_web_slot
+from mino_nexus.contract.execution.device import is_physical_platform
 from mino_nexus.resources.node_store import sanitize_id
 
 
@@ -23,8 +24,9 @@ def _row_from_model(row) -> dict[str, Any]:
     extra["model"] = row.model or extra.get("model") or ""
     extra["status"] = row.status or extra.get("status") or ""
     extra["channels"] = row.channels if isinstance(row.channels, dict) else extra.get("channels") or {}
-    extra["owner_user_id"] = row.owner_user_id or extra.get("owner_user_id") or ""
-    extra["owner_name"] = row.owner_name or extra.get("owner_name") or ""
+    physical = is_physical_platform(str(extra["platform"]))
+    extra["owner_user_id"] = "" if physical else (row.owner_user_id or extra.get("owner_user_id") or "")
+    extra["owner_name"] = "" if physical else (row.owner_name or extra.get("owner_name") or "")
     extra["current_scout_id"] = row.node_id or extra.get("current_scout_id") or ""
     extra["current_studio_id"] = row.studio_id or extra.get("current_studio_id") or ""
     extra["updated_at"] = row.updated_at or extra.get("updated_at") or ""
@@ -139,7 +141,7 @@ def remember(
     status: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """按 SN upsert；仅本节点 Web 槽随节点更新归属，实体设备只填空归属。"""
+    """按 SN upsert；实体设备只记位置，Web/桌面槽按节点认证账号归属。"""
     sid = str(sn or "").strip()
     if not sid:
         return {}
@@ -162,16 +164,20 @@ def remember(
     studio = sanitize_id(studio_id)
     if studio:
         row["current_studio_id"] = studio
-    owner = sanitize_id(owner_user_id)
-    if owner and is_node_web_slot(sid, str(row.get("platform") or ""), nid):
-        row["owner_user_id"] = owner
-        row["owner_name"] = str(owner_name or "").strip()
-    elif owner and not sanitize_id(str(row.get("owner_user_id") or "")):
-        row["owner_user_id"] = owner
-        if owner_name:
+    if is_physical_platform(str(row.get("platform") or platform)):
+        # 实体手机不归属账号；顺手清掉历史版本留下的归属与显示名。
+        row["owner_user_id"] = ""
+        row["owner_name"] = ""
+    else:
+        owner = sanitize_id(owner_user_id)
+        if owner:
+            row["owner_user_id"] = owner
+            if owner_name:
+                row["owner_name"] = str(owner_name).strip()
+            elif str(prev.get("owner_user_id") or "") != owner:
+                row["owner_name"] = ""
+        elif owner_name and not str(row.get("owner_name") or "").strip():
             row["owner_name"] = str(owner_name).strip()
-    elif owner_name and not str(row.get("owner_name") or "").strip():
-        row["owner_name"] = str(owner_name).strip()
     if isinstance(channels, dict):
         row["channels"] = dict(channels)
     if status:
@@ -187,8 +193,12 @@ def remember(
 def public_device(row: dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     item["sn"] = str(item.get("sn") or "")
-    item["owner_user_id"] = sanitize_id(str(item.get("owner_user_id") or ""))
-    item["owner_name"] = str(item.get("owner_name") or "").strip()
+    if is_physical_platform(str(item.get("platform") or item.get("type") or "")):
+        item["owner_user_id"] = ""
+        item["owner_name"] = ""
+    else:
+        item["owner_user_id"] = sanitize_id(str(item.get("owner_user_id") or ""))
+        item["owner_name"] = str(item.get("owner_name") or "").strip()
     item["first_scout_id"] = sanitize_id(str(item.get("first_scout_id") or ""))
     item["current_scout_id"] = sanitize_id(str(item.get("current_scout_id") or ""))
     item["current_studio_id"] = sanitize_id(str(item.get("current_studio_id") or ""))

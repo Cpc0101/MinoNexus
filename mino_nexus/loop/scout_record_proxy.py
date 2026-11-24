@@ -13,6 +13,8 @@ from typing import Any
 from mino_nexus.core import protocol as P
 from mino_nexus.core.async_util import run_sync
 from mino_nexus.platform.identity import require_user_id
+from mino_nexus.resources.access_scope import is_physical_device
+from mino_nexus.resources.scout_transport_owner import normalize_incoming, wire_owner
 from mino_nexus.resources.node_registry import get_registry
 from mino_nexus.resources import scout_record_store
 
@@ -63,14 +65,17 @@ def _request(record: dict[str, Any], capability_id: str, params: dict[str, Any] 
     scope = {key: str(record.get(key) or "") for key in ("task_id", "session_id", "attempt_id")}
     if not all(scope.values()) or not record.get("node_id"):
         raise RecordReadError("record_contract_invalid")
-    scope["owner_user_id"] = owner
     # A device may now belong to another node. Historical evidence must stay on
     # the node admitted for this exact attempt, including while it is offline.
     node = get_registry().get_node(str(record["node_id"]))
     if node is None:
         raise RecordReadError("evidence_temporarily_unavailable")
-    if node.owner_user_id != owner:
+    # 实体手机不归账号所有：同一台手机插到别的账号的节点上，也能读回证据。
+    # 记录本身的 owner_user_id 已在上面校验，Web/桌面仍要求节点账号一致。
+    if node.owner_user_id != owner and not is_physical_device(str(record.get("sn") or "")):
         raise RecordReadError("record_owner_mismatch")
+    # Scout 只认节点认证账号：实体手机跨账号时线路用节点 owner，返回后换回本地 owner。
+    scope["owner_user_id"] = wire_owner(record, node)
     if not node.alive or node.send is None:
         raise RecordReadError("evidence_temporarily_unavailable")
     request = P.Execute(
@@ -88,7 +93,7 @@ def _request(record: dict[str, Any], capability_id: str, params: dict[str, Any] 
         raise RecordReadError(str(result.error or "record_unavailable"))
     if not isinstance(result.data, dict):
         raise RecordReadError("record_contract_invalid")
-    return result.data
+    return normalize_incoming(record, result.data, node)
 
 
 def read_summary(record: dict[str, Any]) -> dict[str, Any]:
