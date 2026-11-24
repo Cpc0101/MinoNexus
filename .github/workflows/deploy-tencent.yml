@@ -172,7 +172,15 @@ jobs:
               set -euo pipefail
               trap 'docker logout $TCR_REGISTRY >/dev/null 2>&1 || true' EXIT
               docker login '$TCR_REGISTRY' --username '$TCR_USERNAME' --password-stdin > /dev/null
-              timeout 10m docker pull --platform linux/amd64 '$image'
+              for attempt in 1 2 3 4 5 6; do
+                echo "Pulling $image (attempt \$attempt)"
+                if timeout 10m docker pull --platform linux/amd64 '$image'; then
+                  exit 0
+                fi
+                echo 'Pull connection failed; retrying after 15s' >&2
+                sleep 15
+              done
+              exit 1
             "
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes \
             "$TENCENT_USER@$TENCENT_HOST" "docker image inspect '$image' > /dev/null"
