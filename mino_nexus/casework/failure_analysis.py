@@ -133,7 +133,7 @@ def case_failure_fact(doc: dict[str, Any], case: dict[str, Any]) -> dict[str, An
         "execution_unit_id": str(case.get("execution_unit_id") or ""),
         "attempt_id": str(case.get("attempt_id") or ""),
         "session_id": str(case.get("session_id") or case.get("report_run_id") or ""),
-        "status": result(case),
+        "status": result(case, doc),
         "started_at": str(case.get("started_at") or doc.get("started_at") or ""),
         "finished_at": str(case.get("finished_at") or doc.get("finished_at") or ""),
         "failure_stage": stage,

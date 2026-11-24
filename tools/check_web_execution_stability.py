@@ -146,6 +146,16 @@ def _run(run_id: str, started_at: str, case: dict, **overrides) -> dict:
         "cases": [case],
     }
     doc.update(overrides)
+    if case.get("status") == "pass":
+        case.update(record_source="scout", sealed=True, task_id=run_id,
+                    session_id=run_id + "::" + case["case_id"], revision="fixture-revision",
+                    source_hash=case["frozen_identity"]["source_digest"],
+                    assertions={"total": 1, "pass": 1, "fail": 0, "unknown": 0},
+                    source_coverage={"expected": 1, "covered": ["E1"], "missing": []})
+        case["test_report"].update(
+            counts={"total": 1, "pass": 1, "fail": 0, "unknown": 0, "not_run": 0},
+            context={key: case[key] for key in
+                     ("task_id", "case_id", "session_id", "attempt_id", "revision", "source_hash")})
     return doc
 
 
