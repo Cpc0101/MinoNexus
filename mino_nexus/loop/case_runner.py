@@ -104,6 +104,7 @@ def run_cases(
     source_context: Optional[dict[str, Any]] = None,
     debug: Optional[dict[str, Any]] = None,
     debug_origin: Optional[dict[str, Any]] = None,
+    workflow_id: str = "",
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     phases: list[tuple[str, int]] = []
@@ -120,6 +121,16 @@ def run_cases(
     from mino_nexus.casework.case_store import normalize_case_tags
 
     targets = normalize_script_targets(script_targets)
+    workflow_binding: dict[str, Any] = {}
+    if targets and not debug:
+        from mino_nexus.casework.workflow_gate import require_run_scope
+
+        workflow_binding = require_run_scope(
+            require_user_id(plugin_user_id or None),
+            workflow_id,
+            project_id=str(app.get("project_id") or ""),
+            targets=targets,
+        )
     include_tags = normalize_case_tags(include_tags)
     exclude_tags = normalize_case_tags(exclude_tags)
     if (debug or targets) and tags_requested(include_tags, exclude_tags):
@@ -321,6 +332,7 @@ def run_cases(
         "case_inputs": case_inputs,
         "source_context": source_context,
         "debug_origin": debug_origin or {},
+        "workflow_binding": workflow_binding,
         "derived_from": derived_from,
         "expected_build": expected_build,
         "revision": str(revision or "").strip(),

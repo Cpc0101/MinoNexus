@@ -442,6 +442,7 @@ def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> d
         "project_id": doc.get("project_id") or "",
         "source_context": copy.deepcopy(doc.get("source_context") or {}),
         "debug_origin": copy.deepcopy(doc.get("debug_origin") or {}),
+        "workflow_binding": copy.deepcopy(doc.get("workflow_binding") or {}),
         "report_url": _report_url(doc),
         "cancel_requested": bool(doc.get("cancel_requested")),
         "run_type": doc.get("run_type") or "manual",

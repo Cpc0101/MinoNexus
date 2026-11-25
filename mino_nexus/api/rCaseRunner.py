@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mino_nexus.resources import project_store as ps
 from mino_nexus.casework import run_store
+from mino_nexus.casework.workflow_gate import RunScopeRejected
 from mino_nexus.core.http_util import ok
 from mino_nexus.loop import case_runner as cr
 from mino_nexus.loop.observe.agent_stream import emit_testing_task
@@ -136,6 +137,7 @@ class RunRequest(BaseModel):
     env_profile: str = ""
     env_surface: str = ""
     revision: str = ""
+    workflow_id: str = Field(default="", max_length=120)
     script_targets: Optional[List["ScriptTarget"]] = None
     case_inputs: dict = Field(default_factory=dict)
     source_context: dict = Field(default_factory=dict)
@@ -274,6 +276,7 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             execution_mode="agent",
             client_request_id=body.client_request_id,
             revision=revision,
+            workflow_id=str(body.workflow_id or "").strip(),
             script_targets=[item.model_dump() for item in body.script_targets] if body.script_targets else None,
             case_inputs=body.case_inputs,
             source_context=body.source_context,
@@ -305,6 +308,8 @@ def run_cases(body: RunRequest, sess: dict = Depends(current_session)):
             status_code=409 if exc.compilation_jobs else 400,
             detail={"message": str(exc), "blocked": exc.blocked, "compilation_jobs": exc.compilation_jobs},
         ) from exc
+    except RunScopeRejected as exc:
+        raise HTTPException(status_code=400, detail={"reason_code": exc.reason_code, "message": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
