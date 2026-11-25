@@ -50,12 +50,28 @@ def project(row: dict[str, Any]) -> bool:
                       status_sync_at=row["updated_at"], summary_version=row["summary_version"],
                       status=row["status"])
         if fields.get("resource_isolated"):
+            # Isolation flags a possibly-committed business write. Once Scout's sealed
+            # stop proof lands, the worker is gone and only the business baseline stays
+            # pending; keeping the ledger "isolated" would strand device and account
+            # leases on a task no recovery path can ever settle.
+            stopped = bool(summary.get("sealed")) and records.stop_evidence_confirmed(row)
+            entry = {
+                "state": "settled" if stopped else "isolated", "sn": row["sn"],
+                "reason_code": "write_outcome_unknown",
+                "stop_confirmed": stopped or bool(summary.get("sealed")),
+                "attempt_id": row["attempt_id"],
+            }
+            if stopped:
+                entry["recovery"] = {
+                    "source": "scout_record", "business_baseline_pending": True,
+                    "proof": {"contract": "write_stop.v1", "stop_confirmed": True,
+                              "action_ref": None, "sn": row["sn"]},
+                }
             with run_store._LOCK:
                 guarded = run_store.get(row["task_id"])
-                guarded.setdefault("write_safety", {})["scout:" + row["attempt_id"]] = {
-                    "state": "isolated", "sn": row["sn"], "reason_code": "write_outcome_unknown",
-                    "stop_confirmed": bool(summary.get("sealed")), "attempt_id": row["attempt_id"],
-                }
+                guarded.setdefault("write_safety", {})["scout:" + row["attempt_id"]] = entry
+                if stopped:
+                    guarded["business_baseline_pending"] = True
                 run_store.put(guarded)
         latest = run_store.patch_case(row["task_id"], row["case_id"], target_sn=row["sn"], **fields)
         if row["status"] in records.TERMINAL:

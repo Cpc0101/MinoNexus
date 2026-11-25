@@ -105,12 +105,26 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
     return generation != summary_generation
 
 
+def resource_isolated(record: dict[str, Any]) -> bool:
+    """Isolation flags a possibly-committed business write, not a live worker."""
+    summary = record.get("summary") or {}
+    return summary.get("resource_isolated") is True
+
+
+def execution_outcome_unknown(record: dict[str, Any]) -> bool:
+    """Only unknown/interrupted execution blocks stop proof; isolation alone does not."""
+    summary = record.get("summary") or {}
+    return (summary.get("execution_started") == "unknown"
+            or summary.get("state") == "interrupted"
+            or summary.get("reason_code") == "write_outcome_unknown")
+
+
 def stop_evidence_confirmed(record: dict[str, Any]) -> bool:
     """Whether execution and Web browser lifetime are known to have stopped."""
     summary = record.get("summary") or {}
     if record.get("status") not in TERMINAL or summary.get("sealed") is not True:
         return False
-    if summary.get("resource_isolated") is True:
+    if execution_outcome_unknown(record):
         return False
     if summary.get("execution_started") == "no":
         return True
@@ -132,10 +146,7 @@ def release_evidence_confirmed(record: dict[str, Any]) -> bool:
     resolution = (record.get("context") or {}).get("resource_resolution") or {}
     if resolution.get("state") == "released":
         return True
-    if (summary.get("resource_isolated") is True
-            or summary.get("execution_started") == "unknown"
-            or summary.get("state") == "interrupted"
-            or summary.get("reason_code") == "write_outcome_unknown"):
+    if execution_outcome_unknown(record):
         return False
     if summary.get("execution_started") == "no":
         return True
@@ -159,7 +170,6 @@ def web_stop_recovery_candidate(record: dict[str, Any]) -> bool:
             or summary.get("execution_started") in {None, "no", "unknown"}
             or summary.get("execution_stopped") is not True
             or summary.get("browser_closed") is not True
-            or summary.get("resource_isolated") is True
             or summary.get("state") == "interrupted"
             or summary.get("reason_code") == "write_outcome_unknown"):
         return False
