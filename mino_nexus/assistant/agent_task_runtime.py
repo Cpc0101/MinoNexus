@@ -165,6 +165,10 @@ def _finish_result(owner, task_id, result):
             tasks.link(owner, task_id, "execution", result["task_id"])
         except (ValueError, PermissionError):
             pass
+    state = tasks.get(owner, task_id)
+    result["agent_board_url"] = state["board_url"]
+    if state["board_url"]:
+        result["answer"] = str(result.get("answer") or "") + "\n\n实时任务看板：" + state["board_url"]
     result["agent_task_id"] = task_id
     return result
 
@@ -204,10 +208,11 @@ def tracked_resume(fn):
         # Original request processing validates revision before any answer is acknowledged.
         nested = current.get() == (owner, task_id)
         with bound(owner, task_id, heartbeat=True):
+            prior_questions = {q["question_id"] for q in tasks.get(owner, task_id)["questions"] if q["status"] == "open"}
             result = fn(request_id, revision, patch, **kwargs)
             state = tasks.get(owner, task_id)
             for question in state["questions"]:
-                if question["status"] == "open":
+                if question["status"] == "open" and question["question_id"] in prior_questions:
                     tasks.mutate(owner, task_id, "answer", {"event_id": uuid4().hex,
                                  "question_id": question["question_id"], "answer": "答案已通过原请求提交"})
                     tasks.mutate(owner, task_id, "acknowledge", {"event_id": uuid4().hex,

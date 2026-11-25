@@ -17,12 +17,18 @@ def now():
 
 def view(row):
     state = deepcopy(row.state)
+    from mino_nexus.assistant.assistant_reports import configuration, agent_board_url
+    config = configuration(row.owner_user_id)
+    board_url = agent_board_url(row.task_id, base_url=config['effective_url'])
     seen = datetime.fromisoformat(state["last_heartbeat_at"].replace("Z", "+00:00"))
     age = max(0, (datetime.now(timezone.utc) - seen).total_seconds())
     status = "unknown" if state["status"] in ACTIVE and age > 60 else state["status"]
     if status == "waiting_user" and state["questions"] and not any(q["status"] == "open" for q in state["questions"]):
         status = "waiting_agent"
     return {**state, "task_id": row.task_id, "project_id": row.project_id, "revision": row.revision,
+            "board_url": board_url, "board_url_source": config['source'],
+            "startup_message": f"已开始：{state['title']}\n实时任务看板：{board_url or '入口未配置'}\n当前阶段：{state['current_action'] or '准备'}\n任务 ID：{row.task_id}",
+            "requires_visible_startup": state['source'] != 'tool_call',
             "updated_at": row.updated_at, "reported_status": state["status"],
             "status": status,
             "heartbeat_age_sec": round(age), "observation_scope": "nexus_execution_and_explicit_client_events"}
@@ -216,7 +222,7 @@ def link(owner, task_id, kind, reference):
         if row.project_id and project and row.project_id != project:
             raise ValueError("Agent link project mismatch")
         state = deepcopy(row.state)
-        item = {"kind": kind, "id": reference}
+        item = {"kind": kind, "id": reference, "project_id": project, "app_id": str(obj.get("app_id") or "")}
         if kind == "debug":
             item["task_id"] = str(obj.get("task_id") or "")
         if item not in state["links"] and len(state["links"]) >= 1000:
@@ -250,6 +256,8 @@ def tool_end(owner, task_id, call_id, name, ok, elapsed_ms, status_code=0, reaso
     with session_scope() as db:
         db.execute(sql("BEGIN IMMEDIATE"))
         row = _row(db, owner, task_id)
+        if row.state["status"] in TERMINAL:
+            raise ValueError("Ended agent task cannot receive a new tool result")
         state = deepcopy(row.state)
         _append(db, row, call_id + ":end", {"kind": "tool_finished", "tool": name, "call_id": call_id,
                 "ok": ok, "elapsed_ms": elapsed_ms, "status_code": status_code, "reason_code": str(reason_code)[:128], "summary": "工具返回成功" if ok else "工具返回失败"}, timestamp)

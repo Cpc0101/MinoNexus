@@ -32,12 +32,12 @@ def agent_guide() -> dict[str, Any]:
         "agent_execution": {
             "tools": ["agent_task_start", "agent_task_event", "agent_task_heartbeat", "agent_task_question",
                       "agent_task_answer", "agent_task_acknowledge", "agent_task_link", "agent_task_get", "agent_task_events", "agent_task_list"],
-            "contract": "多步任务开始先 agent_task_start。后续 Mino 工具调用带 agent_task_id；Nexus 自动记录真实调用起止、耗时与引用。客户端本地分析、写文件与其他工具不可见，必须显式 event 和实际心跳。缺省只记录独立 MCP 调用，不推断整个 Agent 在运行。",
+            "contract": "多步任务开始先 agent_task_start，立即在可见对话展示 startup_message/board_url，再执行业务；空地址报告入口未配置。后续 Mino 工具调用带 agent_task_id；Nexus 自动记录真实调用起止、耗时与引用。客户端本地分析、写文件与其他工具不可见，必须显式 event 和实际心跳。缺省只记录独立 MCP 调用，不推断整个 Agent 在运行。",
             "help": "question 立即登记问题；get 读取 answers 后 acknowledge，答案已读取不等于问题解决。Nexus 内置助手问题走原 request/revision 续接；外部 Agent 不可由服务端擅自唤醒。",
             "liveness": "执行中超过60秒未有心跳状态为unknown，保留reported_status；心跳不证明设备动作或测试通过。暂停只能由执行方确认，不用UI点击伪造停止。",
         },
         "visible_receipts": {
-            "per_case": "每条正式用例读回后必须在对话流输出一行：<CASE_ID> PASS|FAIL|SKIPPED|BLOCKED — 断言证据或具体原因。按批输出，不等到最终报告；长时间静默违反契约。",
+            "per_case": "每条回执立即完整输出 case_receipts[].text：身份、环境、预期与实际、证据可用性、原因和下一步，未知不补猜；按 receipt_id 去重，不按 case_id 合并渠道或重跑。按批输出，不等到最终报告；长时间静默违反契约。",
             "help": "缺 OTP、账号、环境、配置、数据或需求歧义，必须在对话流输出 HELP：已查来源、缺失项、需要用户做什么。不得静默等待。",
             "accounts": "禁止编造账号、邮箱、OTP、手机号或业务数据；账号只取 resource.account_*。新账号 0→1 与老账号历史数据分开取证。",
             "alerts": "飞书告警是观察，不是测试证据；没有来源证据不得归因或忽略。",

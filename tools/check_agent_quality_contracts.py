@@ -144,6 +144,12 @@ def check_receipts():
     updated["cases"][0].update(status="blocked", summary='password="fixture secret" token=fixture-token {"otp": "123456"} user=fixture@example.invalid Bearer fixture-bearer')
     safe = project(updated)["case_receipts"][0]
     assert all(value not in safe["text"] for value in ("fixture secret", "fixture-token", "123456", "fixture@example.invalid", "fixture-bearer"))
+    assert receipt["template_version"] == 2
+    assert all(label in receipt["text"] for label in ("执行：", "环境：", "预期：", "实际：", "证据：", "可用性：", "原因码：", "下一步：", "回执："))
+    live["cases"][0].update(summary="登录错误", error="密码错误", last_evidence="", evidence_summary="")
+    assert project(live)["active_cases"][0]["last_evidence"] == ""
+    blocked = deepcopy(doc); blocked["cases"][0].update(status="blocked", summary="部分断言通过，缺历史样本")
+    assert project(blocked)["case_receipts"][0]["status"] == "BLOCKED"
     assert not project(doc)["delivery"]["acknowledged"]
     print("PASS: full-evidence verdict, terminal receipts, deterministic deduplication, incomplete/context-mismatched/multi-device rejection, purpose separation, status inconsistency, redaction")
 

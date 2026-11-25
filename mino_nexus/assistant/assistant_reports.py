@@ -16,17 +16,23 @@ def normalize_base(value: str) -> str:
         return ''
     try:
         parsed = urlsplit(value)
-        address = ipaddress.ip_address(parsed.hostname or '')
         port = parsed.port
+        host = parsed.hostname or ''
+        address = ipaddress.ip_address(host) if ':' in host or host.replace('.', '').isdigit() else None
     except ValueError as exc:
-        raise ValueError('请填写 Workbench 的内网 IP 地址，例如 http://192.168.1.20:60104') from exc
-    if parsed.scheme not in ('http', 'https') or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError('报告地址须为 HTTP/HTTPS 的 Workbench 入口，不能包含账号、查询参数或片段')
-    if address.is_loopback or address.is_unspecified or address.is_multicast or address.is_link_local or not address.is_private:
-        raise ValueError('报告地址须使用可访问的内网 IP，不能使用 localhost、回环或通配地址')
-    host = f'[{address}]' if address.version == 6 else str(address)
+        raise ValueError('请填写有效的 Workbench HTTP/HTTPS 入口') from exc
+    if parsed.scheme not in ('http', 'https') or not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError('Workbench 入口不能包含账号、查询参数或片段')
+    if host.lower() == 'localhost' or any(c.isspace() for c in host) or (address and (address.is_loopback or address.is_unspecified or address.is_multicast or address.is_link_local)):
+        raise ValueError('Workbench 入口不能使用回环、通配或链路本地地址')
+    host = f'[{address}]' if address and address.version == 6 else host.encode('idna').decode('ascii')
     netloc = host + (f':{port}' if port else '')
     return urlunsplit((parsed.scheme, netloc, parsed.path.rstrip('/'), '', ''))
+
+
+def agent_board_url(task_id: str, *, base_url: str) -> str:
+    base = normalize_base(base_url)
+    return f'{base}/testing/agents?{urlencode({"agentTask": task_id})}' if base and task_id else ''
 
 
 def _lan_base() -> str:

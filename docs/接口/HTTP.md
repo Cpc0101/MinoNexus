@@ -746,3 +746,6 @@ Nexus内置Agent由 handle_utterance / continue_request / run_tool 的真实执�
 外部MCP：先 agent_task_start；后续工具 inputSchema 提供 agent_task_id，可关联真实调用。该字段在MCP入口提取，不传入原业务API。未传时只生成 source=tool_call 的独立调用记录，不归并令牌下的不同聊天，不声明客户端其他活动。MCP内容JSON返回 agent_task_id；转发入口同样记录。get/list/heartbeat等 Agent管理工具本身不产生伪业务活动。
 
 记录不保存完整参数、模型私密思维链或Scout图片。工具回执保存起止、耗时、状态码、reason_code、已核实对象引用；调用返回成功不代表测试通过。外部客户端本地分析、写文件和其他工具必须显式上报，不由workflow记录推断。服务端不能擅自唤醒外部Agent。
+
+
+Agent 任务 start/get/list 返回 board_url（账号配置或 MINO_WORKBENCH_PUBLIC_URL，支持 HTTPS 域名）与 startup_message；固定入口 /testing/agents?agentTask=… 不依赖项目选择，仍校验账号归属。客户端必须在业务动作前展示启动消息；空地址明确未配置。case_receipts 模板2包含完整身份/环境/预期/实际/证据/下一步，未知字段不推断，错误摘要不能充当证据引用。保存报告与返回消息不证明外部客户端已展示。

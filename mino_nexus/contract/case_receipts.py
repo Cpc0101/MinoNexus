@@ -45,8 +45,7 @@ def _active_case(case: dict, task: dict, identity: dict, index: int, total: int,
         step_text = _safe_text(steps[step - 1], 120)
     waiting = _safe_text(case.get("waiting_on") or case.get("blocked_on"), 160)
     evidence = _safe_text(
-        case.get("last_evidence") or case.get("evidence_summary") or case.get("summary")
-        or case.get("error") or case.get("failure_stage"), 200,
+        case.get("last_evidence") or case.get("evidence_summary"), 200,
     )
     parts = [f"[{index}/{total}] {identity['case_id']} | {(case.get('status') or 'pending').upper()}"]
     parts.append(f"{elapsed:.0f}s" if elapsed is not None else "elapsed: unknown")
@@ -92,15 +91,27 @@ def project(task: dict) -> dict:
                "last_event_seq": case.get("last_event_seq"), "summary": summary, "reason_code": reason,
                "purpose": reporting}
         receipt_id = hashlib.sha256(json.dumps(key, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        expectation = _safe_text(case.get("expectation") or case.get("expected_result")) or "未上报；需回读锁定原文"
+        environment = _safe_text(case.get("env_profile") or task.get("env_profile") or case.get("channel") or task.get("channel")) or "未上报"
+        evidence = _safe_text(case.get("last_evidence") or case.get("evidence_summary")) or "摘要未提供证据引用；需读取 Scout 封存记录"
+        next_action = {"PASS": "保留封存证据，继续独立条目", "FAIL": "核对原文与封存记录；根因未确认，不直接归因产品或脚本",
+                       "BLOCKED": "登记缺口、已查来源与受影响条目，询问所需条件；继续独立条目",
+                       "SKIPPED": "核对不适用或排除依据；缺资源不应记为跳过",
+                       "UNVERIFIED": "补齐原文覆盖和 Scout 断言证据，不计正式通过"}.get(status, "保留当前记录，核对剩余工作")
+        lines = [f"[{index}/{len(cases)} 执行单元] {identity['case_id']} | {reporting.upper()} | {status} | " + (f"{elapsed / 1000:.1f}s" if elapsed is not None else "耗时未知"),
+                 "执行：" + " | ".join(f"{k}={_safe_text(v) or '未上报'}" for k, v in identity.items()),
+                 f"环境：{environment} | 预期：{expectation}", f"实际：{summary or '未上报'}",
+                 f"证据：{evidence} | 可用性：{_safe_text(case.get('detail_availability')) or '未确认'}",
+                 f"原因码：{reason or '未上报'} | 根因：未确认", f"下一步：{next_action}", f"回执：{receipt_id}"]
         receipts.append({**identity, "receipt_id": receipt_id, "position": index, "total": len(cases),
                          "purpose": reporting, "status": status, "raw_status": case.get("status"),
                          "formal_verdict": status if reporting == "formal" else None,
                          "duration_ms": elapsed, "summary": summary, "reason_code": reason,
                          "summary_version": case.get("summary_version"), "last_event_seq": case.get("last_event_seq"),
                          "detail_availability": case.get("detail_availability"), "requires_visible_receipt": True,
-                         "text": f"[{index}/{len(cases)}] {identity['case_id']} | {reporting.upper()} | {status}"
-                                 + (f" | {elapsed / 1000:.1f}s" if elapsed is not None else "")
-                                 + (f" | {summary}" if summary else "")})
+                         "template_version": 2, "environment": environment, "expectation": expectation,
+                         "evidence_summary": evidence, "next_action": next_action,
+                         "text": "\n".join(lines)})
     return {"case_receipts": receipts, "active_cases": active,
             "execution_pending": bool(active),
             "status_issue": "task_terminal_with_active_cases" if active and task.get("status") not in

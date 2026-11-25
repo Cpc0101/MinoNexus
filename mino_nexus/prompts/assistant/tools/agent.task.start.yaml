@@ -1,6 +1,6 @@
 id: agent.task.start
 title: 登记 Agent 任务
-description: 开始多步任务前登记。后续每次 Mino 工具调用传 agent_task_id=本 task_id；本地文件、分析等不可见动作显式 event，上报问题用 question。
+description: 开始多步任务前登记，立即在可见对话输出返回的 startup_message 和 board_url，再开展业务动作；地址为空明确提示入口未配置，不自行拼接。后续每次 Mino 工具调用传 agent_task_id=本 task_id；本地文件、分析等不可见动作显式 event，上报问题用 question。
 route: POST /assistant/agent-tasks/{task_id}/start
 risk: write
 async: false
