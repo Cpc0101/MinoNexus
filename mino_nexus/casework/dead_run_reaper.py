@@ -87,12 +87,21 @@ def settle_terminal(task_id: str) -> dict[str, Any]:
     rows = records.for_task(task_id)
     if not rows or any(row.get("status") not in records.TERMINAL for row in rows):
         return {"task_id": task_id, "finalized": False, "reason_code": "records_still_open"}
+    # A sealed summary is Scout's own durable final word. A terminal row that was
+    # never sealed (retired worker, or a record closed after its worker died) has no
+    # stop proof that can ever arrive, so it must not be settled on that evidence.
+    unsealed = [str(row.get("session_id") or "") for row in rows
+                if (row.get("summary") or {}).get("sealed") is not True]
+    if unsealed:
+        return {"task_id": task_id, "finalized": False, "reason_code": "records_not_sealed",
+                "unsealed_sessions": unsealed}
     statuses = [str(row.get("status") or "") for row in rows]
     status = "failed" if "failed" in statuses else ("cancelled" if "cancelled" in statuses else "done")
     isolated = bool(protected(task_id))
     finished = run_store.finish(
         task_id, status=status, reason_code="record_terminal_missed_projection",
-        error="Scout 记录已终结但任务未投影；按记录终态结算", release=not isolated)
+        error="Scout 记录已终结但任务未投影；按记录终态结算", release=not isolated,
+        terminal_records_confirmed=True)
     return {
         "task_id": task_id, "finalized": True, "status": str(finished.get("status") or ""),
         "reason_code": "record_terminal_missed_projection",

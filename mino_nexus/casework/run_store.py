@@ -988,7 +988,8 @@ def _close_open_sessions(doc: dict[str, Any], *, summary: str = "") -> None:
 
 
 def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: str = "",
-           retired_workers: list[dict[str, Any]] | None = None, release: bool = True) -> dict[str, Any]:
+           retired_workers: list[dict[str, Any]] | None = None, release: bool = True,
+           terminal_records_confirmed: bool = False) -> dict[str, Any]:
     doc = get(run_id)
     if not doc:
         raise KeyError(run_id)
@@ -1006,7 +1007,11 @@ def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: s
         return cancel_run(run_id, reason=error or "等待 Scout 确认停止")["doc"]
     if retired_workers:
         doc["retired_workers"] = [dict(item) for item in retired_workers]
-    if doc.get("execution_kind") == "debug" and doc.get("cancel_requested") and not retired_ids:
+    # `terminal_records_confirmed` means every attempt row already carries a sealed
+    # terminal summary: the worker has reported and cannot still be running, so a
+    # missing Web lane receipt only keeps isolation, not the run itself, open.
+    if (doc.get("execution_kind") == "debug" and doc.get("cancel_requested")
+            and not retired_ids and not terminal_records_confirmed):
         if not records or any(not release_evidence_confirmed(row) for row in records):
             return cancel_run(run_id, reason=error or "等待 Scout 确认停止", release=False)["doc"]
     if status == "cancelled":
