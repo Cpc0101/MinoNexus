@@ -73,9 +73,11 @@ def board(owner, project_id):
                         'updated_at': task.get('finished_at') or task.get('started_at'), 'board_url': task['report_url']})
             for req in requirements:
                 req['target_nodes'] = list(nodes[req['id']].values())
-                covered = {n['app_id'] for n in req['target_nodes']}
+                covered = {(n['app_id'], n.get('platform') or '') for n in req['target_nodes']}
                 for aid in req['app_ids'] or apps:
-                    if aid in apps and aid not in covered:
+                    if aid in apps:
                         for platform in str(apps[aid].get('platforms') or '').split(','):
+                            if (aid, platform.strip()) in covered:
+                                continue
                             req['target_nodes'].append({'app_id': aid, 'app_name': apps[aid]['name'], 'platform': platform.strip(), 'environment': '', 'tasks': []})
             return {'requirements': requirements}

@@ -39,7 +39,8 @@ def main():
                 else:
                     raise AssertionError('Invalid target accepted')
             projected = requirements.board('owner', 'PRJ')['requirements'][0]
-            assert len(projected['target_nodes']) == 1 and len(projected['target_nodes'][0]['tasks']) == 2
+            assert len(projected['target_nodes']) == 2 and len(projected['target_nodes'][0]['tasks']) == 2
+            assert projected['target_nodes'][1]['platform'] == 'ios' and not projected['target_nodes'][1]['tasks']
             assert tasks.get('owner', 'a')['presentation']['environment'] == 'Fixture Web · web · pre'
             requirements.bind('owner', 'b', 'REQ', 'APP', 'ios', 'test')
             assert len(requirements.board('owner', 'PRJ')['requirements'][0]['target_nodes']) == 2
