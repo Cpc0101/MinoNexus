@@ -10,6 +10,7 @@ on:
         options:
           - report
           - free-disk
+          - deep-disk
 
 permissions:
   contents: read
@@ -69,6 +70,23 @@ jobs:
             sh -c 'df -h /data; du -sh /data/* 2>/dev/null | sort -h | tail -n 20' 2>&1 | tail -n 30 || true
           echo '== nexus logs =='
           docker logs --tail 40 mino-production-nexus-1 2>&1 | tail -n 40 || true
+          REMOTE
+
+      - name: Reclaim unused container images older than two days
+        if: inputs.task == 'deep-disk'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/maintenance -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "TENCENT_DEPLOY_DIR='$TENCENT_DEPLOY_DIR' bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo '== before =='
+          df -h /
+          docker image prune -af --filter 'until=48h' || true
+          docker builder prune -af || true
+          echo '== after =='
+          df -h /
+          docker system df
+          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
           REMOTE
 
       - name: Reclaim space from stale deploy backups and unused images
