@@ -302,8 +302,13 @@ def run_cases(
             for dsn in device_sns
             for i, c in enumerate(cases)
         ]
+    from mino_nexus.loop.script_targets import DEFAULT_WEB_CAPABILITIES
     for seeded_case in seeded:
         seeded_case["platform"] = platforms_by_sn[seeded_case["sn"]]
+        if seeded_case["platform"] == "web" and not seeded_case.get("web_capabilities"):
+            # Debug and scripted Web runs have no ProjectCase grant; the baseline is
+            # what a scripted browser run needs to open pages, read state and copy.
+            seeded_case["web_capabilities"] = list(DEFAULT_WEB_CAPABILITIES)
 
     provider, gate = resolve_regression_provider(str(provider_id or "").strip() or None)
     from mino_nexus.loop.step_pointer import compute_case_wall_budget_sec

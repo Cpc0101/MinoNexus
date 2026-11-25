@@ -359,6 +359,7 @@ def seed_case(run_id: str, raw: dict[str, Any], index: int, *, sn: str = "", cov
         "expected_raw": expected_raw,
         "engine_steps": [],
         "platform": str(raw.get("platform") or "").strip(),
+        "web_capabilities": [str(x) for x in (raw.get("web_capabilities") or [])],
         "script_path": str(raw.get("script_path") or "").strip(),
         "requirement_id": str(raw.get("requirement_id") or "").strip(),
         "point_ids": [str(x).strip() for x in (raw.get("point_ids") or []) if str(x).strip()],

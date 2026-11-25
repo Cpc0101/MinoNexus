@@ -9,7 +9,7 @@ _WALL_BUDGET_SEC = 600
 # Script-target dispatch carries no ProjectCase row, so a Web script would otherwise
 # reach the Scout with an empty grant and be blocked at admission. This baseline is
 # what a scripted UI run needs to open pages, read state through JS and copy evidence.
-_DEFAULT_WEB_CAPABILITIES = ("navigation", "javascript_execution", "clipboard", "network_observation", "browser_errors")
+DEFAULT_WEB_CAPABILITIES = ("navigation", "javascript_execution", "clipboard", "network_observation", "browser_errors")
 
 
 def normalize_script_targets(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -82,7 +82,7 @@ def expand_script_targets(
             stored = get_case(project_id, cid) or {}
             granted = list(stored.get("web_capabilities") or [])
             if not granted and platform == "web":
-                granted = list(_DEFAULT_WEB_CAPABILITIES)
+                granted = list(DEFAULT_WEB_CAPABILITIES)
             cases.append({
                 "case_id": cid,
                 "name": cid,
