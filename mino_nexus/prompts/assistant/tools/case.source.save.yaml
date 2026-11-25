@@ -1,0 +1,29 @@
+id: case.source.save
+title: 注册用例来源
+description: 把需求原文（飞书表格、文件或用例 API）注册为项目用例来源，返回 source_id 和 generation；随后用 case.source.read 读取并锁定 expected_units。sheets 来源需要能读取飞书的 Scout 节点。已有来源的改绑在 Workbench 里做，本工具只新建。
+route: POST /project/{project_id}/case-sources
+risk: write
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id:
+      type: string
+      minLength: 1
+      description: 项目 id 或项目名
+    kind:
+      type: string
+      enum: [sheets, file, upload, case_api]
+      description: 来源类型；飞书文档里的用例表用 sheets
+    configuration:
+      type: object
+      description: sheets 需要 node_id 与 spreadsheet_token（或 wiki_token）、sheet_id、range、columns（external_case_no/steps_raw/expected_raw 的列号）和 header_rows；file 需要 node_id 与 path；case_api 需要 node_id 和远端项目配置
+  required: [project_id, kind, configuration]
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true
