@@ -58,6 +58,8 @@ def _append(db, row, event_id, payload, timestamp):
 
 def create(owner, task_id, title, project_id="", source="external_agent"):
     owner, task_id, title = text(owner, "owner", 128), text(task_id, "task_id", 128), text(title, "title", 500)
+    if "/" in task_id or "\\" in task_id:
+        raise ValueError("Agent task ID cannot contain path separators")
     project_id = text(project_id, "project_id", 128, required=False)
     if source not in {"external_agent", "nexus_agent", "tool_call"}:
         raise ValueError("Invalid agent source")

@@ -89,7 +89,11 @@ def project(task: dict) -> dict:
         elapsed = elapsed if type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0 else None
         key = {**identity, "position": index, "status": status, "summary_version": case.get("summary_version"),
                "last_event_seq": case.get("last_event_seq"), "summary": summary, "reason_code": reason,
-               "purpose": reporting}
+               "purpose": reporting, "duration_ms": elapsed,
+               "evidence": _safe_text(case.get("last_evidence") or case.get("evidence_summary")),
+               "detail_availability": case.get("detail_availability"),
+               "environment": _safe_text(case.get("env_profile") or task.get("env_profile") or case.get("channel") or task.get("channel")),
+               "expectation": _safe_text(case.get("expectation") or case.get("expected_result"))}
         receipt_id = hashlib.sha256(json.dumps(key, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         expectation = _safe_text(case.get("expectation") or case.get("expected_result")) or "未上报；需回读锁定原文"
         environment = _safe_text(case.get("env_profile") or task.get("env_profile") or case.get("channel") or task.get("channel")) or "未上报"
