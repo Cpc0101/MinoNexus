@@ -163,6 +163,8 @@ async def recover_stopped(task_id: str):
         # A run whose Scout worker generation is retired can never report again.
         # Without this the doc stays "running" forever and its leases never settle.
         retired, retired_reason = dead_run_reaper.retired_records(doc)
+        if retired_reason == "records_terminal":
+            return dead_run_reaper.settle_terminal(task_id)
         if not retired:
             from mino_nexus.core.log import SLog
             SLog.i("WriteSafety", f"retire probe refused task={task_id[:20]} reason={retired_reason}")

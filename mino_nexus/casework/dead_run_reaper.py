@@ -35,9 +35,14 @@ def retired_records(doc: dict[str, Any] | None) -> tuple[list[dict[str, Any]], s
     task_id = str((doc or {}).get("run_id") or "")
     if not task_id:
         return [], "task_id_missing"
-    rows = [row for row in records.for_task(task_id) if row.get("status") not in records.TERMINAL]
-    if not rows:
+    all_rows = records.for_task(task_id)
+    rows = [row for row in all_rows if row.get("status") not in records.TERMINAL]
+    if not all_rows:
         return [], "no_live_record"
+    # A worker can finish writing its terminal record right after the run doc was
+    # read; the projection then never fires and the run stays "running".
+    if not rows:
+        return [], "records_terminal"
     now = datetime.now(timezone.utc).timestamp()
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -66,6 +71,37 @@ def retired_records(doc: dict[str, Any] | None) -> tuple[list[dict[str, Any]], s
             "record_age_sec": round(age, 1),
         })
     return out, RETIRED_REASON
+
+
+def settle_terminal(task_id: str) -> dict[str, Any]:
+    """Settle a live run whose Scout records are all terminal already."""
+    from mino_nexus.casework import run_store
+    from mino_nexus.casework.run_write_safety import protected
+    from mino_nexus.resources import scout_record_store as records
+
+    doc = run_store.get(task_id)
+    if not doc:
+        raise ValueError("task_not_found")
+    if not run_store.task_is_live(doc):
+        return {"task_id": task_id, "finalized": False, "reason_code": "task_already_finished"}
+    rows = records.for_task(task_id)
+    if not rows or any(row.get("status") not in records.TERMINAL for row in rows):
+        return {"task_id": task_id, "finalized": False, "reason_code": "records_still_open"}
+    statuses = [str(row.get("status") or "") for row in rows]
+    status = "failed" if "failed" in statuses else ("cancelled" if "cancelled" in statuses else "done")
+    isolated = bool(protected(task_id))
+    finished = run_store.finish(
+        task_id, status=status, reason_code="record_terminal_missed_projection",
+        error="Scout 记录已终结但任务未投影；按记录终态结算", release=not isolated)
+    return {
+        "task_id": task_id, "finalized": True, "status": str(finished.get("status") or ""),
+        "reason_code": "record_terminal_missed_projection",
+        "terminal_records": [{"session_id": row.get("session_id"), "status": row.get("status")} for row in rows],
+        "resource_isolated": bool(protected(task_id)),
+        "business_result_unchanged": True,
+        "isolation_exit": {"committed": False, "blocked_reason": "baseline_recheck_required" if isolated else "",
+                           "release_path": "write-safety/baseline" if isolated else ""},
+    }
 
 
 def finalize(task_id: str, retired: list[dict[str, Any]]) -> dict[str, Any]:
