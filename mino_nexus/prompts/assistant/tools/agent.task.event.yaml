@@ -5,7 +5,7 @@ route: POST /assistant/agent-tasks/{task_id}/event
 risk: write
 async: false
 version: 1
-params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "event_id": {"type": "string", "minLength": 1, "maxLength": 128}, "status": {"type": "string", "enum": ["running", "waiting_tool", "waiting_user", "paused", "completed", "failed", "cancelled"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 2000}, "evidence": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}}, "required": ["task_id", "event_id", "summary"]}
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "event_id": {"type": "string", "minLength": 1, "maxLength": 128}, "status": {"type": "string", "enum": ["running", "waiting_tool", "waiting_user", "paused", "completed", "failed", "cancelled"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 2000}, "evidence": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}, "phase": {"type": "string", "enum": ["analysis", "case_design", "authoring", "preparation", "verification", "report"]}, "startup_delivered": {"type": "boolean", "description": "先在可见对话发出 startup_message，再用本 event 确认；summary 必须含返回的 board_url。仅为客户端发送声明，不代表用户已读。"}, "scope": {"type": "string", "minLength": 1, "maxLength": 2000}, "environment": {"type": "string", "minLength": 1, "maxLength": 2000}, "next_action": {"type": "string", "minLength": 1, "maxLength": 2000}}, "required": ["task_id", "event_id", "summary"]}
 result_pick: [data]
 card: answer
 surfaces: [mcp]

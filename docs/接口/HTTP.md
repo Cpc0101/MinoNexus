@@ -730,11 +730,11 @@ Agent任务与测试工作流、Scout执行任务分开。真源是 agent_tasks 
 
 | 方法 | 路径 | 契约 |
 |---|---|---|
-| GET | `/assistant/agent-tasks` | 当前账号列表；project_id 可选、limit≤100、offset；返回真实 total；无项目表示本人全部，不混入他人 |
+| GET | `/assistant/agent-tasks` | 当前账号列表；project_id 可选、limit≤100、offset、view=tasks/calls/all（默认业务 tasks 排除 tool_call）；活跃业务优先；返回真实 total；无项目表示本人全部，不混入他人 |
 | GET | `/assistant/agent-tasks/{task_id}` | reported_status/status、当前动作、真实心跳、活跃调用、问题与关联；超过60秒未有心跳的 active 状态派生 unknown，保留最后 reported_status |
 | GET | `/assistant/agent-tasks/{task_id}/events` | limit≤200；缺省最近事件倒序；before_seq 读取更早，after_seq 读取之后事件升序；两游标不能同时使用 |
-| POST | `/assistant/agent-tasks/{task_id}/start` | title/project_id；外部Agent任务登记，重复ID不得改变身份；项目必须真实可见 |
-| POST | `/assistant/agent-tasks/{task_id}/event` | event_id/summary/status/evidence；当前动作、等待、暂停、结束等显式客户端事件；活跃工具未核对不能宣称结束 |
+| POST | `/assistant/agent-tasks/{task_id}/start` | title/project_id/scope/environment；外部Agent任务登记，重复ID不得改变身份；项目必须真实可见 |
+| POST | `/assistant/agent-tasks/{task_id}/event` | event_id/summary/status/evidence/phase/next_action/scope/environment/startup_delivered；当前动作、等待、暂停、结束等显式客户端事件；活跃工具未核对不能宣称结束 |
 | POST | `/assistant/agent-tasks/{task_id}/heartbeat` | 实际仍执行时续报；不代表有业务进展或Scout动作停止 |
 | POST | `/assistant/agent-tasks/{task_id}/question` | event_id/question_id/question/missing/evidence；问题立即登记，进入waiting_user |
 | POST | `/assistant/agent-tasks/{task_id}/answer` | event_id/question_id/answer；答案不可覆盖；已回答未读取派生waiting_agent，不伪造外部客户端恢复 |
@@ -743,9 +743,14 @@ Agent任务与测试工作流、Scout执行任务分开。真源是 agent_tasks 
 
 Nexus内置Agent由 handle_utterance / continue_request / run_tool 的真实执行入口采集，模型等待也记录起止和耗时。执行期间服务端每20秒续报心跳；离开执行作用域停止心跳。内置Agent状态不能经上述客户端事件API伪造，用户回答仍走原 `/assistant/requests/{request_id}/respond`，校验原revision并在同一Agent任务续接。
 
-外部MCP：先 agent_task_start；后续工具 inputSchema 提供 agent_task_id，可关联真实调用。该字段在MCP入口提取，不传入原业务API。未传时只生成 source=tool_call 的独立调用记录，不归并令牌下的不同聊天，不声明客户端其他活动。MCP内容JSON返回 agent_task_id；转发入口同样记录。get/list/heartbeat等 Agent管理工具本身不产生伪业务活动。
+外部MCP：先 agent_task_start；后续工具 inputSchema 提供 agent_task_id，可关联真实调用。该字段在MCP入口提取，不传入原业务API。测试及工作流入口未传业务 agent_task_id 时返回 agent_task_binding_required，未声明发送时返回 agent_task_startup_required；只读非门禁调用未传时生成 source=tool_call 的诊断记录，不归并令牌下的不同聊天，不声明客户端其他活动。MCP内容JSON返回 agent_task_id；转发入口同样记录。get/list/heartbeat等 Agent管理工具本身不产生伪业务活动。
 
 记录不保存完整参数、模型私密思维链或Scout图片。工具回执保存起止、耗时、状态码、reason_code、已核实对象引用；调用返回成功不代表测试通过。外部客户端本地分析、写文件和其他工具必须显式上报，不由workflow记录推断。服务端不能擅自唤醒外部Agent。
 
 
 Agent 任务 start/get/list 返回 board_url（账号配置或 MINO_WORKBENCH_PUBLIC_URL，支持 HTTPS 域名）与 startup_message；固定入口 /testing/agents?agentTask=… 不依赖项目选择，仍校验账号归属。客户端必须在业务动作前展示启动消息；空地址明确未配置。case_receipts 模板2包含完整身份/环境/预期/实际/证据/下一步，未知字段不推断，错误摘要不能充当证据引用。保存报告与返回消息不证明外部客户端已展示。
+
+
+start 后客户端立即可见发送 startup_message，再 event(startup_delivered=true,summary 含精确 board_url) 声明发送。该字段只能为 true，地址为空或 summary 缺 URL 拒绝；不证明用户已读。debug_case_execute/case_run 还必须关联已锁定的来源工作流，未关联或 drafting 返回 case_source_not_locked。不按账号最新任务、token、标题猜测绑定；显式 ID 无效时拒绝。每次绑定调用回传原 task_id/board_url/startup_message/requires_visible_startup，便于压缩后续接。
+
+presentation 只读取同账号显式关联的工作流和执行记录，提供 scope/environment/phase_label/action/next_action/workflows/execution。完整范围覆盖与最近执行结果分开。工具调用仅变更活跃调用与真实心跳，不覆盖业务动作；问题未回答或答案未读取时保留等待状态。客户端本地未上报的动作始终未知。

@@ -11,6 +11,11 @@ router = APIRouter(prefix="/agent-tasks", tags=["Agent tasks"])
 class AgentTaskBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: str | None = None
+    scope: str | None = None
+    environment: str | None = None
+    phase: str | None = None
+    next_action: str | None = None
+    startup_delivered: bool | None = None
     project_id: str | None = None
     event_id: str | None = None
     status: str | None = None
@@ -41,8 +46,8 @@ def _call(fn, *args):
 
 @router.get("")
 def list_agent_tasks(project_id: str = "", limit: int = Query(50, ge=1, le=100),
-                     offset: int = Query(0, ge=0), sess: dict = Depends(current_session)):
-    return _call(agent_tasks.listing, _owner(sess), project_id, limit, offset)
+                     offset: int = Query(0, ge=0), view: str = "tasks", sess: dict = Depends(current_session)):
+    return _call(agent_tasks.listing, _owner(sess), project_id, limit, offset, view)
 
 
 @router.get("/{task_id}")
@@ -61,7 +66,7 @@ def update_agent_task(task_id: str, operation: str, body: AgentTaskBody, sess: d
     args = body.model_dump(exclude_unset=True)
     uid = _owner(sess)
     if operation == "start":
-        return _call(agent_tasks.create, uid, task_id, args.get("title"), args.get("project_id", ""))
+        return _call(agent_tasks.create, uid, task_id, args.get("title"), args.get("project_id", ""), "external_agent", args.get("scope", ""), args.get("environment", ""))
     if operation == "link":
         return _call(agent_tasks.link, uid, task_id, args.get("kind"), args.get("reference"))
     if operation not in {"event", "heartbeat", "question", "answer", "acknowledge"}:

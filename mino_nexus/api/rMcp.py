@@ -49,7 +49,10 @@ def _task_schema(spec):
     if not str(spec.get("id") or "").startswith("agent.task."):
         schema.setdefault("properties", {})["agent_task_id"] = {
             "type": "string", "minLength": 1, "maxLength": 128,
-            "description": "关联 agent_task_start 返回的 Agent 任务。缺省仅记录独立 MCP 调用，不推断客户端其他活动。"}
+            "description": "传 agent_task_start 返回的稳定 task_id；先展示 startup_message 并通过 agent_task_event(startup_delivered=true) 确认，再执行业务。不能省略后新建独立调用。"}
+        from mino_nexus.contract.agent_task_policy import requires_task
+        if requires_task(str(spec.get("id") or "")):
+            schema.setdefault("required", []).append("agent_task_id")
     return schema
 
 

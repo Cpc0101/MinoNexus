@@ -112,7 +112,31 @@ def tracked_mcp(fn):
         if name.startswith("agent_task_") or uid == "system:probe":
             return fn(uid, name, args)
         args = dict(args) if isinstance(args, dict) else {}
+        from mino_nexus.contract.agent_task_policy import requires_task
+        import json
+        guarded = requires_task(name)
         supplied = args.pop("agent_task_id", "")
+        def rejected(code, message, state=None):
+            payload = {"reason_code": code, "message": message,
+                       "required_action": "agent_task_start → 可见输出 startup_message → agent_task_event(startup_delivered=true, summary 含 board_url) → 原 task_id 继续调用"}
+            if state:
+                payload.update({key: state[key] for key in ("task_id", "board_url", "startup_message", "requires_visible_startup")})
+            return {"isError": True, "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+        if guarded and not supplied:
+            return rejected("agent_task_binding_required", "测试及工作流动作必须绑定业务任务；不得创建独立调用代替任务看板")
+        if supplied:
+            try:
+                state = tasks.get(uid, str(supplied))
+            except (ValueError, KeyError, PermissionError):
+                return rejected("agent_task_binding_invalid", "任务不存在或不属于当前账号，请提供原业务任务 ID")
+            if state["reported_status"] in tasks.TERMINAL or state["source"] == "tool_call":
+                return rejected("agent_task_binding_invalid", "不能绑定已结束任务或独立调用", state)
+            if guarded and state["source"] == "external_agent" and state["requires_visible_startup"]:
+                return rejected("agent_task_startup_required", "先在对话发送以下看板链接，再上报发送声明；声明不代表用户已读", state)
+            if name in {"debug_case_execute", "case_run"} and state["source"] == "external_agent":
+                flows = state["presentation"].get("workflows", [])
+                if not flows or flows[0]["source_status"] == "drafting":
+                    return rejected("case_source_not_locked", "人工用例未锁定：先补写并发布源用例，再机器回读锁定；不能绕过后直接测试", state)
         if supplied:
             task_id = str(supplied)
             standalone = False
@@ -141,7 +165,9 @@ def tracked_mcp(fn):
                 except (TypeError, ValueError):
                     continue
                 if isinstance(payload, dict):
-                    content["text"] = json.dumps({**payload, "agent_task_id": task_id}, ensure_ascii=False)
+                    state = tasks.get(uid, task_id)
+                    content["text"] = json.dumps({**payload, "agent_task_id": task_id,
+                        **{key: state[key] for key in ("board_url", "startup_message", "requires_visible_startup")}}, ensure_ascii=False)
                     break
         return result
     return wrapper

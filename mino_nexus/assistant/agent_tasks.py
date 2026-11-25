@@ -1,7 +1,7 @@
 """Observe execution, not model thoughts or Scout test verdicts."""
 from copy import deepcopy
 from datetime import datetime, timezone
-from sqlalchemy import text as sql
+from sqlalchemy import text as sql, case as sql_case
 from mino_nexus.contract.agent_workflow import text, facts
 from mino_nexus.core.database import session_scope
 from mino_nexus.models.agent_task import AgentTask, AgentTaskEvent
@@ -16,7 +16,7 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def view(row):
+def view(row, db=None):
     state = deepcopy(row.state)
     from mino_nexus.assistant.assistant_reports import configuration, agent_board_url
     config = configuration(row.owner_user_id)
@@ -26,10 +26,12 @@ def view(row):
     status = "unknown" if state["status"] in ACTIVE and age > 60 else state["status"]
     if status == "waiting_user" and state["questions"] and not any(q["status"] == "open" for q in state["questions"]):
         status = "waiting_agent"
-    return {**state, "task_id": row.task_id, "project_id": row.project_id, "revision": row.revision,
+    from mino_nexus.assistant.agent_task_projection import project
+    presentation = project(db, row) if db is not None else {}
+    return {**state, "presentation": presentation, "task_id": row.task_id, "project_id": row.project_id, "revision": row.revision,
             "board_url": board_url, "board_url_source": config['source'],
-            "startup_message": f"已开始：{state['title']}\n实时任务看板：{board_url or '入口未配置'}\n当前阶段：{state['current_action'] or '准备'}\n任务 ID：{row.task_id}",
-            "requires_visible_startup": state['source'] != 'tool_call',
+            "startup_message": f"已开始：{state['title']}\n实时任务看板：{board_url or '入口未配置'}\n测试范围：{presentation.get('scope') or state['title']}\n环境：{presentation.get('environment') or '尚未上报'}\n当前阶段：{presentation.get('phase_label') or '尚未上报'}\n当前动作：{presentation.get('action') or '尚未上报'}\n下一步：{presentation.get('next_action') or '尚未上报'}\n任务 ID：{row.task_id}",
+            "requires_visible_startup": state['source'] != 'tool_call' and not state.get('startup_delivered', False),
             "updated_at": row.updated_at, "reported_status": state["status"],
             "status": status,
             "heartbeat_age_sec": round(age), "observation_scope": "nexus_execution_and_explicit_client_events"}
@@ -57,7 +59,7 @@ def _append(db, row, event_id, payload, timestamp):
     return True
 
 
-def create(owner, task_id, title, project_id="", source="external_agent"):
+def create(owner, task_id, title, project_id="", source="external_agent", scope="", environment=""):
     owner, task_id, title = text(owner, "owner", 128), text(task_id, "task_id", 128), text(title, "title", 500)
     if "/" in task_id or "\\" in task_id:
         raise ValueError("Agent task ID cannot contain path separators")
@@ -69,6 +71,7 @@ def create(owner, task_id, title, project_id="", source="external_agent"):
         from mino_nexus.platform.identity import execution_user
         with execution_user(owner):
             require_project(project_id)
+    scope, environment = text(scope, "scope", required=False), text(environment, "environment", required=False)
     timestamp = now()
     with session_scope() as db:
         db.execute(sql("BEGIN IMMEDIATE"))
@@ -78,30 +81,34 @@ def create(owner, task_id, title, project_id="", source="external_agent"):
                 raise ValueError("Agent task identity differs")
         else:
             row = AgentTask(owner_user_id=owner, task_id=task_id, project_id=project_id,
-                            state={"title": title, "source": source, "status": "running", "current_action": "",
+                            state={"title": title, "scope": scope, "environment": environment, "phase": "analysis" if source == "external_agent" else "", "next_action": "", "startup_delivered": False, "source": source, "status": "running", "current_action": "",
                                    "started_at": timestamp, "finished_at": "", "last_heartbeat_at": timestamp,
                                    "active_calls": {}, "questions": [], "links": [], "request_id": ""},
                             updated_at=timestamp, revision=0, next_seq=1)
             db.add(row)
             _append(db, row, "start", {"kind": "task_started", "summary": title}, timestamp)
-        return view(row)
+        return view(row, db)
 
 
 def get(owner, task_id):
     with session_scope() as db:
-        return view(_row(db, owner, task_id))
+        return view(_row(db, owner, task_id), db)
 
 
-def listing(owner, project_id="", limit=50, offset=0):
+def listing(owner, project_id="", limit=50, offset=0, view_kind="tasks"):
     with session_scope() as db:
         query = db.query(AgentTask).filter(AgentTask.owner_user_id == owner)
         if project_id:
             query = query.filter(AgentTask.project_id == project_id)
+        if view_kind not in {"tasks", "calls", "all"}:
+            raise ValueError("Invalid agent task view")
+        if view_kind != "all":
+            query = query.filter(AgentTask.state["source"].as_string() == "tool_call" if view_kind == "calls" else AgentTask.state["source"].as_string() != "tool_call")
         total = query.count()
-        rows = query.order_by(AgentTask.updated_at.desc(), AgentTask.task_id).offset(offset).limit(limit).all()
+        rows = query.order_by(sql_case((AgentTask.state["status"].as_string().in_(TERMINAL), 1), else_=0), AgentTask.updated_at.desc(), AgentTask.task_id).offset(offset).limit(limit).all()
         items = []
         for row in rows:
-            item = view(row)
+            item = view(row, db)
             item["pending_questions"] = sum(q["status"] == "open" for q in item.pop("questions"))
             item.pop("active_calls")
             items.append(item)
@@ -134,7 +141,7 @@ def mutate(owner, task_id, operation, args):
             if state["status"] not in TERMINAL:
                 state["last_heartbeat_at"] = timestamp
                 row.state, row.updated_at, row.revision = state, timestamp, row.revision + 1
-            return view(row)
+            return view(row, db)
         event_id = text(args.get("event_id"), "event_id", 128)
         if operation == "event":
             status = args.get("status", "running")
@@ -142,12 +149,28 @@ def mutate(owner, task_id, operation, args):
                 raise ValueError("Invalid agent task status")
             if state["active_calls"] and status in TERMINAL:
                 raise ValueError("Reconcile active tool calls before ending agent task")
-            payload = {"kind": "agent_activity", "summary": text(args.get("summary"), "summary"),
+            from mino_nexus.contract.agent_task_policy import PHASES
+            extra = {}
+            if "phase" in args:
+                if args["phase"] not in PHASES:
+                    raise ValueError("Invalid task phase")
+                extra["phase"] = args["phase"]
+            for field in ("next_action", "scope", "environment"):
+                if field in args:
+                    extra[field] = text(args[field], field)
+            if "startup_delivered" in args:
+                if args["startup_delivered"] is not True:
+                    raise ValueError("startup_delivered must be true")
+                url = view(row, db)["board_url"]
+                if not url or url not in str(args.get("summary") or ""):
+                    raise ValueError("Post the startup message with the board URL, then acknowledge that exact URL")
+                extra["startup_delivered"] = True
+            payload = {**extra, "kind": "agent_activity", "summary": text(args.get("summary"), "summary"),
                        "status": status, "evidence": facts(args.get("evidence", []))}
             if state["status"] in TERMINAL:
                 previous = db.query(AgentTaskEvent).filter_by(owner_user_id=owner, task_id=task_id, event_id=event_id).first()
                 if previous and previous.payload == payload:
-                    return view(row)
+                    return view(row, db)
                 raise ValueError("Ended agent task is immutable; start a new task")
             if status in TERMINAL and state["source"] == "external_agent":
                 for reference in state["links"]:
@@ -157,6 +180,7 @@ def mutate(owner, task_id, operation, args):
                     if workflow is None or workflow.state.get("delivery_status") not in {"delivered", "delivered_with_gaps"} or not any(r.get("final") for r in workflow.state.get("reports", [])):
                         raise ValueError("Final workflow report required before ending Agent task: " + reference["id"])
             if _append(db, row, event_id, payload, timestamp):
+                state.update(extra)
                 state["status"], state["current_action"] = status, payload["summary"]
                 state["last_heartbeat_at"] = timestamp
                 if status in TERMINAL:
@@ -190,7 +214,7 @@ def mutate(owner, task_id, operation, args):
             if state["status"] in TERMINAL:
                 previous = db.query(AgentTaskEvent).filter_by(owner_user_id=owner, task_id=task_id, event_id=event_id).first()
                 if previous and previous.payload == payload:
-                    return view(row)
+                    return view(row, db)
                 raise ValueError("Ended agent task is immutable; start a new task")
             if _append(db, row, event_id, payload, timestamp):
                 if operation == "answer":
@@ -203,7 +227,7 @@ def mutate(owner, task_id, operation, args):
         else:
             raise ValueError("Invalid agent task operation")
         row.state = state
-        return view(row)
+        return view(row, db)
 
 
 def link(owner, task_id, kind, reference):
@@ -242,7 +266,7 @@ def link(owner, task_id, kind, reference):
             state["links"].append(item)
             row.state = state
             row.project_id = row.project_id or project
-        return view(row)
+        return view(row, db)
 
 
 def tool_begin(owner, task_id, call_id, name, label):
@@ -256,8 +280,8 @@ def tool_begin(owner, task_id, call_id, name, label):
         if len(state["active_calls"]) >= 64:
             raise ValueError("Agent active call limit reached")
         _append(db, row, call_id + ":start", {"kind": "tool_started", "tool": name, "call_id": call_id, "summary": label}, timestamp)
-        state["active_calls"][call_id] = {"tool": name, "started_at": timestamp}
-        state.update(status="waiting_tool", current_action=label, last_heartbeat_at=timestamp)
+        state["active_calls"][call_id] = {"tool": name, "started_at": timestamp, "return_status": state["status"]}
+        state.update(status="waiting_tool", last_heartbeat_at=timestamp)
         row.state = state
 
 
@@ -271,8 +295,9 @@ def tool_end(owner, task_id, call_id, name, ok, elapsed_ms, status_code=0, reaso
         state = deepcopy(row.state)
         _append(db, row, call_id + ":end", {"kind": "tool_finished", "tool": name, "call_id": call_id,
                 "ok": ok, "elapsed_ms": elapsed_ms, "status_code": status_code, "reason_code": str(reason_code)[:128], "summary": "工具返回成功" if ok else "工具返回失败"}, timestamp)
-        state["active_calls"].pop(call_id, None)
-        state.update(status="waiting_tool" if state["active_calls"] else "running", last_heartbeat_at=timestamp)
+        finished = state["active_calls"].pop(call_id, {})
+        awaiting = any(q["status"] == "open" for q in state["questions"])
+        state.update(status="waiting_tool" if state["active_calls"] else "waiting_user" if awaiting or any(q["status"] == "answered" for q in state["questions"]) else "paused" if finished.get("return_status") == "paused" else "running", last_heartbeat_at=timestamp)
         row.state = state
 
 

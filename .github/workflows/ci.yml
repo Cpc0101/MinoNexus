@@ -33,6 +33,8 @@ jobs:
         run: python -B tools/check_execution_contracts.py
       - name: Check agent quality contracts
         run: python -B tools/check_agent_quality_contracts.py
+      - name: Check Agent task board contracts
+        run: python -B tools/check_agent_task_board.py
       - name: Check Web authentication contracts
         run: python -B tools/check_web_auth_contracts.py
       - name: Check Web execution stability contracts
