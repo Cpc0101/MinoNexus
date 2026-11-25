@@ -159,4 +159,9 @@ def check_receipts():
 if __name__ == "__main__":
     check_workflow()
     check_receipts()
+    guide_source = (Path(__file__).resolve().parents[1] / "mino_nexus/assistant/agent_guide.py").read_text()
+    assert "case_id | RUNNING" not in guide_source
+    assert "不确定就输出 BLOCKED" not in guide_source
+    assert "active_cases.status" in guide_source and "证据不足用 UNVERIFIED" in guide_source
+    print("PASS: guide heartbeat uses real status, uncertainty does not imply missing prerequisites")
     print("Offline contracts only; no claim of real business-case verification or client delivery.")
