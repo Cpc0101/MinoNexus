@@ -1,0 +1,97 @@
+name: Host maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Read-only report, or reclaim space from old deploy backups and unused images
+        required: true
+        type: choice
+        options:
+          - report
+          - free-disk
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-maintenance
+  cancel-in-progress: false
+
+env:
+  TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+  TENCENT_USER: ${{ vars.TENCENT_USER }}
+  TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
+  HOST_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+  TASK: ${{ inputs.task }}
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Configure authenticated maintenance access
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/maintenance
+          chmod 600 ~/.ssh/maintenance
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          test "$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')" = "$HOST_FINGERPRINT"
+
+      - name: Report host capacity and Nexus state
+        if: inputs.task == 'report'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/maintenance -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "TENCENT_DEPLOY_DIR='$TENCENT_DEPLOY_DIR' bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo '== df =='
+          df -h
+          echo '== inodes =='
+          df -i
+          echo '== docker system df =='
+          docker system df
+          echo '== containers =='
+          docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
+          echo '== volume =='
+          docker volume ls
+          echo '== deploy dir =='
+          du -sh "$TENCENT_DEPLOY_DIR" 2>/dev/null || true
+          du -sh "$TENCENT_DEPLOY_DIR"/* 2>/dev/null | sort -h | tail -n 20 || true
+          echo '== backups =='
+          ls -lhS "$TENCENT_DEPLOY_DIR/backups" 2>/dev/null | head -n 20 || true
+          echo '== data volume contents =='
+          docker run --rm -v mino-production_mino-data:/data alpine:3.20 \
+            sh -c 'df -h /data; du -sh /data/* 2>/dev/null | sort -h | tail -n 20' 2>&1 | tail -n 30 || true
+          echo '== nexus logs =='
+          docker logs --tail 40 mino-production-nexus-1 2>&1 | tail -n 40 || true
+          REMOTE
+
+      - name: Reclaim space from stale deploy backups and unused images
+        if: inputs.task == 'free-disk'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/maintenance -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "TENCENT_DEPLOY_DIR='$TENCENT_DEPLOY_DIR' bash -s" <<'REMOTE'
+          set -uo pipefail
+          cd "$TENCENT_DEPLOY_DIR"
+          echo '== before =='
+          df -h /
+          mkdir -p backups
+          for pattern in 'mino-data-*.tar.gz' 'env-*' 'docker-compose-*.yml'; do
+            ls -t backups/$pattern 2>/dev/null | tail -n +3 | while read -r stale; do
+              echo "removing stale backup $stale"
+              rm -f -- "$stale"
+            done
+          done
+          docker image prune -f --filter 'until=168h' || true
+          docker builder prune -f || true
+          docker container prune -f || true
+          echo '== after =='
+          df -h /
+          docker system df
+          REMOTE
