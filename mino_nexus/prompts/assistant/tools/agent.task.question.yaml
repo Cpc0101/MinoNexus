@@ -1,0 +1,12 @@
+id: agent.task.question
+title: 登记运行中问题
+description: 立即把环境、配置、业务歧义等缺口登记到Agent看板。等待用户回答不等于任务失败。
+route: POST /assistant/agent-tasks/{task_id}/question
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "event_id": {"type": "string", "minLength": 1, "maxLength": 128}, "question_id": {"type": "string", "minLength": 1, "maxLength": 128}, "question": {"type": "string", "minLength": 1, "maxLength": 2000}, "missing": {"type": "string", "minLength": 1, "maxLength": 2000}, "evidence": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}}, "required": ["task_id", "event_id", "question_id", "question"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

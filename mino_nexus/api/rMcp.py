@@ -43,6 +43,16 @@ def _annotations(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _task_schema(spec):
+    from copy import deepcopy
+    schema = deepcopy(spec.get("params_schema") or {"type": "object", "properties": {}})
+    if not str(spec.get("id") or "").startswith("agent.task."):
+        schema.setdefault("properties", {})["agent_task_id"] = {
+            "type": "string", "minLength": 1, "maxLength": 128,
+            "description": "关联 agent_task_start 返回的 Agent 任务。缺省仅记录独立 MCP 调用，不推断客户端其他活动。"}
+    return schema
+
+
 def _tools_payload() -> list[dict[str, Any]]:
     """工具表里的 Nexus 自有能力 + 两个转给 Scout 的转发入口。"""
     from mino_nexus.assistant.assistant_tools import forward_tool_specs
@@ -52,13 +62,16 @@ def _tools_payload() -> list[dict[str, Any]]:
             "name": function_name(t["id"]),
             "title": str(t.get("title") or t["id"]),
             "description": t.get("description", ""),
-            "inputSchema": t.get("params_schema") or {"type": "object", "properties": {}},
+            "inputSchema": _task_schema(t),
             "annotations": _annotations(t),
         }
         for t in all_tools()
         if "mcp" in (t.get("surfaces") or ["mcp"])
     ]
-    return rows + forward_tool_specs()
+    forwarded = forward_tool_specs()
+    for item in forwarded:
+        item["inputSchema"] = _task_schema({"params_schema": item.get("inputSchema", {})})
+    return rows + forwarded
 
 
 def _call_forward(uid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -68,7 +81,9 @@ def _call_forward(uid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
     from mino_nexus.assistant.assistant_tools import call_forward_tool
 
     started = time.time()
-    out = call_forward_tool(name, args, user_id=uid)
+    from mino_nexus.assistant.agent_task_runtime import tracked_tool
+    out = tracked_tool(lambda: call_forward_tool(name, args, user_id=uid),
+                       {"id": name, "title": name}, args, owner=uid)
     code = "" if out.ok else _error_code(out.status)
     body = {"ok": out.ok, "summary": out.summary, "data": out.data}
     if code:
@@ -124,6 +139,10 @@ def _error_hint(code: str) -> str:
     }.get(code, "先读取最新状态，再决定是否重试")
 
 
+from mino_nexus.assistant.agent_task_runtime import tracked_mcp
+
+
+@tracked_mcp
 def _call(uid: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
     import time
 

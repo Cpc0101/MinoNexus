@@ -426,8 +426,14 @@ def run_tool(spec: dict[str, Any], args: dict[str, Any], *, user_id: str, profil
     if str(spec.get("id") or "").startswith(("scout.update", "nexus.update", "workbench.update")):
         return ToolOutcome(ok=False, status=410, summary="升级与回退功能已取消", tool_id=str(spec.get("id") or ""))
 
+    if isinstance(args, dict) and "agent_task_id" in args:
+        # The binding is a Nexus-side context flag. Never forward it to Scout or
+        # to tool routes that declare extra="forbid".
+        args = {key: value for key, value in args.items() if key != "agent_task_id"}
     with execution_user(user_id):
-        return _run_tool_owned(spec, args, user_id=user_id, profile=profile, surface=surface, target=target)
+        from mino_nexus.assistant.agent_task_runtime import tracked_tool
+        return tracked_tool(lambda: _run_tool_owned(spec, args, user_id=user_id, profile=profile, surface=surface, target=target),
+                            spec, args, owner=user_id)
 
 
 def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str, profile: dict[str, Any] | None = None, surface: str = "im", target: dict[str, Any] | None = None) -> ToolOutcome:
@@ -595,9 +601,9 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
     for name in names:
         url = url.replace("{" + name + "}", str(args.get(name)))
     rest = {k: v for k, v in args.items() if k not in names and k not in ("project_id", "module", "modules", "ordinal", "scope", "scope_revision", "all_cases", "intent") and v not in (None, "")}
-    if spec.get("id") == "agent.workflow.init":
-        # Workflow scope is business input, not the legacy case-selection scope.
-        rest["scope"] = args["scope"]
+    if str(spec.get("id") or "").startswith(("agent.workflow.", "agent.task.")):
+        # These schemas own project/scope fields; legacy case selection must not remove them.
+        rest = {key: value for key, value in args.items() if key in props and key not in names and value not in (None, "")}
     if spec.get('id') in {'cli.query', 'cli.execute'}:
         rest = {key: value for key, value in rest.items() if key in props}
     if spec.get('id') == 'case.api':

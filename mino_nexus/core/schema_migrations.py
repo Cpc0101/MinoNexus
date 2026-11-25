@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 NAV_ENTRY_TABLES = (
     "nav_page_entries",
@@ -40,7 +40,7 @@ WEB_AUTH_TABLES = ("web_auth_snapshots",)
 
 # Historical IM inbox tables have no registered model or current consumer. Preserve
 # them in existing databases, but do not require them when creating a current schema.
-ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + ("scout_record_index", "project_members", "agent_workflows") + ACCOUNT_DATA_TABLES + WEB_AUTH_TABLES
+ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + ("scout_record_index", "project_members", "agent_workflows", "agent_tasks", "agent_task_events") + ACCOUNT_DATA_TABLES + WEB_AUTH_TABLES
 
 RETIRED_TABLES = (
     "m_case_run_trace",

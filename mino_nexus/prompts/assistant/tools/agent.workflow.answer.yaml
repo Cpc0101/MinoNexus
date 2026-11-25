@@ -1,0 +1,12 @@
+id: agent.workflow.answer
+title: 回答测试求助
+description: 保存人工答案。答案不关闭阻塞、不改变测试预期或判定；Agent get 读取后查证并继续原工作流。
+route: POST /assistant/workflows/{workflow_id}/answer
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"workflow_id": {"type": "string", "minLength": 1, "maxLength": 128}, "attempt_id": {"type": "string", "minLength": 1, "maxLength": 128}, "answer": {"type": "string", "minLength": 1, "maxLength": 2000}}, "required": ["workflow_id", "attempt_id", "answer"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

@@ -23,6 +23,14 @@ router = APIRouter(prefix="/assistant", tags=["Assistant"])
 
 class WorkflowBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: str | None = None
+    answer: str | None = None
+    context_id: str | None = None
+    category: str | None = None
+    content: str | None = None
+    reference: str | None = None
+    affected_units: list[str] | None = None
+    final: bool | None = None
     scope: str | None = None
     source_read_id: str | None = None
     expected_units: list[str] | None = None
@@ -57,6 +65,13 @@ def _workflow(uid: str, workflow_id: str, operation: str, args: dict):
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@router.get("/workflows")
+def get_workflows(project_id: str = "", limit: int = Query(50, ge=1, le=100),
+                  offset: int = Query(0, ge=0), sess: dict = Depends(current_session)):
+    from mino_nexus.assistant.agent_workflow import list_workflows
+    return ok(list_workflows(_uid(sess), project_id, limit, offset))
+
+
 @router.get("/workflows/{workflow_id}")
 def get_workflow(workflow_id: str, sess: dict = Depends(current_session)):
     return _workflow(_uid(sess), workflow_id, "get", {})
@@ -64,7 +79,7 @@ def get_workflow(workflow_id: str, sess: dict = Depends(current_session)):
 
 @router.post("/workflows/{workflow_id}/{operation}")
 def update_workflow(workflow_id: str, operation: str, body: WorkflowBody, sess: dict = Depends(current_session)):
-    if operation not in {"init", "start", "finish", "resolve"}:
+    if operation not in {"bootstrap", "draft", "init", "start", "finish", "resolve", "answer", "context", "report"}:
         raise HTTPException(status_code=404, detail="Unknown operation")
     uid = _uid(sess)
     args = body.model_dump(exclude_unset=True)
@@ -591,3 +606,7 @@ def get_agent_guide(_sess: dict = Depends(current_session)):
     from mino_nexus.assistant.agent_guide import agent_guide
 
     return ok(agent_guide())
+
+
+from mino_nexus.api.rAgentTasks import router as agent_task_router
+router.include_router(agent_task_router)

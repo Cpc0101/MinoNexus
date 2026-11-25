@@ -1,0 +1,12 @@
+id: agent.workflow.bootstrap
+title: 登记测试目标
+description: 来源为空时先登记目标，读取需求并补写人工用例；不锁定全集、不允许正式执行。写入并回读来源后对同一 workflow 调用 init。
+route: POST /assistant/workflows/{workflow_id}/bootstrap
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"workflow_id": {"type": "string", "minLength": 1, "maxLength": 128}, "project_id": {"type": "string", "minLength": 1, "maxLength": 128}, "scope": {"type": "string", "minLength": 1, "maxLength": 2000}}, "required": ["workflow_id", "project_id", "scope"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

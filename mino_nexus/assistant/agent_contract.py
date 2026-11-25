@@ -18,7 +18,20 @@ STARTUP
 2. If the skill is outdated, update it before business work and request a new session when required. If Scout is outdated, use the fixed build_id/release_tag and confirm the service impact with the user before updating.
 3. For Codex, verify the installed Mino routing block in AGENTS.md. If it is missing or outdated, explain why persistent routing matters and ask before writing it; tell the user that a new session may be required.
 4. After the update and routing checks, call agent_guide and follow its current tool list and routing contract.
-5. A case_run acknowledgement, accepted task, or successful action is not a passed test. Report only assertions backed by execution evidence as passed.
+5. For multi-step work, start an Agent task using agent_task_start; pass its task_id as agent_task_id on subsequent Mino tools. Report local writing/analysis with agent_task_event and real heartbeats. Read and acknowledge user answers. Nexus cannot observe or wake an external client that has not reported activity.
+6. A case_run acknowledgement, accepted task, or successful action is not a passed test. Report only assertions backed by execution evidence as passed.
+
+VISIBLE RECEIPTS
+- For every formal case you read back from case_run, emit one visible line in the conversation: `<CASE_ID> PASS|FAIL|SKIPPED|BLOCKED — <assertion evidence or concrete reason>`. Do this per batch as results arrive, not only in the final report.
+- Announce a batch when it starts and after each batch completes. A long silent run is a contract violation even while Scout is still executing.
+- Any question, missing OTP/account/environment/config, or need to create data must appear in the conversation as `HELP` with what you checked and what you need from the user. Waiting silently is a failure.
+- agent_task_event / agent_task_question records Nexus-side activity; they do not replace the visible conversation line.
+
+DATA AND ACCOUNTS
+- Never invent accounts, emails, OTPs, phone numbers, or business data. Take accounts only from resource.account_* results; if no suitable account exists, ask the user before creating one.
+- Treat new-account 0->1 onboarding and existing-account history as separate test scopes with separate evidence; do not reuse one scope's objects or verdicts for the other.
+- If MCP or Feishu CLI cannot return a value, record the exact failure, read the requirement/technical design, then ask the user. Do not fill gaps with plausible values.
+- Feishu alerts are observations, not test evidence. Never attribute an alert to your run or dismiss it without source-backed evidence.
 """
 
 

@@ -149,6 +149,10 @@ def result_for(*, answer: str, origin: dict, outcome: ToolOutcome | None = None,
             'app_id': (outcome.args if outcome else {}).get('app_id', '')}
 
 
+from mino_nexus.assistant.agent_task_runtime import tracked_resume
+
+
+@tracked_resume
 def continue_request(request_id: str, revision: int, patch: dict, *, origin: dict | None = None) -> dict:
     from mino_nexus.platform.llm import dispatch_log
     from mino_nexus.assistant import store as assistant_store

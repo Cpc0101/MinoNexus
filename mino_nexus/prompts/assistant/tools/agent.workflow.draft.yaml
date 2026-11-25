@@ -1,0 +1,12 @@
+id: agent.workflow.draft
+title: 更新人工用例编写进度
+description: 来源锁定前记录当前动作、需求查证与求助；不声明用例全集，求助影响用例暂为空。发布并回读后仍须 init。
+route: POST /assistant/workflows/{workflow_id}/draft
+risk: write
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"attempt_id":{"type":"string","minLength":1,"maxLength":128},"action":{"type":"string","minLength":1,"maxLength":500},"note":{"type":"string","maxLength":2000},"help_request":{"type":"object","additionalProperties":false,"properties":{"question":{"type":"string","minLength":1,"maxLength":2000},"missing":{"type":"string","minLength":1,"maxLength":2000},"checked_sources":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}},"affected_units":{"type":"array","maxItems":0}},"required":["question","missing","checked_sources","affected_units"]}},"required":["workflow_id","attempt_id","action"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

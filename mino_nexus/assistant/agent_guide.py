@@ -29,10 +29,25 @@ def agent_guide() -> dict[str, Any]:
     guide = {
         "channel": "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
         "first_call": "agent_guide",
+        "agent_execution": {
+            "tools": ["agent_task_start", "agent_task_event", "agent_task_heartbeat", "agent_task_question",
+                      "agent_task_answer", "agent_task_acknowledge", "agent_task_link", "agent_task_get", "agent_task_events", "agent_task_list"],
+            "contract": "多步任务开始先 agent_task_start。后续 Mino 工具调用带 agent_task_id；Nexus 自动记录真实调用起止、耗时与引用。客户端本地分析、写文件与其他工具不可见，必须显式 event 和实际心跳。缺省只记录独立 MCP 调用，不推断整个 Agent 在运行。",
+            "help": "question 立即登记问题；get 读取 answers 后 acknowledge，答案已读取不等于问题解决。Nexus 内置助手问题走原 request/revision 续接；外部 Agent 不可由服务端擅自唤醒。",
+            "liveness": "执行中超过60秒未有心跳状态为unknown，保留reported_status；心跳不证明设备动作或测试通过。暂停只能由执行方确认，不用UI点击伪造停止。",
+        },
+        "visible_receipts": {
+            "per_case": "每条正式用例读回后必须在对话流输出一行：<CASE_ID> PASS|FAIL|SKIPPED|BLOCKED — 断言证据或具体原因。按批输出，不等到最终报告；长时间静默违反契约。",
+            "help": "缺 OTP、账号、环境、配置、数据或需求歧义，必须在对话流输出 HELP：已查来源、缺失项、需要用户做什么。不得静默等待。",
+            "accounts": "禁止编造账号、邮箱、OTP、手机号或业务数据；账号只取 resource.account_*。新账号 0→1 与老账号历史数据分开取证。",
+            "alerts": "飞书告警是观察，不是测试证据；没有来源证据不得归因或忽略。",
+        },
         "agent_workflow": {
             "owner": "agent",
-            "tools": ["case_source_list", "case_source_read", "agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get"],
+            "tools": ["case_source_list", "case_source_read", "agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get", "agent_workflow_bootstrap", "agent_workflow_draft", "agent_workflow_list", "agent_workflow_answer", "agent_workflow_context", "agent_workflow_report"],
             "storage": "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；使用 Python SQLite，不使用 Agent 本地数据库",
+            "source_drafting": "来源确实为空时先 bootstrap 登记目标，读取需求、补写人工用例并发布回读，再 init 锁定。读取失败不能当空表。人工业务歧义立即求助，其余继续。",
+            "delivery": "每次 finish 自动保存阶段报告；所有终止路径调用 report(final=true) 并输出报告。get 读取 help_requests.answer 和 contexts；人工答案需要查证后恢复，不等于问题已解决。",
             "stages": ["analysis", "authoring", "preparation", "verification"],
             "contract": "init 前必须先用 case_source_list 取得来源 generation，再用 case_source_read 读取并取得成功快照的 read_id；init 只传 source_read_id，Nexus 从成功 CaseSourceRead 回执绑定 source 并锁定 expected_units；显式自报的来源或全集不一致时拒绝。units 只是首批 delivery hint，默认预算至少为 expected_units × 4。coverage.missing 是未实现的非终态条目，verification_missing 是未有正式 Scout 证据的非终态条目，next_units 按 missing 后 verification_missing 取下一批。implementation_complete/verification_complete 表示当前交付阶段已无未处理工作项，但终态阻塞/失败/延期仍单独计入 blocked_units；只有 all_implemented=true 才能说脚本全集写齐，只有 all_verified=true 才能说正式全集通过。complete 仅为 implementation_complete 的兼容别名。每轮调查 start 占用预算、finish 保存事实，allowed=false 按原因改变方案或交付阶段。重复阻塞须有新事实或明确不同方案；写结果未知先核对原任务并 resolve。普通状态轮询不算新调查。进度不是测试判定。 正式 case_run 只要带 script_targets 就必须传 workflow_id，服务端会核对成功 source_read 回执、expected_units 与项目一致性，缺失或不一致直接拒绝（reason_code 见错误返回）。",
         },

@@ -1,0 +1,12 @@
+id: agent.task.acknowledge
+title: 确认读取用户答案
+description: Agent确实读取用户答案后确认，随后继续查证并上报当前动作；读取不是修复或测试通过。
+route: POST /assistant/agent-tasks/{task_id}/acknowledge
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "event_id": {"type": "string", "minLength": 1, "maxLength": 128}, "question_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["task_id", "event_id", "question_id"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

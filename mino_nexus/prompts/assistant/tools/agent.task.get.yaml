@@ -1,0 +1,12 @@
+id: agent.task.get
+title: 读取 Agent get
+description: 读取当前账号真实运行状态、问题答案与关联；事件按seq分页。外部未上报的行为未知，不由workflow进度推断。
+route: GET /assistant/agent-tasks/{task_id}
+risk: read
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["task_id"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

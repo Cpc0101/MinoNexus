@@ -118,6 +118,7 @@ __all__ = [
 
 from mino_nexus.models.scout_update import ScoutUpdate
 from mino_nexus.models.agent_workflow import AgentWorkflow
+from mino_nexus.models.agent_task import AgentTask, AgentTaskEvent
 
 from mino_nexus.core.database import register_model_loader as _register_model_loader  # noqa: E402
 

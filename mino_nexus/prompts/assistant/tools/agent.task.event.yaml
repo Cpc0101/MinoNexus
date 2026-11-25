@@ -1,0 +1,12 @@
+id: agent.task.event
+title: 上报 Agent 当前动作
+description: 上报可核实的当前动作、文件或用例与证据引用，不上传私密思维链、凭据或完整工具载荷。活跃工具未核对时不能结束任务。
+route: POST /assistant/agent-tasks/{task_id}/event
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "event_id": {"type": "string", "minLength": 1, "maxLength": 128}, "status": {"type": "string", "enum": ["running", "waiting_tool", "waiting_user", "paused", "completed", "failed", "cancelled"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 2000}, "evidence": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}}, "required": ["task_id", "event_id", "summary"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

@@ -64,9 +64,19 @@ def operate(owner_user_id: str, workflow_id: str, operation: str, args: dict) ->
                     if task.get("project_id") != project_id:
                         raise ValueError("formal_verification_project_mismatch")
                     require_verified_unit(run_store.to_task_json(task), attempt["unit"])
+                    old = {**old, "project_id": project_id}
+        if operation == "finish" and old and args.get("task_id"):
+            from copy import deepcopy
+            from mino_nexus.casework import run_store
+            old = deepcopy(old)
+            task = run_store.get(args["task_id"])
+            if task is None or task.get("owner_user_id") != owner or task.get("project_id") != old.get("project_id"):
+                raise ValueError("Workflow task scope mismatch")
+            old.setdefault("task_contexts", {})[args["task_id"]] = {
+                key: task.get(key) for key in ("app_id", "env_profile", "platform", "revision", "execution_kind", "started_at", "finished_at")}
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         state, result = transition(old, operation, workflow_id, args, now)
-        if state != old and operation != "get":
+        if (row is None or state != row.state) and operation != "get":
             if len(json.dumps(state, ensure_ascii=False).encode()) > 2_000_000:
                 raise ValueError("Workflow record limit reached; deliver this scope and start a new workflow")
             if row:
@@ -75,3 +85,20 @@ def operate(owner_user_id: str, workflow_id: str, operation: str, args: dict) ->
                 row = AgentWorkflow(owner_user_id=owner, workflow_id=workflow_id, state=state, revision=1, updated_at=now)
                 db.add(row)
         return {**result, "revision": row.revision, "updated_at": row.updated_at}
+
+
+def list_workflows(owner_user_id: str, project_id: str, limit: int = 50, offset: int = 0) -> dict:
+    from sqlalchemy import func
+    from mino_nexus.contract.agent_workflow import coverage
+    with session_scope() as db:
+        query = db.query(AgentWorkflow).filter(AgentWorkflow.owner_user_id == owner_user_id)
+        if project_id:
+            query = query.filter(AgentWorkflow.state["project_id"].as_string() == project_id)
+        total = query.with_entities(func.count()).scalar()
+        rows = query.order_by(AgentWorkflow.updated_at.desc(), AgentWorkflow.workflow_id).offset(offset).limit(limit).all()
+        return {"total": total, "items": [{"workflow_id": row.workflow_id,
+                "scope": row.state["scope"], "project_id": row.state.get("project_id", ""),
+                "source_status": "locked" if row.state.get("source_read_id") else "drafting",
+                "delivery_status": row.state.get("delivery_status", "in_progress"),
+                "coverage": coverage(row.state), "revision": row.revision,
+                "updated_at": row.updated_at} for row in rows]}

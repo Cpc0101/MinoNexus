@@ -1,0 +1,12 @@
+id: agent.task.link
+title: 关联测试工作对象
+description: 关联多个工作流、调试会话及正式任务。服务端校验归属与项目，不改变测试判定。
+route: POST /assistant/agent-tasks/{task_id}/link
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "kind": {"type": "string", "enum": ["workflow", "execution", "debug"]}, "reference": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["task_id", "kind", "reference"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

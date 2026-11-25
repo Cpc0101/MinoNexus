@@ -1,0 +1,12 @@
+id: agent.workflow.context
+title: 追加测试上下文
+description: 登记配置、环境、硬编码、飞书或人工沟通事实与来源；记录不替代原文或执行证据，冲突应求助。
+route: POST /assistant/workflows/{workflow_id}/context
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"workflow_id": {"type": "string", "minLength": 1, "maxLength": 128}, "context_id": {"type": "string", "minLength": 1, "maxLength": 128}, "category": {"type": "string", "enum": ["requirement", "configuration", "environment", "data", "hardcoding", "product", "decision"]}, "content": {"type": "string", "minLength": 1, "maxLength": 2000}, "reference": {"type": "string", "minLength": 1, "maxLength": 2000}, "affected_units": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}}, "evidence": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}}, "required": ["workflow_id", "context_id", "category", "content", "reference"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

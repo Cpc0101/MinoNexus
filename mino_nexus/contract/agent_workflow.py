@@ -173,8 +173,8 @@ def coverage(state: dict) -> dict:
         "blocked_units": blocked,
         "implementation_complete": implementation_complete,
         "verification_complete": verification_complete,
-        "all_implemented": implemented == len(expected),
-        "all_verified": formal_verified == len(expected) and not blocked,
+        "all_implemented": bool(expected) and implemented == len(expected),
+        "all_verified": bool(expected) and formal_verified == len(expected) and not blocked,
         "complete": implementation_complete,
         "accounted": not missing,
         "next_units": next_units,
@@ -207,8 +207,20 @@ def summary(state: dict, now: str | None = None) -> dict:
         latest = next((a for a in reversed(attempts) if a["unit"] == unit), None)
         if latest and latest["outcome"] in {"blocked", "deferred"} and latest.get("help_request"):
             requests.append({"unit": unit, "attempt_id": latest["attempt_id"], **deepcopy(latest["help_request"])})
-    return {"workflow_id": state["workflow_id"], "scope": state["scope"], "source": state.get("source"),
-            "help_requests": requests,
+    draft = state.get("draft_actions", [])
+    if draft and draft[-1].get("help_request"):
+        requests.append({"unit": "source-drafting", "attempt_id": draft[-1]["attempt_id"], **deepcopy(draft[-1]["help_request"])})
+    return {"workflow_id": state["workflow_id"], "scope": state["scope"],
+            "draft_actions": deepcopy(draft),
+            "decisions": [{"attempt_id": key, **deepcopy(value),
+                           "question": next((a.get("help_request", {}).get("question", "")
+                                             for a in [*attempts, *draft] if a["attempt_id"] == key), "")}
+                          for key, value in state.get("answers", {}).items()], "source": state.get("source"),
+            "help_requests": [{**r, "answer": state.get("answers", {}).get(r["attempt_id"])} for r in requests],
+            "task_contexts": deepcopy(state.get("task_contexts", {})),
+            "contexts": deepcopy(state.get("contexts", [])), "reports": deepcopy(state.get("reports", [])),
+            "delivery_status": state.get("delivery_status", "in_progress"),
+            "source_status": "locked" if state.get("source_read_id") else "drafting",
             **({"time_budget": time_budget(state, now)} if now else {}),
             "source_read_id": state.get("source_read_id", ""), "project_id": state.get("project_id", ""),
             "expected_units": expected, "coverage": coverage(state), "stages": stages, "units": rows,
@@ -221,6 +233,18 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
     workflow_id = text(workflow_id, "workflow_id", 128)
     _time(now)
     state = deepcopy(old)
+    if operation == "bootstrap":
+        scope = text(args.get("scope"), "scope")
+        project = text(args.get("project_id"), "project_id", 128)
+        if state:
+            if state["scope"] != scope or state.get("project_id") != project:
+                raise ValueError("Existing workflow scope differs")
+        else:
+            state = {"workflow_id": workflow_id, "scope": scope, "project_id": project,
+                     "source_read_id": "", "expected_units": [], "source": None,
+                     "stage_budget": 6, "total_budget": 24, "units": [], "attempts": [],
+                     "resolutions": {}, "created_at": now}
+        return state, summary(state, now)
     if operation == "init":
         scope = text(args.get("scope"), "scope")
         expected_units = unit_list(
@@ -254,7 +278,7 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         if state:
             if state["scope"] != scope:
                 raise ValueError("Existing workflow scope differs")
-            if "expected_units" in state:
+            if state.get("source_read_id") and "expected_units" in state:
                 if state["expected_units"] != expected_units:
                     raise ValueError("Existing workflow expected_units differ")
             elif not set(state["units"]) <= set(expected_units):
@@ -268,6 +292,10 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                 raise ValueError("Existing workflow stage_budget differs")
             if "total_budget" in args and args["total_budget"] != state["total_budget"]:
                 raise ValueError("Existing workflow total_budget differs")
+            if not state.get("source_read_id"):
+                state["total_budget"] = args.get("total_budget", max(24, minimum_total))
+                if type(state["total_budget"]) is not int or not state["stage_budget"] <= state["total_budget"] <= 10000:
+                    raise ValueError("Invalid budgets")
             if state["total_budget"] < minimum_total:
                 raise ValueError("Existing workflow total_budget is below expected_units minimum")
             state["expected_units"] = expected_units
@@ -295,6 +323,16 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         raise ValueError("Unknown workflow")
     if operation == "get":
         return state, summary(state, now)
+    if operation in {"draft", "answer", "context", "report"}:
+        from mino_nexus.contract.workflow_delivery import update_delivery
+        update_delivery(state, operation, args, now)
+        result = summary(state, now)
+        if operation == "report" and state.get("reports"):
+            result["report_id"] = state["reports"][-1]["report_id"]
+            result["final"] = state["reports"][-1]["final"]
+        return state, result
+    if operation == "start" and not state.get("source_read_id"):
+        raise ValueError("Source not locked; draft cases from requirement, publish and read back before init")
     attempt_id = text(args.get("attempt_id"), "attempt_id", 128)
     attempt = next((a for a in state["attempts"] if a["attempt_id"] == attempt_id), None)
     evidence = facts(args.get("evidence", []))
@@ -337,6 +375,7 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                                "next": "change_approach_or_deliver_phase"}
         # A small first batch is only a delivery hint. The locked expected_units
         # remains authoritative, so later batches can start without a second init.
+        state["delivery_status"] = "in_progress"
         state["units"] = sorted(set(state["units"]) | {unit})
         state["attempts"].append({"attempt_id": attempt_id, "unit": unit, "stage": stage, "action": action, "writes": writes,
                                   "blocker": blocker, "evidence": evidence, "task_id": "", "outcome": "", "write_outcome": "known",
@@ -373,8 +412,12 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                 raise ValueError("Finished attempt is immutable")
         else:
             attempt.update(values, finished_at=now)
+        from mino_nexus.contract.workflow_delivery import seal_report
+        seal_report(state, now, final=not coverage(state)["verification_missing"] and not any(not a["outcome"] for a in state["attempts"]))
         return state, {**deepcopy(attempt), "coverage": coverage(state), "time_budget": time_budget(state, now),
-                       "requires_visible_receipt": True}
+                       "requires_visible_receipt": True, "report_id": state["reports"][-1]["report_id"],
+                       "delivery_status": state.get("delivery_status", "in_progress"),
+                       "requires_report_delivery": state["reports"][-1]["final"]}
     if operation == "resolve":
         task_id = text(args.get("task_id"), "task_id", 128)
         if not evidence or attempt["write_outcome"] != "unknown" or task_id != attempt["task_id"]:

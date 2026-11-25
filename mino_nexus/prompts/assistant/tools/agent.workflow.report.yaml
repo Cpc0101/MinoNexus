@@ -1,0 +1,12 @@
+id: agent.workflow.report
+title: 封存测试报告
+description: 生成统一结构化报告快照，阶段报告 final=false，结束、阻塞、取消或预算耗尽交付 final=true。活跃调查必须先核对并 finish。交付有缺口不等于测试通过。
+route: POST /assistant/workflows/{workflow_id}/report
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"workflow_id": {"type": "string", "minLength": 1, "maxLength": 128}, "final": {"type": "boolean"}}, "required": ["workflow_id"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

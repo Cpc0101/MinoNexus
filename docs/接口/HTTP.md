@@ -460,6 +460,12 @@ Workbench 入口：项目配置 → 「项目维护者」。
 | GET | `/resources/logs` | 资源分配日志；`account_ident` 掩码、`detail` 递归脱敏、`page_size≤100` |
 | GET | `/resources/env` | 环境/渠道/号池结构；只返回 `configured` 与 `secret_slots` 名称，不返回密钥 |
 | GET | `/assistant/agent-guide` | MCP `agent.guide`。外部 agent 的入口：工具分组和脚本、Git、设备的分工。不依赖仓库里的 skill 文件 |
+| GET | `/assistant/workflows` | 当前账号工作流列表；project_id、limit≤100、offset；按更新时间排序并返回真实 total |
+| POST | `/assistant/workflows/{workflow_id}/bootstrap` | 登记 project_id/scope，source_status=drafting；尚无来源时不允许 start 或正式执行 |
+| POST | `/assistant/workflows/{workflow_id}/draft` | 来源锁定前登记 attempt_id/action/note/help_request；affected_units=[]，写入人工用例并回读后仍须 init |
+| POST | `/assistant/workflows/{workflow_id}/answer` | attempt_id/answer；不可变人工答案，不改变阻塞或测试判定；纠正答案用 context 追加 |
+| POST | `/assistant/workflows/{workflow_id}/context` | context_id/category/content/reference/affected_units/evidence；分类 requirement/configuration/environment/data/hardcoding/product/decision |
+| POST | `/assistant/workflows/{workflow_id}/report` | final=false 阶段报告；final=true 封存当前交付，活跃调查须先结束；有缺口返回 delivered_with_gaps，不等于通过 |
 | GET | `/assistant/workflows/{workflow_id}` | MCP agent_workflow_get；当前登录用户的四阶段进度、预算、尝试历史与原任务引用 |
 | POST | `/assistant/workflows/{workflow_id}/init` | MCP agent_workflow_init；scope、units、stage_budget（默认6）、total_budget（默认24）。重复初始化不修改范围或预算 |
 | POST | `/assistant/workflows/{workflow_id}/start` | MCP agent_workflow_start；attempt_id/unit/stage/action、evidence/blocker/writes，原子消耗调查预算，返回 allowed/reason/next |
@@ -708,3 +714,35 @@ MCP 对应 `resource_account_data_list/save/delete`。业务标签仅在脚本�
 `POST /case-runner/debug/{session_id}/{execute|status|cancel|reset|close|checkpoint}` 与 MCP debug_case 系列共用鉴权、资源和记录。execute 接收 code/script_path（二选一）、请求 ID，可选 workspace_hash/timeout_sec。cancel/reset 要求请求 ID，status 可查询原请求，close 持久记录结束意图。完整证据沿用 sessions 读取接口；调试完成不代表正式通过，结束请求成功不代表资源已释放。
 
 检查点与 `case_run.debug_origin` 的字段、阶段统计及版本核验见 [协议](协议.md#检查点阶段进度与正式版本关联)。
+
+
+## 需求测试工作流交付
+
+`get` 增加 source_status、delivery_status、draft_actions、contexts、decisions、help_requests[].answer、task_contexts、reports。
+每次 finish 自动保存最新阶段报告；收敛到无剩余正式验证项且无活跃调查时自动保存交付报告。其他终止路径由 Agent 调用 report(final=true)。报告写入与阶段结果同一事务，失败不会标记交付成功。
+报告 template_version=1，固定 scope/source/source_read_id/expected_units/coverage/units/attempts/help_requests/contexts/decisions/task_contexts/unresolved_writes/draft_actions 快照；报告正文固定六节：结论摘要、测试基线、覆盖与结果、问题与证据、人工确认与上下文、剩余工作。正式判定仍以 Scout 封存证据为准；空范围绝不 all_verified。
+调试终态 status 只读，不进入活跃会话控制门禁；节点在线时读取历史检查点与请求，节点离线显示已保存摘要和 detail_availability=unavailable。checkpoint_get 为只读历史查询，仍校验原节点账户；execute/reset/checkpoint 不放开终态门禁。
+
+
+## Agent 任务运行看板
+
+Agent任务与测试工作流、Scout执行任务分开。真源是 agent_tasks / agent_task_events 两张 SQL 表；事件按 owner_user_id/task_id/seq 排序，event_id 同内容幂等，冲突不可覆盖。schema 15 只追加这两张表，不清空已有数据。
+
+| 方法 | 路径 | 契约 |
+|---|---|---|
+| GET | `/assistant/agent-tasks` | 当前账号列表；project_id 可选、limit≤100、offset；返回真实 total；无项目表示本人全部，不混入他人 |
+| GET | `/assistant/agent-tasks/{task_id}` | reported_status/status、当前动作、真实心跳、活跃调用、问题与关联；超过60秒未有心跳的 active 状态派生 unknown，保留最后 reported_status |
+| GET | `/assistant/agent-tasks/{task_id}/events` | limit≤200；缺省最近事件倒序；before_seq 读取更早，after_seq 读取之后事件升序；两游标不能同时使用 |
+| POST | `/assistant/agent-tasks/{task_id}/start` | title/project_id；外部Agent任务登记，重复ID不得改变身份；项目必须真实可见 |
+| POST | `/assistant/agent-tasks/{task_id}/event` | event_id/summary/status/evidence；当前动作、等待、暂停、结束等显式客户端事件；活跃工具未核对不能宣称结束 |
+| POST | `/assistant/agent-tasks/{task_id}/heartbeat` | 实际仍执行时续报；不代表有业务进展或Scout动作停止 |
+| POST | `/assistant/agent-tasks/{task_id}/question` | event_id/question_id/question/missing/evidence；问题立即登记，进入waiting_user |
+| POST | `/assistant/agent-tasks/{task_id}/answer` | event_id/question_id/answer；答案不可覆盖；已回答未读取派生waiting_agent，不伪造外部客户端恢复 |
+| POST | `/assistant/agent-tasks/{task_id}/acknowledge` | event_id/question_id；Agent实际读取后确认，读取不等于问题解决 |
+| POST | `/assistant/agent-tasks/{task_id}/link` | kind=workflow/execution/debug 与 reference；核对原对象归属和项目；debug保存原task_id以便进入证据 |
+
+Nexus内置Agent由 handle_utterance / continue_request / run_tool 的真实执行入口采集，模型等待也记录起止和耗时。执行期间服务端每20秒续报心跳；离开执行作用域停止心跳。内置Agent状态不能经上述客户端事件API伪造，用户回答仍走原 `/assistant/requests/{request_id}/respond`，校验原revision并在同一Agent任务续接。
+
+外部MCP：先 agent_task_start；后续工具 inputSchema 提供 agent_task_id，可关联真实调用。该字段在MCP入口提取，不传入原业务API。未传时只生成 source=tool_call 的独立调用记录，不归并令牌下的不同聊天，不声明客户端其他活动。MCP内容JSON返回 agent_task_id；转发入口同样记录。get/list/heartbeat等 Agent管理工具本身不产生伪业务活动。
+
+记录不保存完整参数、模型私密思维链或Scout图片。工具回执保存起止、耗时、状态码、reason_code、已核实对象引用；调用返回成功不代表测试通过。外部客户端本地分析、写文件和其他工具必须显式上报，不由workflow记录推断。服务端不能擅自唤醒外部Agent。

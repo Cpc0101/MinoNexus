@@ -1,0 +1,12 @@
+id: agent.task.events
+title: 读取 Agent events
+description: 读取当前账号真实运行状态、问题答案与关联；事件按seq分页。外部未上报的行为未知，不由workflow进度推断。
+route: GET /assistant/agent-tasks/{task_id}/events
+risk: read
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "after_seq": {"type": "integer", "minimum": 0}, "before_seq": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": ["task_id"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

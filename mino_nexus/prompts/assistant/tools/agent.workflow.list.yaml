@@ -1,0 +1,12 @@
+id: agent.workflow.list
+title: 查看需求测试工作流
+description: 当前账号按项目读取工作流列表，进度不替代 Scout 判定。
+route: GET /assistant/workflows
+risk: read
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"project_id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100},"offset":{"type":"integer","minimum":0}}}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

@@ -1,0 +1,12 @@
+id: agent.task.heartbeat
+title: 上报 Agent 心跳
+description: 仅在实际仍执行时续报心跳。超过60秒无心跳显示状态未知，不等于设备停止。Mino工具执行期间服务端自动续报，本地长操作须客户端自己上报。
+route: POST /assistant/agent-tasks/{task_id}/heartbeat
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["task_id"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

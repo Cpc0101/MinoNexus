@@ -1,0 +1,12 @@
+id: agent.task.start
+title: 登记 Agent 任务
+description: 开始多步任务前登记。后续每次 Mino 工具调用传 agent_task_id=本 task_id；本地文件、分析等不可见动作显式 event，上报问题用 question。
+route: POST /assistant/agent-tasks/{task_id}/start
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "title": {"type": "string", "minLength": 1, "maxLength": 500}, "project_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["task_id", "title"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

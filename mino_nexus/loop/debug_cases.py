@@ -355,7 +355,27 @@ def control(session_id, operation, args):
         raise ValueError("debug_session_not_found")
     if operation == "close":
         return _close(record)
-    node, record = _wait_control_node(record, require_user_id())
+    if operation == "status" and record.get("status") in scout_record_store.TERMINAL:
+        retained = dict(record.get("summary") or {})
+        node = get_registry().get_node(str(record.get("node_id") or ""))
+        if node is not None and node.alive and node.send and _owned_by_node_account(node, require_user_id(), str(record.get("sn") or "")):
+            try:
+                retained.update(_call(node, "debug.status", {**args, **_scope(record, node)},
+                                      run_id=record["task_id"], sn=record["sn"], platform=record["payload"]["platform"]))
+            except DebugCallError:
+                retained["detail_availability"] = "unavailable"
+        else:
+            retained["detail_availability"] = "unavailable"
+        return {**retained, "task_id": record["task_id"], "session_id": session_id,
+                "status": record["status"], "state": "closed", "debug_state": "closed", "sealed": True,
+                "execution_stopped": scout_record_store.stop_evidence_confirmed(record),
+                "formal_runs": run_store.debug_formal_runs(session_id)}
+    if operation == "checkpoint_get" and record.get("status") in scout_record_store.TERMINAL:
+        node = get_registry().get_node(str(record.get("node_id") or ""))
+        if node is None or not node.alive or not node.send or not _owned_by_node_account(node, require_user_id(), str(record.get("sn") or "")):
+            raise DebugCallError("debug_node_unavailable", "debug_node_unavailable")
+    else:
+        node, record = _wait_control_node(record, require_user_id())
     params = {**args, **{key: record[key] for key in ("task_id", "attempt_id", "session_id")},
               "owner_user_id": wire_owner(record, node)}
     data = _call(node, "debug." + operation, params, run_id=record["task_id"], sn=record["sn"], platform=record["payload"]["platform"])

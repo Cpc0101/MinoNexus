@@ -1,0 +1,12 @@
+id: agent.task.answer
+title: 回答 Agent 问题
+description: 持久化用户答案，不自动宣称Agent已读取或问题已解决；外部Agent需get读取并acknowledge。
+route: POST /assistant/agent-tasks/{task_id}/answer
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "event_id": {"type": "string", "minLength": 1, "maxLength": 128}, "question_id": {"type": "string", "minLength": 1, "maxLength": 128}, "answer": {"type": "string", "minLength": 1, "maxLength": 2000}}, "required": ["task_id", "event_id", "question_id", "answer"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

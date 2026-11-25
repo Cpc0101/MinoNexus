@@ -93,6 +93,10 @@ def _call_model(messages: list[dict[str, Any]], job_meta: dict | None = None, *,
     return text or "", calls, meta
 
 
+from mino_nexus.assistant.agent_task_runtime import tracked_agent
+
+
+@tracked_agent
 def handle_utterance(
     *,
     user_id: str,
@@ -192,7 +196,22 @@ def handle_utterance(
             break
         # 模型单次超时服从剩余预算；禁用调用层的隐藏重试。
         model_meta = {**_meta, "call": {**call_config, "timeout_sec": min(float(call_config.get("timeout_sec", 60)), remaining)}}
-        reply, calls, meta = _call_model(messages, model_meta)
+        from mino_nexus.assistant.agent_task_runtime import current
+        from mino_nexus.assistant import agent_tasks
+        from uuid import uuid4
+        model_call = uuid4().hex
+        model_started = time.monotonic()
+        binding = current.get()
+        if binding:
+            agent_tasks.tool_begin(*binding, model_call, "model.response", "等待模型响应")
+        try:
+            reply, calls, meta = _call_model(messages, model_meta)
+        except BaseException:
+            if binding:
+                agent_tasks.tool_end(*binding, model_call, "model.response", False, round((time.monotonic() - model_started) * 1000))
+            raise
+        if binding:
+            agent_tasks.tool_end(*binding, model_call, "model.response", not bool(meta.get("error")), round((time.monotonic() - model_started) * 1000))
         usage["available"] = usage.get("available", True) and bool(meta.get("usage_available", not meta.get("stream")))
         usage["prompt_tokens"] += int(meta.get("prompt_tokens") or 0)
         usage["completion_tokens"] += int(meta.get("completion_tokens") or 0)
