@@ -424,7 +424,17 @@ def _report_url(doc: dict[str, Any]) -> str:
 def to_task_json(doc: dict[str, Any] | None, *, include_cases: bool = True) -> dict[str, Any]:
     from mino_nexus.casework.run_write_safety import unresolved
 
-    doc = _recompute(copy.deepcopy(doc or {}))
+    from mino_nexus.core.nexus_time import timestamp
+    doc = copy.deepcopy(doc or {})
+    for field in ("created_at", "started_at", "finished_at"):
+        if doc.get(field):
+            doc[field] = timestamp(doc[field])
+    doc = _recompute(doc)
+    if not doc.get("app_name") and doc.get("app_id"):
+        from mino_nexus.resources.project_store import find_app
+        app = find_app(str(doc["app_id"]))
+        if app:
+            doc["app_name"] = app["name"]
     sns = [str(x).strip() for x in (doc.get("sns") or []) if str(x).strip()]
     sn = str(doc.get("sn") or (sns[0] if sns else ""))
     if sn and sn not in sns:

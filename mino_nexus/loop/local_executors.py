@@ -27,7 +27,7 @@ def _intent_failure_text(intent_id: str, out: dict[str, Any]) -> tuple[str, str]
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _result(

@@ -739,6 +739,8 @@ Agent任务与测试工作流、Scout执行任务分开。真源是 agent_tasks 
 | POST | `/assistant/agent-tasks/{task_id}/question` | event_id/question_id/question/missing/evidence；问题立即登记，进入waiting_user |
 | POST | `/assistant/agent-tasks/{task_id}/answer` | event_id/question_id/answer；答案不可覆盖；已回答未读取派生waiting_agent，不伪造外部客户端恢复 |
 | POST | `/assistant/agent-tasks/{task_id}/acknowledge` | event_id/question_id；Agent实际读取后确认，读取不等于问题解决 |
+| GET | `/assistant/agent-tasks/requirements/progress` | project_id 必填；需求→应用/端/环境节点→本人多个 Agent 与执行任务；只用显式 target 或正式任务原 requirement_id，不从标题推断；无任务端显示阶段未上报 |
+| POST | `/assistant/agent-tasks/{task_id}/target` | requirement_id/app_id/platform/environment；本人业务任务与需求应用须同项目，端须已配置；重复相同绑定幂等，重新绑定移动而不复制任务；不改变执行状态 |
 | POST | `/assistant/agent-tasks/{task_id}/link` | kind=workflow/execution/debug 与 reference；核对原对象归属和项目；debug保存原task_id以便进入证据 |
 
 Nexus内置Agent由 handle_utterance / continue_request / run_tool 的真实执行入口采集，模型等待也记录起止和耗时。执行期间服务端每20秒续报心跳；离开执行作用域停止心跳。内置Agent状态不能经上述客户端事件API伪造，用户回答仍走原 `/assistant/requests/{request_id}/respond`，校验原revision并在同一Agent任务续接。
@@ -754,3 +756,7 @@ Agent 任务 start/get/list 返回 board_url（账号配置或 MINO_WORKBENCH_PU
 start 后客户端立即可见发送 startup_message，再 event(startup_delivered=true,summary 含精确 board_url) 声明发送。该字段只能为 true，地址为空或 summary 缺 URL 拒绝；不证明用户已读。debug_case_execute/case_run 还必须关联已锁定的来源工作流，未关联或 drafting 返回 case_source_not_locked。不按账号最新任务、token、标题猜测绑定；显式 ID 无效时拒绝。每次绑定调用回传原 task_id/board_url/startup_message/requires_visible_startup，便于压缩后续接。
 
 presentation 只读取同账号显式关联的工作流和执行记录，提供 scope/environment/phase_label/action/next_action/workflows/execution。完整范围覆盖与最近执行结果分开。工具调用仅变更活跃调用与真实心跳，不覆盖业务动作；问题未回答或答案未读取时保留等待状态。客户端本地未上报的动作始终未知。
+
+需求看板只读展示真实阶段，多个任务阶段并存时逐项展示，不把最高阶段冒充整端完成。waiting_agent 展示“已回答 · Agent 未读取”并给出原任务续接消息；服务端不自动唤醒外部客户端。独立调用诊断 API 保留，Workbench 不再提供独立入口；应用逻辑路由保留但主导航隐藏。
+
+Nexus 新任务创建时间携带 UTC 偏移。旧生产镜像（python:slim 默认 UTC）无偏移的 Nexus 顶层任务时间按 UTC 只读投影；开发环境需显式 MINO_NEXUS_LEGACY_TIMEZONE，否则不猜时区。不解释 Scout 原始记录的无时区值。Workbench 已知偏移的时间统一展示 Asia/Shanghai。

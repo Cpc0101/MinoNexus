@@ -1193,7 +1193,7 @@ def _timeout_for(event: PlanEvent) -> float:
 def _now_iso() -> str:
     from datetime import datetime
 
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _fail(

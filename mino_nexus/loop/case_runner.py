@@ -26,7 +26,7 @@ TAG = "CaseRunner"
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _pick_online_sns() -> list[str]:

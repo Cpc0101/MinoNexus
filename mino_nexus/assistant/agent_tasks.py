@@ -25,7 +25,7 @@ def view(row, db=None):
     age = max(0, (datetime.now(timezone.utc) - seen).total_seconds())
     status = "unknown" if state["status"] in ACTIVE and age > 60 else state["status"]
     if status == "waiting_user" and state["questions"] and not any(q["status"] == "open" for q in state["questions"]):
-        status = "waiting_agent"
+        status = "waiting_agent" if any(q["status"] == "answered" for q in state["questions"]) else "unknown"
     from mino_nexus.assistant.agent_task_projection import project
     presentation = project(db, row) if db is not None else {}
     return {**state, "presentation": presentation, "task_id": row.task_id, "project_id": row.project_id, "revision": row.revision,
@@ -34,6 +34,7 @@ def view(row, db=None):
             "requires_visible_startup": state['source'] != 'tool_call' and not state.get('startup_delivered', False),
             "updated_at": row.updated_at, "reported_status": state["status"],
             "status": status,
+            "resume_required": status == "waiting_agent" and state["source"] == "external_agent",
             "heartbeat_age_sec": round(age), "observation_scope": "nexus_execution_and_explicit_client_events"}
 
 
@@ -109,7 +110,7 @@ def listing(owner, project_id="", limit=50, offset=0, view_kind="tasks"):
         items = []
         for row in rows:
             item = view(row, db)
-            item["pending_questions"] = sum(q["status"] == "open" for q in item.pop("questions"))
+            item["pending_questions"] = sum(q["status"] == "open" for q in item.pop("questions")) + sum(not q.get("answer") for flow in item["presentation"].get("workflows", []) for q in flow["help_requests"])
             item.pop("active_calls")
             items.append(item)
         return {"items": items, "total": total}

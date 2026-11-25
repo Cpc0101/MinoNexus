@@ -46,8 +46,14 @@ def project(db, row):
         next_action = f"请回答下方 {len(questions) + len(workflow_questions)} 个问题；答案提交后等待 Agent 读取并核验"
     elif any(q['status'] == 'answered' for q in state.get('questions', [])):
         next_action = '答案已提交，等待 Agent 读取并核验'
-    return {'phase': phase, 'phase_label': LABELS.get(phase, '阶段尚未上报'),
+    target = state.get('target') or {}
+    environment = state.get('environment') or ''
+    if target.get('app_id'):
+        from mino_nexus.models.project import App
+        app = db.get(App, target['app_id'])
+        environment = ' · '.join([app.name if app else target['app_id'], target['platform'], target['environment']])
+    return {'target': target, 'phase': phase, 'phase_label': LABELS.get(phase, '阶段尚未上报'),
             'action': action or '尚未收到业务进度上报', 'next_action': next_action or '下一步尚未上报',
             'scope': state.get('scope') or (workflows[0]['scope'] if workflows else state['title']),
-            'environment': state.get('environment') or '环境尚未上报',
+            'environment': environment or '环境尚未上报',
             'workflows': workflows, 'execution': execution}

@@ -1,0 +1,12 @@
+id: agent.task.target
+title: 挂载需求测试节点
+description: 将已有完整 Agent 任务挂载到明确的需求、应用、端与环境节点；一个节点可含多个任务。同任务重新挂载只移动绑定，不新建任务、不改变执行结果或唤醒外部 Agent。不得从标题猜测需求 ID。
+route: POST /assistant/agent-tasks/{task_id}/target
+risk: write
+async: false
+version: 1
+params_schema: {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}, "requirement_id": {"type": "string", "minLength": 1, "maxLength": 128}, "app_id": {"type": "string", "minLength": 1, "maxLength": 128}, "platform": {"type": "string", "minLength": 1, "maxLength": 128}, "environment": {"type": "string", "minLength": 1, "maxLength": 128}}, "required": ["task_id", "requirement_id", "app_id", "platform", "environment"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

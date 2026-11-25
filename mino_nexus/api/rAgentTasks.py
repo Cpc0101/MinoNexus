@@ -10,6 +10,9 @@ router = APIRouter(prefix="/agent-tasks", tags=["Agent tasks"])
 
 class AgentTaskBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    requirement_id: str | None = None
+    app_id: str | None = None
+    platform: str | None = None
     title: str | None = None
     scope: str | None = None
     environment: str | None = None
@@ -50,6 +53,12 @@ def list_agent_tasks(project_id: str = "", limit: int = Query(50, ge=1, le=100),
     return _call(agent_tasks.listing, _owner(sess), project_id, limit, offset, view)
 
 
+@router.get("/requirements/progress")
+def requirement_progress(project_id: str, sess: dict = Depends(current_session)):
+    from mino_nexus.assistant.requirement_board import board
+    return _call(board, _owner(sess), project_id)
+
+
 @router.get("/{task_id}")
 def get_agent_task(task_id: str, sess: dict = Depends(current_session)):
     return _call(agent_tasks.get, _owner(sess), task_id)
@@ -65,6 +74,9 @@ def get_agent_events(task_id: str, before_seq: int = Query(0, ge=0), limit: int 
 def update_agent_task(task_id: str, operation: str, body: AgentTaskBody, sess: dict = Depends(current_session)):
     args = body.model_dump(exclude_unset=True)
     uid = _owner(sess)
+    if operation == "target":
+        from mino_nexus.assistant.requirement_board import bind
+        return _call(bind, uid, task_id, args.get("requirement_id"), args.get("app_id"), args.get("platform"), args.get("environment"))
     if operation == "start":
         return _call(agent_tasks.create, uid, task_id, args.get("title"), args.get("project_id", ""), "external_agent", args.get("scope", ""), args.get("environment", ""))
     if operation == "link":
