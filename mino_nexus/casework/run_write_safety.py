@@ -152,14 +152,25 @@ async def recover_stopped(task_id: str):
     from mino_nexus.platform.identity import require_user_id
     from mino_nexus.casework import run_store
     from mino_nexus.resources.node_registry import get_registry
+    from mino_nexus.casework import dead_run_reaper
+
     actor = require_user_id()
     doc = run_store.get(task_id)
     if not doc or doc.get("owner_user_id") != actor:
         raise ValueError("task_not_found")
+    retired: list[dict] = []
     if run_store.task_is_live(doc):
-        raise ValueError("task_still_running")
+        # A run whose Scout worker generation is retired can never report again.
+        # Without this the doc stays "running" forever and its leases never settle.
+        retired, retired_reason = dead_run_reaper.retired_records(doc)
+        if not retired:
+            from mino_nexus.core.log import SLog
+            SLog.i("WriteSafety", f"retire probe refused task={task_id[:20]} reason={retired_reason}")
+            raise ValueError("task_still_running")
     if not doc.get("write_safety"):
-        raise ValueError("recovery_evidence_unsupported")
+        if not retired:
+            raise ValueError("recovery_evidence_unsupported")
+        return dead_run_reaper.finalize(task_id, retired)
     outcomes, baseline, attempts = [], [], set()
     for item in unresolved(doc):
         ref, sn = item.get("action_ref") or {}, item.get("sn", "")
@@ -203,7 +214,8 @@ async def recover_stopped(task_id: str):
             key = f"{ref['run_id']}:{ref['step_idx']}"
             stored = ((current or {}).get("write_safety") or {}).get(key)
             live_node, _ = get_registry().resolve(sn)
-            if valid and current and not run_store.task_is_live(current) and stored == item and live_node is node and node.scout_process_generation == current_generation:
+            settled_ok = (not run_store.task_is_live(current)) or bool(retired)
+            if valid and current and settled_ok and stored == item and live_node is node and node.scout_process_generation == current_generation:
                 # A stopped worker does not prove business data was reset. Record the
                 # baseline identity only; session invalidation and account-lease release
                 # commit together once every open action is ready.
@@ -233,6 +245,10 @@ async def recover_stopped(task_id: str):
         if current.get("execution_mode") == "v5":
             for attempt in attempts - {"", task_id}:
                 release_run_lease(attempt, app_id=str(current.get("app_id") or ""))  # strict accounts lease per attempt
+    if retired and current and not unresolved(current):
+        # Nothing left to prove: terminate the doc and hand device/account release
+        # to the normal settlement path instead of leaving a phantom "running" run.
+        return dead_run_reaper.finalize(task_id, retired)
     # Stop proof does not free the device. The screenshot baseline is the exit.
     return {"task_id": task_id, "actions": outcomes, "resource_isolated": protected(task_id),
             "business_result_unchanged": True, "baseline_required": baseline,

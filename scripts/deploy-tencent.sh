@@ -196,4 +196,8 @@ test "$port_mapping" = "127.0.0.1:50104" || {
 }
 updated=0
 trap - ERR
+# Keep a failed/rolled-back image out of the disk budget: only images newer than
+# a week are kept, so a bad deploy can still be rolled back the same week.
+docker image prune -f --filter 'until=168h' >/dev/null 2>&1 || true
+docker builder prune -f >/dev/null 2>&1 || true
 echo "Deployed Nexus $version using $image_tag to $deploy_dir"

@@ -247,6 +247,32 @@ def for_node(session_id: str, node_id: str) -> dict[str, Any] | None:
         return _view(row) if row and row.node_id == node_id else None
 
 
+def retire_attempt(session_id: str, *, reason_code: str, evidence: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Terminate an attempt whose worker generation is gone.
+
+    Nothing is sealed: no Scout ever reported a final result for this attempt, so
+    ``sealed`` stays false and every downstream consumer that demands sealed
+    evidence keeps refusing to treat it as a completed case.
+    """
+    with session_scope() as db:
+        row = db.get(ScoutRecord, str(session_id or ""))
+        if row is None:
+            return None
+        if row.status in TERMINAL:
+            return _view(row)
+        row.status = "cancelled"
+        row.summary = {**(row.summary or {}), **{k: v for k, v in (evidence or {}).items() if v is not None},
+                       "status": "cancelled", "state": "cancelled", "sealed": False,
+                       "execution_stopped": False, "browser_closed": False,
+                       "reason_code": reason_code, "worker_generation_retired": True,
+                       "detail_availability": "unavailable"}
+        row.summary_version = int(row.summary_version or 0) + 1
+        row.cancel_requested = True
+        row.updated_at = _now()
+        db.flush()
+        return _view(row)
+
+
 def for_task(task_id: str) -> list[dict[str, Any]]:
     owner = require_user_id()
     with session_scope() as db:

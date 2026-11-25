@@ -987,7 +987,8 @@ def _close_open_sessions(doc: dict[str, Any], *, summary: str = "") -> None:
 
 
 
-def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: str = "") -> dict[str, Any]:
+def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: str = "",
+           retired_workers: list[dict[str, Any]] | None = None, release: bool = True) -> dict[str, Any]:
     doc = get(run_id)
     if not doc:
         raise KeyError(run_id)
@@ -996,10 +997,16 @@ def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: s
         return doc
     from mino_nexus.resources.scout_record_store import for_task, release_evidence_confirmed, TERMINAL
     records = for_task(run_id)
-    pending_records = [row for row in records if row["status"] not in TERMINAL]
+    # A retired worker generation can never report again; its attempt row is
+    # already marked terminal with sealed=false, so it no longer blocks the run.
+    retired_ids = {str(item.get("session_id") or "") for item in (retired_workers or [])}
+    pending_records = [row for row in records
+                       if row["status"] not in TERMINAL and row["session_id"] not in retired_ids]
     if pending_records:
         return cancel_run(run_id, reason=error or "等待 Scout 确认停止")["doc"]
-    if doc.get("execution_kind") == "debug" and doc.get("cancel_requested"):
+    if retired_workers:
+        doc["retired_workers"] = [dict(item) for item in retired_workers]
+    if doc.get("execution_kind") == "debug" and doc.get("cancel_requested") and not retired_ids:
         if not records or any(not release_evidence_confirmed(row) for row in records):
             return cancel_run(run_id, reason=error or "等待 Scout 确认停止", release=False)["doc"]
     if status == "cancelled":
@@ -1027,9 +1034,10 @@ def finish(run_id: str, *, status: str = "done", error: str = "", reason_code: s
     _close_open_sessions(doc, summary=error or "")
     clear_cancel(run_id)
     out = put(doc)
-    from mino_nexus.casework.run_resource_release import release_run_resource_holdings
+    if release:
+        from mino_nexus.casework.run_resource_release import release_run_resource_holdings
 
-    release_run_resource_holdings(out)
+        release_run_resource_holdings(out)
     return out
 
 
