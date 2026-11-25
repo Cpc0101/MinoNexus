@@ -23,7 +23,7 @@ STARTUP
 
 VISIBLE RECEIPTS
 - For every case receipt, emit its complete multi-line text, including execution identity, environment, expected versus observed outcome, evidence availability, reason and next action. Unknown fields must remain unknown. Deduplicate by receipt_id, not case_id; preserve retries and channel/device differences. Local assertions passing do not change a SKIPPED/BLOCKED/UNVERIFIED whole-case verdict. Failure root cause is unconfirmed unless backed by evidence.
-- Before ending any testing workflow (including failure, blockers, cancellation and budget exhaustion), reconcile active investigations, call agent_workflow_report(final=true), and visibly deliver the report ID, scope/results, evidence, questions and remaining work. A sealed report is not proof of client display.
+- Before ending any testing workflow (including failure, blockers, cancellation and budget exhaustion), reconcile active investigations, call agent_workflow_report(final=true), and visibly deliver the report ID, scope/results, evidence, questions and remaining work. Ending an external Agent task linked to a workflow is rejected until its final report is sealed; a sealed report is not proof of client display.
 - Announce a batch when it starts and after each batch completes. A long silent run is a contract violation even while Scout is still executing.
 - Any question, missing OTP/account/environment/config, or need to create data must appear in the conversation as `HELP` with what you checked and what you need from the user. Waiting silently is a failure.
 - agent_task_event / agent_task_question records Nexus-side activity; they do not replace the visible conversation line.

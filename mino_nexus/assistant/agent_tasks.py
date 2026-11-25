@@ -5,6 +5,7 @@ from sqlalchemy import text as sql
 from mino_nexus.contract.agent_workflow import text, facts
 from mino_nexus.core.database import session_scope
 from mino_nexus.models.agent_task import AgentTask, AgentTaskEvent
+from mino_nexus.models.agent_workflow import AgentWorkflow
 
 ACTIVE = {"running", "waiting_tool"}
 TERMINAL = {"completed", "failed", "cancelled"}
@@ -148,6 +149,13 @@ def mutate(owner, task_id, operation, args):
                 if previous and previous.payload == payload:
                     return view(row)
                 raise ValueError("Ended agent task is immutable; start a new task")
+            if status in TERMINAL and state["source"] == "external_agent":
+                for reference in state["links"]:
+                    if reference["kind"] != "workflow":
+                        continue
+                    workflow = db.get(AgentWorkflow, (owner, reference["id"]))
+                    if workflow is None or workflow.state.get("delivery_status") not in {"delivered", "delivered_with_gaps"} or not any(r.get("final") for r in workflow.state.get("reports", [])):
+                        raise ValueError("Final workflow report required before ending Agent task: " + reference["id"])
             if _append(db, row, event_id, payload, timestamp):
                 state["status"], state["current_action"] = status, payload["summary"]
                 state["last_heartbeat_at"] = timestamp

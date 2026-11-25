@@ -60,7 +60,7 @@ def observe_links(owner, task_id, args, outcome):
     execution_id = data.get("task_id") or data.get("run_id")
     if isinstance(outcome.data, str) and outcome.tool_id == "case.run":
         execution_id = outcome.data
-    refs = [("workflow", args.get("workflow_id")), ("execution", execution_id),
+    refs = [("workflow", args.get("workflow_id") or data.get("workflow_id")), ("execution", execution_id),
             ("debug", data.get("session_id"))]
     for kind, reference in refs:
         if reference:
