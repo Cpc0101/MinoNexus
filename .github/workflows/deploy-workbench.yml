@@ -21,7 +21,7 @@ env:
   TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
   WORKBENCH_RELEASES_DIR: /var/www/mino-workbench-releases
   WORKBENCH_ROOT: /var/www/mino-workbench
-  WORKBENCH_PUBLIC_URL: https://workbench.minocc.top:8443
+  WORKBENCH_PUBLIC_URL: https://workbench.minocc.top
 
 jobs:
   deploy:

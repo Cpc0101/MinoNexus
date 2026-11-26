@@ -43,13 +43,13 @@ env:
   TENCENT_USER: ${{ vars.TENCENT_USER }}
   TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
   TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
-  # Public HTTPS uses the unblocked :8443 port. Workbench and Nexus remain separate origins.
-  MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL || 'https://nexus.minocc.top:8443' }}
-  MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top:8443' }}
-  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top:8443/health' }}
-  MINO_WORKBENCH_URL: ${{ vars.MINO_WORKBENCH_URL || 'https://workbench.minocc.top:8443/BUILD.json' }}
-  MINO_SCOUT_MANIFEST_URL: ${{ vars.MINO_SCOUT_MANIFEST_URL || 'https://nexus.minocc.top:8443/scout-release/manifest.json' }}
-  MINO_WORKBENCH_ORIGINS: ${{ vars.MINO_WORKBENCH_ORIGINS || 'https://workbench.minocc.top:8443' }}
+  # Public HTTPS is hostname-only on 443. Port 8443 remains a compatibility origin.
+  MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL || 'https://nexus.minocc.top' }}
+  MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top' }}
+  MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top/health' }}
+  MINO_WORKBENCH_URL: ${{ vars.MINO_WORKBENCH_URL || 'https://workbench.minocc.top/BUILD.json' }}
+  MINO_SCOUT_MANIFEST_URL: ${{ vars.MINO_SCOUT_MANIFEST_URL || 'https://nexus.minocc.top/scout-release/manifest.json' }}
+  MINO_WORKBENCH_ORIGINS: ${{ vars.MINO_WORKBENCH_ORIGINS || 'https://workbench.minocc.top,https://workbench.minocc.top:8443' }}
   TCR_REGISTRY: hkccr.ccs.tencentyun.com
   TCR_IMAGE: hkccr.ccs.tencentyun.com/mino/mino-nexus
 
@@ -103,24 +103,29 @@ jobs:
           workbench_url=${MINO_WORKBENCH_URL}
           scout_manifest_url=${MINO_SCOUT_MANIFEST_URL}
           workbench_origins=${MINO_WORKBENCH_ORIGINS%/}
-          for origin in "$nexus_public_url" "$workbench_public_url"; do
-            case "$origin" in
-              https://*/*) echo "Public origin must not contain a path: $origin" >&2; exit 1 ;;
-              https://*:8443) ;;
-              *) echo "Public origin must use https:// and :8443: $origin" >&2; exit 1 ;;
-            esac
-            host=${origin#https://}
-            case "$host" in
-              ''|*/*|*[!A-Za-z0-9.:-]*) echo "Invalid public origin host: $host" >&2; exit 1 ;;
-            esac
-          done
+          python3 - "$nexus_public_url" "$workbench_public_url" "$workbench_origins" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+def origin(value, name):
+    parts = urlsplit(value)
+    if (parts.scheme != 'https' or not parts.hostname or parts.path not in ('', '/')
+            or parts.query or parts.fragment or parts.username or parts.password
+            or parts.port not in (None, 443, 8443)):
+        raise SystemExit(f'Public origin must use https:// on 443 or legacy 8443: {name}={value}')
+
+origin(sys.argv[1], 'MINO_NEXUS_PUBLIC_URL')
+origin(sys.argv[2], 'MINO_WORKBENCH_PUBLIC_URL')
+workbench_host = urlsplit(sys.argv[2]).hostname
+for item in sys.argv[3].split(','):
+    item = item.strip()
+    origin(item, 'MINO_WORKBENCH_ORIGINS')
+    if urlsplit(item).hostname != workbench_host:
+        raise SystemExit(f'MINO_WORKBENCH_ORIGINS host must match workbench: {item}')
+PY
           case "$nexus_health_url" in "$nexus_public_url"/*) ;; *) echo "Nexus health URL is outside $nexus_public_url: $nexus_health_url" >&2; exit 1 ;; esac
           case "$workbench_url" in "$workbench_public_url"/*) ;; *) echo "Workbench URL is outside $workbench_public_url: $workbench_url" >&2; exit 1 ;; esac
           case "$scout_manifest_url" in "$nexus_public_url"/*) ;; *) echo "Scout manifest URL is outside $nexus_public_url: $scout_manifest_url" >&2; exit 1 ;; esac
-          test "$workbench_origins" = "$workbench_public_url" || {
-            echo "MINO_WORKBENCH_ORIGINS must contain only $workbench_public_url: $workbench_origins" >&2
-            exit 1
-          }
           echo "NEXUS_VERSION=$version" >> "$GITHUB_ENV"
           echo "NEXUS_IMAGE_TAG=$image_tag" >> "$GITHUB_ENV"
           echo "MINO_NEXUS_PUBLIC_URL=$nexus_public_url" >> "$GITHUB_ENV"

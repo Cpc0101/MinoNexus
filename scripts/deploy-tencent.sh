@@ -81,10 +81,10 @@ set_public_env() {
   printf '%s=%s\n' "$key" "$value" >> .env.next
 }
 
-set_public_env MINO_NEXUS_PUBLIC_URL "${MINO_NEXUS_PUBLIC_URL:-https://nexus.minocc.top:8443}"
-set_public_env MINO_WORKBENCH_PUBLIC_URL "${MINO_WORKBENCH_PUBLIC_URL:-https://workbench.minocc.top:8443}"
-set_public_env MINO_SCOUT_MANIFEST_URL "${MINO_SCOUT_MANIFEST_URL:-https://nexus.minocc.top:8443/scout-release/manifest.json}"
-set_public_env MINO_WORKBENCH_ORIGINS "${MINO_WORKBENCH_ORIGINS:-https://workbench.minocc.top:8443}"
+set_public_env MINO_NEXUS_PUBLIC_URL "${MINO_NEXUS_PUBLIC_URL:-https://nexus.minocc.top}"
+set_public_env MINO_WORKBENCH_PUBLIC_URL "${MINO_WORKBENCH_PUBLIC_URL:-https://workbench.minocc.top}"
+set_public_env MINO_SCOUT_MANIFEST_URL "${MINO_SCOUT_MANIFEST_URL:-https://nexus.minocc.top/scout-release/manifest.json}"
+set_public_env MINO_WORKBENCH_ORIGINS "${MINO_WORKBENCH_ORIGINS:-https://workbench.minocc.top,https://workbench.minocc.top:8443}"
 
 credential_key_file=${MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE:-$deploy_dir/.secrets/credential-master.key}
 case "$credential_key_file" in

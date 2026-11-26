@@ -38,7 +38,7 @@ def validate_public_url(value):
         port = parsed.port
     except ValueError as exc:
         raise ValueError("invalid_public_release_url") from exc
-    if (parsed.scheme != "https" or not parsed.hostname or port != 8443
+    if (parsed.scheme != "https" or not parsed.hostname or port not in (None, 443, 8443)
             or parsed.path != PUBLIC_RELEASE_PATH or parsed.query or parsed.fragment):
         raise ValueError("invalid_public_release_url")
     return value
@@ -201,7 +201,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--destination")
-    parser.add_argument("--public-url", default="https://nexus.minocc.top:8443/scout-release")
+    parser.add_argument("--public-url", default="https://nexus.minocc.top/scout-release")
     parser.add_argument("--metadata-only", action="store_true")
     parser.add_argument("--release-assets-json")
     args = parser.parse_args()

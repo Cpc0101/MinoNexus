@@ -37,7 +37,7 @@ def block_end(opening):
 
 
 changes = []
-public_https_port = 8443
+public_https_port = 443
 public_https = set()
 for match in re.finditer(r'(?m)^[ \t]*server\s*\{', text):
     end = block_end(match.end() - 1)
