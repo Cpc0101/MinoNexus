@@ -4,7 +4,7 @@ set -Eeuo pipefail
 config_arg=${1:-/etc/nginx/sites-enabled/mino}
 server_name=${2:-nexus.minocc.top}
 alias_path=${3:-/var/www/scout-release}
-https_port=${4:-8443}
+https_port=${4:-443}
 config=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$config_arg")
 nginx_bin=${NGINX_BIN:-nginx}
 reload_command=${NGINX_RELOAD_COMMAND:-}
