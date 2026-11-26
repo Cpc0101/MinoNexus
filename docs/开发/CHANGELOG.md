@@ -1,3 +1,7 @@
+## 0.1.145
+
+- Audit legacy Scout checkout, wait, OTP and control observations as auxiliary receipts, never as write settlement; preserve unknown original outcomes and strict retirement/epoch review.
+
 ## 0.1.144
 
 - Route attempt-scoped Scout isolation through sealed record and epoch recovery without inventing legacy action identities.

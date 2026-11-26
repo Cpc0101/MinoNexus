@@ -148,6 +148,26 @@ def main():
             changed_wait['items'].append({'seq': 4, 'type': 'tool/result', 'payload': {**wait_payload, 'capability_id': 'tap'}})
             with patch.object(evidence, '_request', return_value=changed_wait):
                 reject(lambda: evidence.audit_writes(changed_wait_row, review_unknown=True), 'recovery_write_evidence_required')
+            # Real Scout checkout/OTP/observe results share a sequence with writes.
+            # None may discharge an open device action, even when successful.
+            auxiliary = [
+                {'capability_id': 'checkout', 'executor_used': 'scout', 'action_seq': 0, 'data': {}},
+                {'capability_id': 'wait', 'executor_used': 'core', 'action_seq': 1, 'data': {}},
+                {'capability_id': 'otp', 'executor_used': 'core', 'action_seq': 1, 'data': {'matched': True}},
+                {'capability_id': 'control_observe', 'executor_used': 'playwright', 'action_seq': 1, 'data': {'nodes': []}},
+            ]
+            for payload in auxiliary:
+                aux_row = deepcopy(current); aux_row['summary']['last_event_seq'] = 2
+                aux_page = deepcopy(page)
+                aux_page['items'][1] = {'seq': 2, 'type': 'tool/result', 'payload': {
+                    **payload, 'status': 'pass', 'error': '', 'reason_code': '', 'elapsed_ms': 0, 'source_hash': 'fixture'}}
+                with patch.object(evidence, '_request', return_value=aux_page):
+                    reject(lambda: evidence.audit_writes(aux_row), 'recovery_write_outcome_unknown')
+                    audited = evidence.audit_writes(aux_row, review_unknown=True)
+                    assert audited['open_write_actions'] == 1 and audited['unknown_write_actions'] == 1
+                bad = deepcopy(aux_page); bad['items'][1]['payload']['data']['execution_control'] = {'stop_run': True}
+                with patch.object(evidence, '_request', return_value=bad):
+                    reject(lambda: evidence.audit_writes(aux_row, review_unknown=True), 'recovery_write_evidence_required')
             for index in (0, 1):
                 invalid = deepcopy(page); invalid['items'][index]['payload']['detail_in_artifact'] = True
                 with patch.object(evidence, '_request', return_value=invalid):

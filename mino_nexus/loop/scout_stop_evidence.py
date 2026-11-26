@@ -54,7 +54,22 @@ def audit_writes(row, *, review_unknown=False):
                     active.add(data['action_seq'])
                     writes.add(data['action_seq'])
             elif event.get('type') == 'tool/result':
-                if type(data.get('action_seq')) is not int or data['action_seq'] < 1:
+                capability, seq = data.get('capability_id'), data.get('action_seq')
+                # Auxiliary results (local wait, OTP box, page observation) borrow the
+                # previous device action sequence. They settle nothing about that action.
+                if capability in _AUXILIARY_CAPABILITIES:
+                    if type(seq) is not int or seq < 1 or not _auxiliary_receipt(data):
+                        _invalid_event(row, event, 'invalid_auxiliary_result')
+                    if seq not in seen:
+                        seen.add(seq)
+                        local_waits.add(seq)
+                    continue
+                # Scout's checkout receipt is the only result with no device action behind it.
+                if capability == 'checkout':
+                    if not _scout_checkout_receipt(data):
+                        _invalid_event(row, event, 'invalid_internal_result')
+                    continue
+                if type(seq) is not int or seq < 1:
                     _invalid_event(row, event, 'invalid_action_seq')
                 if data['action_seq'] not in seen:
                     # Scout's local wait reports a result directly without a device call.
@@ -102,11 +117,39 @@ def _unknown_write(value, depth=0):
     return False
 
 
+_AUXILIARY_CAPABILITIES = ('wait', 'otp', 'control_observe')
+
+
+def _auxiliary_receipt(data):
+    """Read-only receipt that rides on the previous action sequence and proves no write."""
+    if _local_wait_receipt(data):
+        return True
+    capability, executor, body = data.get('capability_id'), data.get('executor_used'), data.get('data')
+    if (data.get('status') != 'pass' or data.get('error') != ''
+            or data.get('reason_code') != '' or type(data.get('elapsed_ms')) is not int
+            or data['elapsed_ms'] < 0 or not isinstance(body, dict)
+            or _unknown_write(data) or data.get('effect_class') == 'write'
+            or 'execution_control' in body or 'execution' in body):
+        return False
+    return (capability == 'otp' and executor == 'core') or (capability == 'control_observe' and executor == 'playwright')
+
+
 def _local_wait_receipt(data):
     return (data.get('capability_id') == 'wait' and data.get('executor_used') == 'core'
             and data.get('status') == 'pass' and data.get('data') == {}
             and data.get('error') == '' and data.get('reason_code') == ''
             and type(data.get('elapsed_ms')) is int and data['elapsed_ms'] >= 0
+            and not _unknown_write(data))
+
+
+def _scout_checkout_receipt(data):
+    return (type(data.get('action_seq')) is int and data['action_seq'] == 0
+            and data.get('capability_id') == 'checkout'
+            and data.get('executor_used') == 'scout'
+            and data.get('status') == 'pass' and data.get('data') == {}
+            and data.get('error') == '' and data.get('reason_code') == ''
+            and type(data.get('elapsed_ms')) is int and data['elapsed_ms'] == 0
+            and isinstance(data.get('source_hash'), str) and bool(data['source_hash'])
             and not _unknown_write(data))
 
 
