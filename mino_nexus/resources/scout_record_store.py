@@ -66,12 +66,7 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
             or summary.get("platform") != "web"
             or summary.get("status") != record.get("status")
             or summary.get("sealed") is not True
-            or summary.get("execution_stopped") is not True
-            or summary.get("browser_closed") is not True
             or proof.get("sealed") is not True
-            or proof.get("execution_stopped") is not True
-            or proof.get("browser_closed") is not True
-            or proof.get("resource_isolated") is True
             or not isinstance(stop, dict)):
         return False
     for key in ("task_id", "session_id", "attempt_id", "owner_user_id", "node_id", "sn", "case_id"):
@@ -100,6 +95,20 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
             or not isinstance(generation, str) or not generation.strip()
             or type(started) not in (int, float) or isinstance(started, bool) or started <= 0):
         return False
+    uncertain = (execution_outcome_unknown(record) or resource_isolated(record)
+                 or summary.get("execution_stopped") is not True or summary.get("browser_closed") is not True)
+    if uncertain:
+        audit = proof.get("retirement_write_audit") or {}
+        lifetime_unknown = (execution_outcome_unknown(record) or summary.get("execution_stopped") is not True
+                            or summary.get("browser_closed") is not True)
+        if ((lifetime_unknown and mode != "retired_generation") or audit.get("contract") != "sealed_write_audit.v1"
+                or audit.get("summary_version") != version
+                or type(audit.get("last_event_seq")) is not int or audit["last_event_seq"] < 1
+                or audit.get("last_event_seq") != summary.get("last_event_seq")
+                or type(audit.get("open_write_actions")) is not int or audit["open_write_actions"] != 0):
+            return False
+    if mode == "same_process" and (proof.get("execution_stopped") is not True or proof.get("browser_closed") is not True):
+        return False
     if mode == "same_process":
         return generation == summary_generation
     return generation != summary_generation
@@ -124,6 +133,10 @@ def stop_evidence_confirmed(record: dict[str, Any]) -> bool:
     summary = record.get("summary") or {}
     if record.get("status") not in TERMINAL or summary.get("sealed") is not True:
         return False
+    if (record.get("payload") or {}).get("platform") == "web":
+        proof = (record.get("context") or {}).get("resource_stop")
+        if web_stop_proof_valid(record, proof):
+            return True
     if execution_outcome_unknown(record):
         return False
     if summary.get("execution_started") == "no":
@@ -131,8 +144,7 @@ def stop_evidence_confirmed(record: dict[str, Any]) -> bool:
     if summary.get("execution_stopped") is not True:
         return False
     if (record.get("payload") or {}).get("platform") == "web":
-        proof = (record.get("context") or {}).get("resource_stop")
-        return web_stop_proof_valid(record, proof)
+        return False
     return True
 
 
@@ -166,14 +178,9 @@ def web_stop_recovery_candidate(record: dict[str, Any]) -> bool:
     if (record.get("status") not in TERMINAL or record.get("cancel_requested") is not True
             or (record.get("payload") or {}).get("platform") != "web"):
         return False
-    if (summary.get("sealed") is not True
-            or summary.get("execution_started") in {None, "no", "unknown"}
-            or summary.get("execution_stopped") is not True
-            or summary.get("browser_closed") is not True
-            or summary.get("state") == "interrupted"
-            or summary.get("reason_code") == "write_outcome_unknown"):
-        return False
-    return not stop_evidence_confirmed(record)
+    unresolved_retirement = ((execution_outcome_unknown(record) or resource_isolated(record))
+                             and ((record.get("context") or {}).get("resource_resolution") or {}).get("state") != "released")
+    return not stop_evidence_confirmed(record) or unresolved_retirement
 
 
 def save_resource_stop(session_id: str, proof: dict[str, Any]) -> dict[str, Any]:
@@ -199,7 +206,7 @@ def save_resource_stop(session_id: str, proof: dict[str, Any]) -> dict[str, Any]
                 "resource_isolated",
             )
         }
-        snapshot.update(resource_stop=deepcopy(stop), recorded_at=_now())
+        snapshot.update(resource_stop=deepcopy(stop), retirement_write_audit=deepcopy(proof.get("retirement_write_audit")), recorded_at=_now())
         row.context = {**(row.context or {}), "resource_stop": snapshot}
         row.updated_at = _now()
         db.flush()
@@ -313,18 +320,18 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
                 raise PermissionError("record_owner_mismatch")
         if str(incoming.get("node_id") or "") != node_id:
             raise PermissionError("record_owner_mismatch")
-        if version <= row.summary_version:
+        if version < row.summary_version or (version == row.summary_version and row.summary.get("sealed") is True):
             return _view(row)
-        if row.status in TERMINAL and status != row.status:
+        if row.status in TERMINAL and row.summary.get("sealed") is True and status != row.status:
             raise ValueError("record_terminal_conflict")
-        if row.status in TERMINAL and any(key in row.summary and row.summary[key] != incoming.get(key)
+        if row.status in TERMINAL and row.summary.get("sealed") is True and any(key in row.summary and row.summary[key] != incoming.get(key)
                                          for key in ("state", "reason_code", "execution_started", "resource_isolated",
                                                      "execution_stopped", "browser_closed", "scout_process_generation")):
             raise ValueError("record_terminal_conflict")
         summary = {key: deepcopy(value) for key, value in incoming.items() if key in _SUMMARY_FIELDS}
         from mino_nexus.core.protocol import validate_data_summary
         summary.update(validate_data_summary(summary))
-        if row.status in TERMINAL and any(row.summary.get(key, default) != summary[key] for key, default in (("data_outputs", {}), ("data_missing", []))):
+        if row.status in TERMINAL and row.summary.get("sealed") is True and any(row.summary.get(key, default) != summary[key] for key, default in (("data_outputs", {}), ("data_missing", []))):
             raise ValueError("record_terminal_conflict")
         if "test_report" in summary:
             from mino_nexus.contract.business_report import normalize_test_report
@@ -344,13 +351,13 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
             summary["assertions"] = {key: raw_counts.get(key, raw_counts.get(alias)) for key, alias in aliases.items()}
         from mino_nexus.contract.business_report import validate_report_summary
         validate_report_summary(summary, row.payload)
-        if row.status in TERMINAL and any(row.summary.get(key) != summary.get(key) for key in ("test_report", "assertions", "source_coverage", "source_hash", "revision", "started_at", "finished_at", "elapsed_ms", "last_event_seq", "run_purpose")):
+        if row.status in TERMINAL and row.summary.get("sealed") is True and any(row.summary.get(key) != summary.get(key) for key in ("test_report", "assertions", "source_coverage", "source_hash", "revision", "started_at", "finished_at", "elapsed_ms", "last_event_seq", "run_purpose")):
             raise ValueError("record_terminal_conflict")
         # No arbitrary nested logs or screenshots may be hidden in a summary.
         import json
         if len(json.dumps(summary, ensure_ascii=False).encode()) > 131072:
             raise ValueError("record_summary_too_large")
-        db.execute(update(ScoutRecord).where(ScoutRecord.session_id == sid, ScoutRecord.summary_version < version)
+        db.execute(update(ScoutRecord).where(ScoutRecord.session_id == sid, ScoutRecord.summary_version <= version)
                    .values(status=status, summary_version=version, summary=summary, updated_at=_now()))
         db.flush()
         db.expire(row)
@@ -362,7 +369,8 @@ def request_cancel(task_id: str) -> list[dict[str, Any]]:
     with session_scope() as db:
         rows = db.query(ScoutRecord).filter_by(task_id=task_id, owner_user_id=owner).all()
         for row in rows:
-            if row.status not in TERMINAL:
+            if row.status not in TERMINAL or ((row.payload or {}).get("execution_kind") == "debug"
+                    and (row.payload or {}).get("platform") == "web" and not stop_evidence_confirmed(_view(row))):
                 row.cancel_requested = True
                 row.updated_at = _now()
         db.flush()

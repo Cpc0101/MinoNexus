@@ -217,11 +217,13 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
 
     task_id = str(record["task_id"])
     session_id = str(record["session_id"])
+    from mino_nexus.loop.scout_record_proxy import RecordReadError
     owner = require_user_id()
 
     # Cancellation is only an intent. Resources remain fenced until Scout has
     # persisted a sealed terminal summary and any Web lane stop has been proved.
     run_store.cancel_run(task_id, release=False)
+    scout_record_store.request_cancel(task_id)
     record = scout_record_store.get(session_id) or record
     state = _close_state(record, owner)
     if state["state"] == "closed":
@@ -229,8 +231,6 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
     record = scout_record_store.get(session_id) or record
 
     terminal = record.get("status") in scout_record_store.TERMINAL
-    if terminal and not scout_record_store.web_stop_recovery_candidate(record):
-        return state
 
     node = get_registry().get_node(str(record.get("node_id") or ""))
     if (node is None or not node.alive or not node.send
@@ -238,6 +238,10 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
         return _stopping(task_id, session_id, "stop_evidence_required")
     params = _scope(record, node)
     try:
+        canonical = _call(node, "record.status", params, run_id=task_id, sn=str(record.get("sn") or ""),
+                          platform=str((record.get("payload") or {}).get("platform") or ""), timeout=5)
+        record = _persist_status(node.node_id, canonical, record)
+        terminal = record.get("status") in scout_record_store.TERMINAL
         if not terminal:
             ack = _call(
                 node, "debug.close", params, run_id=task_id, sn=str(record.get("sn") or ""),
@@ -264,16 +268,20 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
 
         if (not scout_record_store.stop_evidence_confirmed(record)
                 and scout_record_store.web_stop_recovery_candidate(record)):
-            proof = _call(
-                node, "record.resource_status", _scope(record, node), run_id=task_id,
-                sn=str(record.get("sn") or ""), platform="web", timeout=5,
-            )
+            from mino_nexus.loop.scout_stop_evidence import fetch_stop_evidence
+            record, proof = fetch_stop_evidence(record)
             if not scout_record_store.web_stop_proof_valid(record, proof):
                 return _stopping(task_id, session_id, "stop_evidence_required")
             record = scout_record_store.save_resource_stop(session_id, proof)
 
-        return _close_state(record, owner)
-    except (DebugCallError, PermissionError, ValueError):
+        state = _close_state(record, owner)
+        if state["state"] != "closed" and state.get("stop_confirmed"):
+            from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources
+            reconcile_task_resources(task_id)
+            record = scout_record_store.get(session_id) or record
+            state = _close_state(record, owner)
+        return state
+    except (DebugCallError, RecordReadError, PermissionError, ValueError):
         return _stopping(task_id, session_id, "stop_evidence_required")
 
 

@@ -9,7 +9,6 @@ from mino_nexus.core.log import SLog
 from mino_nexus.platform.identity import require_user_id
 from mino_nexus.resources import scout_record_store as records
 from mino_nexus.casework import run_store
-from mino_nexus.loop.scout_record_proxy import _request
 
 
 _RECOVERY_RETRY_AFTER_SEC = 30.0
@@ -44,20 +43,28 @@ def reconcile_task_resources(task_id: str) -> dict:
         raise ValueError("record_not_found")
     if any(row["payload"].get("platform") != "web" for row in rows):
         raise ValueError("resource_baseline_required")
+    from mino_nexus.loop.scout_stop_evidence import fetch_stop_evidence
     proofs = []
+    refreshed = []
     for row in rows:
+        if not row["summary_version"] and row["summary"].get("execution_started") == "no":
+            refreshed.append(row)
+            continue
+        row, proof = fetch_stop_evidence(row)
+        refreshed.append(row)
         if row["status"] not in records.TERMINAL or row["summary"].get("sealed") is not True:
             raise ValueError("stop_evidence_required")
         if not row["summary_version"] and row["summary"].get("execution_started") == "no":
             continue  # Persisted rejection before any Scout acceptance.
-        proof = _request(row, "record.resource_status", timeout=5)
         stop = proof.get("resource_stop") or {}
         if not records.web_stop_proof_valid(row, proof):
             raise ValueError("stop_evidence_required")
-        proofs.append({"attempt_id": row["attempt_id"], "summary_version": row["summary_version"], "resource_stop": stop})
+        refreshed[-1] = records.save_resource_stop(row["session_id"], proof)
+        proofs.append({"attempt_id": row["attempt_id"], "summary_version": row["summary_version"], "resource_stop": stop,
+                       "retirement_write_audit": proof.get("retirement_write_audit")})
     if not proofs:
         raise ValueError("stop_evidence_required")
-    return _commit(task_id, actor, rows, proofs)
+    return _commit(task_id, actor, refreshed, proofs)
 
 
 def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict]) -> dict:
@@ -111,7 +118,7 @@ def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict]) -> d
                     action.update(state="recovered", stop_confirmed=True, recovery=resolution)
             for case in doc.get("cases") or []:
                 case.update(resource_isolated=False, resource_resolution=resolution)
-            doc.update(resource_isolated=False, reason_code="", resource_resolution=resolution)
+            doc.update(resource_isolated=False, resource_resolution=resolution)
             run.payload = doc
             db.flush()
         run_store._LIVE.pop(task_id, None)
@@ -184,13 +191,14 @@ def repair_terminal_resources() -> None:
             continue
         with execution_user(row["owner_user_id"]):
             try:
-                proof = _request(row, "record.resource_status", timeout=5)
+                from mino_nexus.loop.scout_stop_evidence import fetch_stop_evidence
+                row, proof = fetch_stop_evidence(row)
                 if not records.web_stop_proof_valid(row, proof):
                     SLog.w("ScoutResources", f"web stop evidence remains unconfirmed session={row['session_id']}")
                     continue
                 current = records.save_resource_stop(row["session_id"], proof)
                 project(current)
-                settle_terminal_task(row["task_id"], row["owner_user_id"])
+                reconcile_task_resources(row["task_id"])
             except Exception as exc:
                 reason = str(getattr(exc, "reason_code", "") or type(exc).__name__)
                 SLog.w("ScoutResources", f"web stop recovery pending session={row['session_id']} reason={reason}")
