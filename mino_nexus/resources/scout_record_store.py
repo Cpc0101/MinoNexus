@@ -5,6 +5,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
+from math import isfinite
 
 from sqlalchemy import and_, or_, text, update
 
@@ -91,21 +92,36 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
             or stop.get("worker_active") is not False
             or stop.get("browser_closed") is not True
             or stop.get("reason_code") != "web_lane_stopped"
-            or mode not in _WEB_STOP_MODES
+            or not isinstance(mode, str) or mode not in _WEB_STOP_MODES
             or not isinstance(generation, str) or not generation.strip()
-            or type(started) not in (int, float) or isinstance(started, bool) or started <= 0):
+            or type(started) not in (int, float) or not isfinite(started) or started <= 0):
         return False
     uncertain = (execution_outcome_unknown(record) or resource_isolated(record)
                  or summary.get("execution_stopped") is not True or summary.get("browser_closed") is not True)
-    if uncertain:
-        audit = proof.get("retirement_write_audit") or {}
+    audit = proof.get("retirement_write_audit") or {}
+    if not isinstance(audit, dict) or (audit.get("contract") is not None and not isinstance(audit["contract"], str)):
+        return False
+    reviewed = audit.get("contract") == "retired_write_review.v1"
+    if reviewed and (mode != "retired_generation" or audit.get("reviewed_by") != record.get("owner_user_id")
+                     or audit.get("historical_outcome_preserved") is not True
+                     or type(audit.get("unknown_write_actions")) is not int
+                     or audit["unknown_write_actions"] < 0):
+        return False
+    if uncertain or reviewed:
         lifetime_unknown = (execution_outcome_unknown(record) or summary.get("execution_stopped") is not True
                             or summary.get("browser_closed") is not True)
-        if ((lifetime_unknown and mode != "retired_generation") or audit.get("contract") != "sealed_write_audit.v1"
-                or audit.get("summary_version") != version
+        if ((lifetime_unknown and mode != "retired_generation")
+                or audit.get("contract") not in {"sealed_write_audit.v1", "retired_write_review.v1"}
+                or type(audit.get("summary_version")) is not int or audit["summary_version"] != version
                 or type(audit.get("last_event_seq")) is not int or audit["last_event_seq"] < 1
-                or audit.get("last_event_seq") != summary.get("last_event_seq")
-                or type(audit.get("open_write_actions")) is not int or audit["open_write_actions"] != 0):
+                or type(summary.get("last_event_seq")) is not int
+                or audit["last_event_seq"] != summary["last_event_seq"]
+                or type(audit.get("open_write_actions")) is not int or audit["open_write_actions"] < 0):
+            return False
+        if reviewed:
+            if audit["unknown_write_actions"] < audit["open_write_actions"]:
+                return False
+        elif audit["open_write_actions"] != 0:
             return False
     if mode == "same_process" and (proof.get("execution_stopped") is not True or proof.get("browser_closed") is not True):
         return False
@@ -158,7 +174,7 @@ def release_evidence_confirmed(record: dict[str, Any]) -> bool:
     resolution = (record.get("context") or {}).get("resource_resolution") or {}
     if resolution.get("state") == "released":
         return True
-    if execution_outcome_unknown(record):
+    if execution_outcome_unknown(record) or resource_isolated(record):
         return False
     if summary.get("execution_started") == "no":
         return True

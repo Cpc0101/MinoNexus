@@ -29,7 +29,7 @@ def _recovery_due(row: dict, now: float) -> bool:
     return True
 
 
-def reconcile_task_resources(task_id: str) -> dict:
+def reconcile_task_resources(task_id: str, *, review_unknown: bool = False) -> dict:
     actor = require_user_id()
     doc = run_store.get(task_id)
     if not doc or doc.get("owner_user_id") != actor:
@@ -50,12 +50,10 @@ def reconcile_task_resources(task_id: str) -> dict:
         if not row["summary_version"] and row["summary"].get("execution_started") == "no":
             refreshed.append(row)
             continue
-        row, proof = fetch_stop_evidence(row)
+        row, proof = fetch_stop_evidence(row, review_unknown=review_unknown)
         refreshed.append(row)
         if row["status"] not in records.TERMINAL or row["summary"].get("sealed") is not True:
             raise ValueError("stop_evidence_required")
-        if not row["summary_version"] and row["summary"].get("execution_started") == "no":
-            continue  # Persisted rejection before any Scout acceptance.
         stop = proof.get("resource_stop") or {}
         if not records.web_stop_proof_valid(row, proof):
             raise ValueError("stop_evidence_required")
@@ -64,10 +62,10 @@ def reconcile_task_resources(task_id: str) -> dict:
                        "retirement_write_audit": proof.get("retirement_write_audit")})
     if not proofs:
         raise ValueError("stop_evidence_required")
-    return _commit(task_id, actor, refreshed, proofs)
+    return _commit(task_id, actor, refreshed, proofs, review_unknown=review_unknown)
 
 
-def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict]) -> dict:
+def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict], *, review_unknown: bool = False) -> dict:
     from sqlalchemy import text
     from mino_nexus.core.database import session_scope
     from mino_nexus.models.run import AppRegressionRun
@@ -96,14 +94,19 @@ def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict]) -> d
                         or record.status not in records.TERMINAL or record.summary.get("sealed") is not True
                         or record.node_id != old["node_id"] or record.context != old["context"]):
                     raise ValueError("resource_resolution_conflict")
+            for record in indexed:
+                snapshot = records.view(record)
+                if record.summary_version and not records.web_stop_proof_valid(snapshot, snapshot["context"].get("resource_stop")):
+                    raise ValueError("stop_evidence_required")
             attempts = set(snapshots)
-            if any(action.get("attempt_id") not in attempts for action in unresolved(doc)):
+            if any(action.get("attempt_id") not in attempts or action.get("sn") != snapshots[action["attempt_id"]]["sn"] for action in unresolved(doc)):
                 raise ValueError("resource_baseline_required")
             holdings = db.query(ExecutionResource).filter_by(run_id=task_id, owner_user_id=actor).all()
             for resource in holdings:
                 if resource.state != "released" and not _owns_epoch(resource, indexed):
                     raise ValueError("resource_resolution_conflict")
-            resolution = {"state": "released", "verification_kind": "web_lane_stop", "actor": actor,
+            resolution = {"state": "released", "verification_kind": "retired_web_lane_review" if review_unknown else "web_lane_stop", "actor": actor,
+                          "historical_outcome_preserved": True, "automatic_replay_allowed": False,
                           "resolved_at": datetime.now(timezone.utc).isoformat(),
                           "business_result_unchanged": True, "proofs": deepcopy(proofs)}
             for record in indexed:
@@ -112,12 +115,18 @@ def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict]) -> d
                 if resource.state != "released":
                     resource.epoch += 1
                     resource.state, resource.expires_at = "released", 0
-            _release_auxiliary(db, task_id, doc, indexed)
+            accounts = _release_auxiliary(db, task_id, doc, indexed)
+            resolution.update(device_resources_released=[r.resource_key for r in holdings], account_leases_released=accounts)
+            doc["isolation_exit"] = {"committed": True, "verification_kind": resolution["verification_kind"],
+                                     "business_result_unchanged": True, "resource_reset_verified": False,
+                                     "device_resources_released": resolution["device_resources_released"],
+                                     "account_leases_released": accounts}
             for action in (doc.get("write_safety") or {}).values():
-                if action.get("attempt_id") in attempts:
-                    action.update(state="recovered", stop_confirmed=True, recovery=resolution)
+                if isinstance(action, dict) and action.get("attempt_id") in attempts:
+                    action.update(state="recovered", stop_confirmed=True, recovery={**(action.get("recovery") or {}), **resolution})
             for case in doc.get("cases") or []:
-                case.update(resource_isolated=False, resource_resolution=resolution)
+                if isinstance(case, dict):
+                    case.update(resource_isolated=False, resource_resolution=resolution)
             doc.update(resource_isolated=False, resource_resolution=resolution)
             run.payload = doc
             db.flush()
@@ -129,10 +138,11 @@ def _owns_epoch(resource, indexed) -> bool:
     return any(resource.attempt_id == (record.context.get("resource_request") or {}).get("attempt_id")
                and resource.epoch == ((record.context.get("resource_request") or {}).get("resource_epochs") or {}).get(resource.resource_key)
                and resource.sn == record.sn and resource.owner_user_id == record.owner_user_id
+               and resource.project_id == record.context.get("project_id")
                for record in indexed)
 
 
-def _release_auxiliary(db, task_id, doc, indexed) -> None:
+def _release_auxiliary(db, task_id, doc, indexed) -> list[str]:
     from mino_nexus.models.pool_account import PoolAccount
     from mino_nexus.models.resource_ops import DeviceResourceLease
     from mino_nexus.models.device_reservation import DeviceReservation
@@ -140,12 +150,15 @@ def _release_auxiliary(db, task_id, doc, indexed) -> None:
     projects = {str(record.context.get("project_id") or "") for record in indexed} - {""}
     if doc.get("project_id"):
         projects.add(str(doc["project_id"]))
+    accounts = []
     for account in db.query(PoolAccount).filter(PoolAccount.project_id.in_(projects)).all():
         if str((account.lease or {}).get("run_id") or "") in aliases:
             account.lease, account.updated_at = {}, int(time.time())
+            accounts.append(account.id)
     db.query(DeviceResourceLease).filter(DeviceResourceLease.run_id.in_(aliases),
         DeviceResourceLease.sn.in_({record.sn for record in indexed})).delete(synchronize_session=False)
     db.query(DeviceReservation).filter_by(run_id=task_id).delete(synchronize_session=False)
+    return accounts
 
 
 def settle_terminal_task(task_id: str, owner: str) -> None:
@@ -173,6 +186,7 @@ def settle_terminal_task(task_id: str, owner: str) -> None:
             return
         for resource in holdings:
             if resource.state != "released":
+                resource.epoch += 1
                 resource.state, resource.expires_at = "released", 0
         _release_auxiliary(db, task_id, doc, indexed)
 

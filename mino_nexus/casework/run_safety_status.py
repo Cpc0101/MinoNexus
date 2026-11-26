@@ -12,7 +12,7 @@ def status(task_id):
         row = db.get(AppRegressionRun, task_id)
         if row is None or row.owner_user_id != require_user_id():
             raise KeyError("task_not_found")
-        doc = row.payload
+        doc = row.payload or {}
         actions = [{"action_ref": item.get("action_ref"), "sn": item.get("sn", ""),
             "state": item.get("state"), "execution_started": item.get("execution_started", "unknown"),
             "stop_confirmed": item.get("stop_confirmed") is True,
@@ -21,13 +21,18 @@ def status(task_id):
             for item in unresolved(doc)]
         resources = [{"resource_key": r.resource_key, "execution_unit_id": r.execution_unit_id,
             "sn": r.sn, "state": r.state, "epoch": r.epoch, "expires_at": r.expires_at,
-            "expired": r.expires_at <= time.time()} for r in db.query(ExecutionResource).filter_by(run_id=task_id).all()]
+            "expired": r.expires_at <= time.time()} for r in db.query(ExecutionResource).filter_by(run_id=task_id, owner_user_id=row.owner_user_id).all()]
         isolated = bool(actions) or any(r["state"] == "isolated" or r["state"] == "held" and r["expired"] for r in resources)
         missing = []
         if (isolated and not actions) or any(not a["stop_confirmed"] for a in actions):
             missing.append("stop_evidence_required")
         if isolated:
             missing.append("resource_reset_verification_required")
-        return {"task_id": task_id, "resource_isolated": isolated, "actions": actions, "resources": resources,
+        from mino_nexus.models.scout_record import ScoutRecord
+        indexed = db.query(ScoutRecord).filter_by(task_id=task_id, owner_user_id=row.owner_user_id).all()
+        baseline_review_available = bool(indexed) and bool(row.finished_at) and row.status not in {"running", "queued"} and all(
+            (record.payload or {}).get("platform") == "web" for record in indexed)
+        return {"baseline_review_available": baseline_review_available, "resource_resolution": doc.get("resource_resolution"),
+            "task_id": task_id, "resource_isolated": isolated, "actions": actions, "resources": resources,
             "missing_evidence": missing, "business_result_unchanged": True,
             "reconciliation_count": len(doc.get("write_reconciliation") or {})}

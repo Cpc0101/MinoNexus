@@ -117,6 +117,107 @@ def main():
                     assert resource.state == 'released' and resource.epoch == 2
                 assert records.stop_evidence_confirmed(records.get('attempt'))
                 assert reconcile_task_resources('task') == result
+            # A late unknown receipt must not be hidden by an earlier pass for the same write.
+            late_row = deepcopy(current); late_row['summary']['last_event_seq'] = 3
+            late_page = deepcopy(page); late_page.update(high_watermark=3, next_seq=3)
+            late_page['items'].append({'seq': 3, 'type': 'tool/result', 'payload': {
+                'action_seq': 1, 'status': 'blocked', 'data': {'execution': {'write_outcome': 'unknown'}}}})
+            with patch.object(evidence, '_request', return_value=late_page):
+                reject(lambda: evidence.audit_writes(late_row), 'recovery_write_outcome_unknown')
+                assert evidence.audit_writes(late_row, review_unknown=True)['unknown_write_actions'] == 1
+            malformed = deepcopy(page); malformed['items'][1]['payload']['action_seq'] = []
+            with patch.object(evidence, '_request', return_value=malformed):
+                reject(lambda: evidence.audit_writes(current, review_unknown=True), 'recovery_write_evidence_required')
+            malformed = deepcopy(page); malformed['items'][0]['seq'] = True
+            with patch.object(evidence, '_request', return_value=malformed):
+                reject(lambda: evidence.audit_writes(current), 'recovery_write_evidence_incomplete')
+            wrong = deepcopy(verified); wrong['resource_stop']['process_started_at'] = float('nan')
+            assert not records.web_stop_proof_valid(current, wrong)
+            wrong = deepcopy(verified); wrong['resource_stop']['mode'] = []
+            assert not records.web_stop_proof_valid(current, wrong)
+
+            review_identity = {**identity, 'task_id': 'review-task', 'run_id': 'review-task',
+                               'session_id': 'review-attempt', 'attempt_id': 'review-attempt'}
+            review_summary = {**summary, **review_identity}
+            review_proof = {**proof, **review_identity}
+            review_page = deepcopy(page)
+            review_page['items'][1]['payload'].update(status='blocked', reason_code='write_outcome_unknown')
+            with session_scope() as db:
+                db.add(AppRegressionRun(run_id='review-task', owner_user_id='owner', status='cancelled',
+                    finished_at='2026-11-26T00:00:00Z', payload={'run_id': 'review-task', 'task_id': 'review-task',
+                    'owner_user_id': 'owner', 'status': 'cancelled', 'finished_at': '2026-11-26T00:00:00Z',
+                    'project_id': 'project', 'reason_code': 'write_outcome_unknown', 'write_safety': {},
+                    'cases': [{'case_id': 'case', 'status': 'blocked', 'reason_code': 'write_outcome_unknown'}]}))
+                db.add(ScoutRecord(**{k: review_identity[k] for k in ('task_id','session_id','attempt_id','owner_user_id','node_id','sn','case_id')},
+                    status='blocked', summary_version=2, cancel_requested=True, payload={**review_identity, 'execution_kind': 'debug'},
+                    summary=review_summary, context={'project_id': 'project', 'resource_request': {
+                    'attempt_id': 'review-attempt', 'resource_epochs': {'device:web-node:review-task': 1}}}, updated_at='2026-11-26T00:00:00Z'))
+                db.add(ExecutionResource(resource_key='device:web-node:review-task', project_id='project', owner_user_id='owner',
+                    run_id='review-task', execution_unit_id='unit', attempt_id='review-attempt', sn='web-node', epoch=1, expires_at=0, state='isolated'))
+                db.add(PoolAccount(id='review-account', project_id='project', lease={'run_id': 'review-attempt'}))
+                db.add(DeviceResourceLease(sn='web-node', package_id='https://example.invalid', run_id='review-task', project_id='project'))
+            def review_request(row, capability, params=None, **kwargs):
+                return deepcopy({'record.status': review_summary, 'record.resource_status': review_proof, 'record.events': review_page}[capability])
+            from mino_nexus.casework.run_write_safety import confirm_baseline, recover_stopped
+            from mino_nexus.casework.run_safety_status import status as safety_status
+            import asyncio
+            with patch.object(evidence, '_request', side_effect=review_request):
+                assert safety_status('review-task')['baseline_review_available']
+                assert protected('review-task')
+                reject(lambda: reconcile_task_resources('review-task'), 'recovery_write_outcome_unknown')
+                reject(lambda: asyncio.run(recover_stopped('review-task')), 'recovery_write_outcome_unknown')
+                row, reviewed_proof = evidence.fetch_stop_evidence(records.get('review-attempt'), review_unknown=True)
+                assert reviewed_proof['retirement_write_audit']['unknown_write_actions'] == 1
+                assert records.web_stop_proof_valid(row, reviewed_proof)
+                wrong = deepcopy(reviewed_proof); wrong['retirement_write_audit']['reviewed_by'] = 'other'
+                assert not records.web_stop_proof_valid(row, wrong)
+                wrong = deepcopy(reviewed_proof); wrong['resource_stop']['mode'] = 'same_process'
+                assert not records.web_stop_proof_valid(row, wrong)
+                review_proof['resource_stop']['worker_active'] = True
+                reject(lambda: asyncio.run(confirm_baseline('review-task')), 'stop_evidence_required')
+                review_proof['resource_stop']['worker_active'] = False
+                with session_scope() as db:
+                    db.get(ExecutionResource, 'device:web-node:review-task').epoch = 2
+                reject(lambda: asyncio.run(confirm_baseline('review-task')), 'resource_resolution_conflict')
+                with session_scope() as db:
+                    assert db.get(PoolAccount, 'review-account').lease == {'run_id': 'review-attempt'}
+                    assert db.get(ExecutionResource, 'device:web-node:review-task').state == 'isolated'
+                    db.get(ExecutionResource, 'device:web-node:review-task').epoch = 1
+                from mino_nexus.contract.ownership import bind_user, reset_user
+                token = bind_user('other')
+                try:
+                    reject(lambda: asyncio.run(confirm_baseline('review-task')), 'task_not_found')
+                finally:
+                    reset_user(token)
+                result = asyncio.run(confirm_baseline('review-task'))
+                assert result['isolation_exit']['committed'] and not result['isolation_exit']['resource_reset_verified']
+                assert result['resource_resolution']['verification_kind'] == 'retired_web_lane_review'
+                assert result['resource_resolution']['automatic_replay_allowed'] is False
+                assert not protected('review-task')
+                assert asyncio.run(confirm_baseline('review-task')) == result
+                with session_scope() as db:
+                    run = db.get(AppRegressionRun, 'review-task')
+                    assert run.status == 'cancelled' and run.payload['reason_code'] == 'write_outcome_unknown'
+                    assert run.payload['cases'][0]['status'] == 'blocked'
+                    assert db.get(PoolAccount, 'review-account').lease == {}
+                    resource = db.get(ExecutionResource, 'device:web-node:review-task')
+                    assert resource.state == 'released' and resource.epoch == 2
+                    assert db.query(DeviceResourceLease).count() == 1
+                    assert db.query(DeviceResourceLease).first().run_id == 'other-task'
+            from mino_nexus.casework.isolation_exit import commit_baseline_release
+            physical_doc = {'run_id': 'physical-task', 'task_id': 'physical-task', 'owner_user_id': 'owner',
+                            'status': 'cancelled', 'platform': 'android', 'write_safety': {
+                            'action': {'state': 'isolated', 'sn': 'phone', 'action_ref': {'run_id': 'physical-task', 'step_idx': 1}}}}
+            with session_scope() as db:
+                db.add(AppRegressionRun(run_id='physical-task', owner_user_id='owner', status='cancelled',
+                    finished_at='2026-11-26T00:00:00Z', payload=physical_doc))
+            reject(lambda: asyncio.run(confirm_baseline('physical-task')), 'stop_evidence_required')
+            outcome = commit_baseline_release('physical-task', actor='owner', sns={'phone'}, observations=[],
+                                               expected_actions=physical_doc['write_safety'])
+            assert not outcome['committed'] and outcome['blocked_reason'] == 'stop_evidence_required'
+            outcome = commit_baseline_release('physical-task', actor='owner', sns={'phone'}, observations=[], expected_actions={})
+            assert not outcome['committed'] and outcome['blocked_reason'] == 'resource_resolution_conflict'
+            print('PASS: explicit retired-generation review preserves unknown outcomes; zero-action isolation; live-worker rejection; epoch conflict rollback; cross-owner rejection; idempotent baseline; late unknown receipt; malformed evidence')
             changed = {**summary, 'summary_version': 3, 'execution_started': 'yes'}
             reject(lambda: records.receive('node', changed), 'record_terminal_conflict')
         print('PASS: refresh unsealed legacy terminal; exact retired-generation proof; sealed write audit; unknown writes stay fenced; atomic release; immutable original verdict; idempotent recovery')

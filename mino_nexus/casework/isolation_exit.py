@@ -212,7 +212,7 @@ def _reservation_for_sn(key: str, sn: str) -> bool:
     return key == f"device:{sn}" or key.startswith(f"web:{sn}") or key.startswith(f"device:{sn}:")
 
 
-def commit_baseline_release(task_id: str, *, actor: str, sns: set[str], observations: list) -> dict:
+def commit_baseline_release(task_id: str, *, actor: str, sns: set[str], observations: list, expected_actions: dict) -> dict:
     """Screenshot already succeeded. Free these devices and their account leases together."""
     from sqlalchemy import text
     from sqlalchemy.orm.attributes import flag_modified
@@ -244,6 +244,27 @@ def commit_baseline_release(task_id: str, *, actor: str, sns: set[str], observat
                             if str(action.get("sn") or "") in devices]
             if not open_actions:
                 return {**empty, "blocked_reason": "baseline_not_required"}
+            if dict(_open_actions(doc)) != expected_actions:
+                return {**empty, "blocked_reason": "resource_resolution_conflict"}
+            if any(not _proof_ok(action, doc) for _, action in open_actions):
+                return {**empty, "blocked_reason": "stop_evidence_required"}
+            observed = {item.get("sn"): item for item in observations if isinstance(item, dict)}
+            if not devices.issubset(observed):
+                return {**empty, "blocked_reason": "baseline_screenshot_unavailable"}
+            for sn in devices:
+                if _is_web_lane(sn, doc):
+                    if observed[sn].get("verification_kind") != "web_lane_stop":
+                        return {**empty, "blocked_reason": "stop_evidence_required"}
+                    continue
+                from mino_nexus.models.session_event import SessionEvent, SessionMeta
+                shot = observed[sn]
+                meta = db.get(SessionMeta, shot.get("session_id")) if shot.get("session_id") else None
+                event = db.query(SessionEvent).filter_by(session_id=shot.get("session_id"), seq=shot.get("seq")).first()
+                evidence = (event.payload or {}) if event is not None else {}
+                if (meta is None or meta.owner_user_id != actor or event is None or event.type != "observe/screen"
+                        or evidence.get("source") != "baseline_recheck" or evidence.get("task_id") != task_id
+                        or not evidence.get("thumb")):
+                    return {**empty, "blocked_reason": "baseline_screenshot_unavailable"}
             aliases = lease_aliases(task_id, doc, [action for _, action in open_actions])
             accounts = []
             stamp = int(time.time())

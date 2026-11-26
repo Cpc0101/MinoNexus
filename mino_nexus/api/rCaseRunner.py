@@ -566,8 +566,11 @@ def promote_baseline(body: PromoteBaselineRequest, _sess: dict = Depends(current
 @router.post("/tasks/{task_id}/write-safety/recheck")
 async def recheck_write_safety(task_id: str, _sess: dict = Depends(current_session)):
     from mino_nexus.casework.run_write_safety import recover_stopped
+    from mino_nexus.loop.scout_record_proxy import RecordReadError
     try:
         return ok(await recover_stopped(task_id))
+    except RecordReadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404 if str(exc) == "task_not_found" else 409, detail=str(exc)) from exc
 
@@ -575,7 +578,10 @@ async def recheck_write_safety(task_id: str, _sess: dict = Depends(current_sessi
 @router.post("/tasks/{task_id}/write-safety/baseline")
 async def baseline_write_safety(task_id: str, _sess: dict = Depends(current_session)):
     from mino_nexus.casework.run_write_safety import confirm_baseline
+    from mino_nexus.loop.scout_record_proxy import RecordReadError
     try:
         return ok(await confirm_baseline(task_id))
+    except RecordReadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404 if str(exc) == "task_not_found" else 409, detail={"reason_code": str(exc), "message": str(exc)}) from exc

@@ -171,6 +171,11 @@ async def recover_stopped(task_id: str):
             raise ValueError("task_still_running")
     if not doc.get("write_safety"):
         if not retired:
+            from mino_nexus.resources import scout_record_store
+            records = scout_record_store.for_task(task_id)
+            if records and all(row["payload"].get("platform") == "web" for row in records):
+                from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources
+                return reconcile_task_resources(task_id)
             raise ValueError("recovery_evidence_unsupported")
         return dead_run_reaper.finalize(task_id, retired)
     outcomes, baseline, attempts = [], [], set()
@@ -274,14 +279,23 @@ async def confirm_baseline(task_id: str):
         raise ValueError("task_not_found")
     if run_store.task_is_live(doc):
         raise ValueError("task_still_running")
+    from mino_nexus.resources import scout_record_store
+    records = scout_record_store.for_task(task_id)
+    if records and all(row["payload"].get("platform") == "web" for row in records):
+        from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources
+        return reconcile_task_resources(task_id, review_unknown=True)
     actions = unresolved(doc)
     if not actions:
         raise ValueError("baseline_not_required")
     sns = sorted({str(item.get("sn") or "") for item in actions if str(item.get("sn") or "")})
     if not sns:
         raise ValueError("baseline_device_missing")
-    from mino_nexus.casework.isolation_exit import _is_web_lane, lane_release_block
+    from mino_nexus.casework.isolation_exit import _is_web_lane, lane_release_block, _open_actions, _proof_ok
 
+    from copy import deepcopy
+    expected_actions = deepcopy(dict(_open_actions(doc)))
+    if any(not _proof_ok(action, doc) for action in actions):
+        raise ValueError("stop_evidence_required")
     web = [sn for sn in sns if _is_web_lane(sn, doc)]
     for sn in web:
         blocked = lane_release_block(doc, sn)
@@ -305,7 +319,7 @@ async def confirm_baseline(task_id: str):
         }}], {"status": "done", "summary": "隔离解除前的当前画面"})
         shots.append({"sn": sn, "session_id": session_id, **(refs[0] if refs else {})})
     from mino_nexus.casework.isolation_exit import commit_baseline_release
-    released = commit_baseline_release(task_id, actor=actor, sns=set(sns), observations=shots)
+    released = commit_baseline_release(task_id, actor=actor, sns=set(sns), observations=shots, expected_actions=expected_actions)
     if not released.get("committed"):
         raise ValueError(released.get("blocked_reason") or "baseline_not_required")
     return {
