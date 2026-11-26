@@ -92,6 +92,23 @@ def main():
             assert page['has_more'] and page['items'][0]['summary'] == 'Business progress 104'
             incremental = tasks.events('fixture-owner', 'business', after_seq=page['high_watermark'])
             assert incremental['items'] == []
+            tasks.create('fixture-owner', 'lifecycle', 'Message lifecycle fixture')
+            tasks.mutate('fixture-owner', 'lifecycle', 'question', {'event_id': 'ask', 'question_id': 'real', 'question': 'Which endpoint is in scope?', 'missing': 'endpoint'})
+            tasks.mutate('fixture-owner', 'lifecycle', 'answer', {'event_id': 'answer', 'question_id': 'real', 'answer': 'fixture endpoint'})
+            tasks.mutate('fixture-owner', 'lifecycle', 'event', {'event_id': 'end', 'summary': 'Cancelled fixture', 'status': 'cancelled'})
+            ended = tasks.get('fixture-owner', 'lifecycle')
+            assert ended['status'] == 'cancelled' and not ended['resume_required']
+            assert ended['questions'][0]['status'] == 'answered' and not ended['questions'][0]['acknowledged_at']
+            assert not ended['questions'][0]['actionable'] and ended['questions'][0]['history_reason'] == 'task_ended'
+            assert '历史' in ended['presentation']['next_action']
+            with session_scope() as db:
+                row = db.get(AgentTask, ('fixture-owner', 'business'))
+                legacy = {'question_id': 'legacy-session', 'summary': '请补充本次的所需信息。', 'missing': 'session_id', 'evidence': [], 'status': 'open', 'answer': '', 'answered_at': '', 'acknowledged_at': ''}
+                row.state = {**row.state, 'status': 'waiting_user', 'questions': [legacy]}
+            legacy_view = tasks.get('fixture-owner', 'business')
+            assert legacy_view['status'] == 'paused' and not legacy_view['questions'][0]['actionable']
+            assert legacy_view['questions'][0]['status'] == 'open'  # projection never fabricates acknowledgement
+            assert next(item for item in tasks.listing('fixture-owner')['items'] if item['task_id'] == 'business')['pending_questions'] == 0
         print('PASS: task binding and announcement gates precede side effects; source drafting gate; owned business projection; question state; persistent link receipts; diagnostic filtering; latest/incremental event pagination')
         print('No device/UI execution or client-display claim.')
 

@@ -70,8 +70,8 @@ def time_budget(state: dict, now: str) -> dict:
         spent += duration
         key = (attempt["unit"], attempt["stage"])
         per_stage[key] = per_stage.get(key, 0.0) + duration
-    stage_limit = state.get("stage_time_budget_sec", 300)
-    total_limit = state.get("total_time_budget_sec", max(1800, len(state.get("expected_units", state["units"])) * 120))
+    stage_limit = state.get("stage_time_budget_sec", 1800)
+    total_limit = state.get("total_time_budget_sec", max(14400, len(state.get("expected_units", state["units"])) * 600))
     for attempt in state["attempts"]:
         if not attempt["outcome"] and (per_stage[(attempt["unit"], attempt["stage"])] >= stage_limit or spent >= total_limit):
             overdue.append({"unit": attempt["unit"], "stage": attempt["stage"], "attempt_id": attempt["attempt_id"],
@@ -82,6 +82,8 @@ def time_budget(state: dict, now: str) -> dict:
                         "remaining_sec": round(max(0.0, stage_limit - used), 3)}
                        for (unit, stage), used in sorted(per_stage.items())],
             "overdue_attempts": overdue, "exhausted": spent >= total_limit,
+            "policy": "advisory", "decision_owner": "agent",
+            "guidance": "Review progress and new evidence before continuing; elapsed time alone does not deny execution. Active attempts, unknown writes, attempt limits and repeated blockers remain guarded.",
             "measured_at": now, "scope": "summed_investigation_elapsed_including_waits"}
 
 
@@ -267,7 +269,7 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         if not source_read_id and not state:
             raise ValueError("source_read_id is required")
         minimum_total = len(expected_units) * len(STAGES)
-        time_limits = {"stage_time_budget_sec": 300, "total_time_budget_sec": max(1800, len(expected_units) * 120)}
+        time_limits = {"stage_time_budget_sec": 1800, "total_time_budget_sec": max(14400, len(expected_units) * 600)}
         for key, default in time_limits.items():
             value = args.get(key, state.get(key, default) if state else default)
             if type(value) is not int or not 1 <= value <= 604800:
@@ -357,10 +359,7 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
             return state, {"allowed": False, "reason": "write_outcome_unknown", "attempts": unknown, "next": "reconcile_existing_task"}
         timing = time_budget(state, now)
         stage_spent = next((row["used_sec"] for row in timing["stages"] if row["unit"] == unit and row["stage"] == stage), 0)
-        if timing["exhausted"] or stage_spent >= timing["stage_limit_sec"]:
-            return state, {"allowed": False, "reason": "time_budget_exhausted", "time_budget": timing,
-                           "coverage": coverage(state), "requires_visible_receipt": True,
-                           "next": "report_coverage_gap_not_complete" if timing["exhausted"] else "ask_for_missing_information_or_continue_independent_units"}
+        over_reference = timing["exhausted"] or stage_spent >= timing["stage_limit_sec"]
         used = len(state["attempts"])
         stage_used = sum(a["unit"] == unit and a["stage"] == stage for a in state["attempts"])
         if used >= state["total_budget"] or stage_used >= state["stage_budget"]:
@@ -382,7 +381,8 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                                   "note": "", "started_at": now, "finished_at": ""})
         return state, {"allowed": True, "attempt_id": attempt_id, "stage_remaining": state["stage_budget"] - stage_used - 1,
                        "total_remaining": state["total_budget"] - used - 1, "coverage": coverage(state),
-                       "time_budget": time_budget(state, now), "next": "perform_declared_investigation"}
+                       "time_budget": time_budget(state, now), "budget_warning": "reference_time_exceeded" if over_reference else "",
+                       "next": "review_progress_then_perform_declared_investigation" if over_reference else "perform_declared_investigation"}
     if not attempt:
         raise ValueError("Unknown attempt")
     if operation == "finish":

@@ -24,10 +24,15 @@ def view(row, db=None):
     seen = datetime.fromisoformat(state["last_heartbeat_at"].replace("Z", "+00:00"))
     age = max(0, (datetime.now(timezone.utc) - seen).total_seconds())
     status = "unknown" if state["status"] in ACTIVE and age > 60 else state["status"]
-    if status == "waiting_user" and state["questions"] and not any(q["status"] == "open" for q in state["questions"]):
-        status = "waiting_agent" if any(q["status"] == "answered" for q in state["questions"]) else "unknown"
     from mino_nexus.assistant.agent_task_projection import project
     presentation = project(db, row) if db is not None else {}
+    for question in state["questions"]:
+        internal = question.get("missing") in {"session_id", "client_request_id", "attempt_id"}
+        question["actionable"] = not internal and status not in TERMINAL
+        question["history_reason"] = "internal_precondition" if internal else "task_ended" if status in TERMINAL else ""
+    actionable = [q for q in state["questions"] if q["actionable"]]
+    if status == "waiting_user" and not any(q["status"] == "open" for q in actionable):
+        status = "waiting_agent" if any(q["status"] == "answered" for q in actionable) else "paused"
     return {**state, "presentation": presentation, "task_id": row.task_id, "project_id": row.project_id, "revision": row.revision,
             "board_url": board_url, "board_url_source": config['source'],
             "startup_message": f"已开始：{state['title']}\n实时任务看板：{board_url or '入口未配置'}\n测试范围：{presentation.get('scope') or state['title']}\n环境：{presentation.get('environment') or '尚未上报'}\n当前阶段：{presentation.get('phase_label') or '尚未上报'}\n当前动作：{presentation.get('action') or '尚未上报'}\n下一步：{presentation.get('next_action') or '尚未上报'}\n任务 ID：{row.task_id}",
@@ -110,7 +115,7 @@ def listing(owner, project_id="", limit=50, offset=0, view_kind="tasks"):
         items = []
         for row in rows:
             item = view(row, db)
-            item["pending_questions"] = sum(q["status"] == "open" for q in item.pop("questions")) + sum(not q.get("answer") for flow in item["presentation"].get("workflows", []) for q in flow["help_requests"])
+            item["pending_questions"] = sum(q["status"] == "open" and q["actionable"] for q in item.pop("questions")) + (0 if item["status"] in TERMINAL else sum(not q.get("answer") for flow in item["presentation"].get("workflows", []) for q in flow["help_requests"]))
             item.pop("active_calls")
             items.append(item)
         return {"items": items, "total": total}

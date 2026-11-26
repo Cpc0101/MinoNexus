@@ -593,9 +593,12 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
     names = _PARAM.findall(path)
     required = list((spec.get("params_schema") or {}).get("required") or [])
     missing = [name for name in dict.fromkeys(names + required) if args.get(name) in (None, "", [])]
+    if missing and any(key in {"session_id", "client_request_id", "attempt_id"} for key in missing):
+        msg = "工具调用缺少内部执行标识（" + "、".join(missing) + "）。Agent 应先创建或查询对应调试会话，再使用返回的标识重试；无需用户填写。"
+        return ToolOutcome(ok=False, summary=msg, tool_id=str(spec.get("id") or ""), args=args)
     if missing:
         labels = {"app_id": "应用", "project_id": "项目", "sn": "设备", "task_id": "任务", "env_surface": "应用渠道"}
-        msg = "请补充本次的" + "、".join(labels.get(key, "所需信息") for key in missing) + "。"
+        msg = "请补充本次的" + "、".join(labels.get(key, key) for key in missing) + "。"
         return ToolOutcome(ok=False, ask=msg, summary=msg, tool_id=str(spec.get("id") or ""), args=args, field=missing[0])
     url = path
     for name in names:

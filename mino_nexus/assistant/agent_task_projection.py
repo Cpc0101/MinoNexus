@@ -40,11 +40,14 @@ def project(db, row):
     if active:
         action = '；'.join(f"{c['case_id']}：{c['step'] or '设备未上报具体步骤'}" for c in active[:3])
     workflow_questions = [q for flow in workflows for q in flow['help_requests'] if not q.get('answer')]
-    questions = [q for q in state.get('questions', []) if q['status'] == 'open']
+    actionable = [q for q in state.get('questions', []) if q.get('missing') not in {'session_id', 'client_request_id', 'attempt_id'}]
+    questions = [q for q in actionable if q['status'] == 'open']
     next_action = state.get('next_action', '')
-    if questions or workflow_questions:
+    if state['status'] in {'completed', 'failed', 'cancelled'}:
+        next_action = '任务已结束；沟通记录仅作历史保留，未读取不代表仍需回答。'
+    elif questions or workflow_questions:
         next_action = f"请回答下方 {len(questions) + len(workflow_questions)} 个问题；答案提交后等待 Agent 读取并核验"
-    elif any(q['status'] == 'answered' for q in state.get('questions', [])):
+    elif any(q['status'] == 'answered' for q in actionable):
         next_action = '答案已提交，等待 Agent 读取并核验'
     target = state.get('target') or {}
     environment = state.get('environment') or ''

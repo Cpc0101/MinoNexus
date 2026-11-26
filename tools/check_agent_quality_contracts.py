@@ -72,13 +72,14 @@ def check_workflow():
     assert help_doc["help_requests"][0]["question"] == request["question"]
     assert help_doc["time_budget"]["used_sec"] == 11  # between-attempt user wait is excluded
     _, rejected = transition(state, "start", "quality", {**start, "attempt_id": "a2"}, at(1001))
-    assert rejected["reason"] == "time_budget_exhausted"
-    assert not rejected["coverage"]["all_verified"]
+    assert rejected["reason"] == "repeated_blocker_without_evidence"
+    assert not help_doc["coverage"]["all_verified"]
     state, independent = transition(state, "start", "quality", {**start, "attempt_id": "b1", "unit": "B"}, at(1001))
     assert independent["allowed"]
     state, _ = transition(state, "finish", "quality", {"attempt_id": "b1", "outcome": "progress", "evidence": ["fixture read"]}, at(1021))
     _, total = transition(state, "start", "quality", {**start, "attempt_id": "b2", "unit": "B", "stage": "authoring"}, at(1022))
-    assert total["reason"] == "time_budget_exhausted" and total["next"] == "report_coverage_gap_not_complete"
+    assert total["allowed"] and total["budget_warning"] == "reference_time_exceeded"
+    assert total["time_budget"]["policy"] == "advisory"
     assert total["time_budget"]["used_sec"] == 31
     rejects(lambda: transition(state, "init", "quality", {"scope": "fixture only", "source_read_id": "fixture-read",
         "source": {"kind": "fixture", "reference": "offline"}, "expected_units": ["A", "B"],
@@ -86,10 +87,13 @@ def check_workflow():
     rejects(lambda: transition(None, "init", "quality", {"stage_time_budget_sec": True, "scope": "fixture only",
         "expected_units": ["A"], "source_read_id": "fixture", "source": {"kind": "fixture", "reference": "offline"}}, at(0)), "Invalid time budgets")
     rejects(lambda: transition(state, "get", "quality", {}, "2026-11-24T00:00:00"), "timestamp")
+    from mino_nexus.contract.step_pointer import compute_case_wall_budget_sec
+    assert compute_case_wall_budget_sec({}) == 1800
+    assert compute_case_wall_budget_sec({'wall_budget_sec': 2400}) == 2400
     legacy = deepcopy(state)
     legacy.pop("stage_time_budget_sec"); legacy.pop("total_time_budget_sec")
     _, legacy_doc = transition(legacy, "get", "quality", {}, at(1100))
-    assert legacy_doc["time_budget"]["stage_limit_sec"] == 300
+    assert legacy_doc["time_budget"]["stage_limit_sec"] == 1800
     fresh = workflow()
     fresh, _ = transition(fresh, "start", "quality", start, at(0))
     rejects(lambda: transition(fresh, "finish", "quality", {**finish, "help_request": {**request, "affected_units": ["Z"]}}, at(1)), "affected_units")
@@ -99,7 +103,7 @@ def check_workflow():
     fresh, _ = transition(fresh, "start", "quality", {**start, "attempt_id": "a2", "evidence": ["new fixture endpoint"]}, at(2))
     _, current = transition(fresh, "get", "quality", {}, at(2))
     assert not current["help_requests"]  # old question is not reported as a new active request
-    print("PASS: elapsed budgets, active overdue, independent continuation, immutable budgets, wait exclusion, help validation, legacy defaults")
+    print("PASS: advisory elapsed budgets, extended single-execution default, active overdue, independent continuation, immutable budgets, wait exclusion, help validation, legacy defaults")
 
 
 def check_receipts():

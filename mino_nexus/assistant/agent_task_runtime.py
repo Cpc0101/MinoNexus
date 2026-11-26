@@ -90,7 +90,7 @@ def tracked_tool(call, spec, args, *, owner):
     tasks.tool_end(owner, task_id, call_id, name, bool(outcome.ok), round((monotonic() - started) * 1000),
                    int(outcome.status or 0), str(data.get("reason_code") or data.get("code") or ""))
     observe_links(owner, task_id, outcome.args or args, outcome)
-    if outcome.ask and tasks.get(owner, task_id)["source"] != "nexus_agent":
+    if outcome.ask and outcome.field not in {"session_id", "client_request_id", "attempt_id"} and tasks.get(owner, task_id)["source"] != "nexus_agent":
         tasks.mutate(owner, task_id, "question", {"event_id": call_id + ":question", "question_id": call_id,
                      "question": str(outcome.ask)[:2000], "missing": str(outcome.field or "")[:2000]})
     return outcome
@@ -179,6 +179,8 @@ def _finish_result(owner, task_id, result):
         tasks.bind_request(owner, task_id, request)
     if request.get("state") == "cancelled":
         _event(owner, task_id, "原请求已取消", "cancelled")
+    elif request.get("question", {}).get("field") in {"session_id", "client_request_id", "attempt_id"}:
+        _event(owner, task_id, "内部调用前置条件缺失；无需用户回答，Agent 需恢复执行上下文", "paused")
     elif request.get("question", {}).get("field"):
         tasks.mutate(owner, task_id, "question", {"event_id": "request:" + request["id"] + ":" + str(request["revision"]),
                      "question_id": "request:" + request["id"] + ":" + str(request["revision"]),

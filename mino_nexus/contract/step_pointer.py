@@ -130,7 +130,7 @@ def compute_case_wall_budget_sec(case: dict[str, Any]) -> int:
         override = 0
     if override > 0:
         return max(CASE_WALL_SEC_PER_UNIT, override)
-    return int(round(units * CASE_WALL_SEC_PER_UNIT))
+    return max(1800, int(round(units * CASE_WALL_SEC_PER_UNIT)))
 
 
 def is_observe_only_step(instruction: str) -> bool:

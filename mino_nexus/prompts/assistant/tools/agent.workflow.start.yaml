@@ -1,6 +1,6 @@
 id: agent.workflow.start
 title: 记录 Agent 调查开始
-description: 原子消耗调查轮数，检查累计时间、重复阻塞和未知写入。allowed=false不能继续相同调查；time_budget_exhausted或overdue_attempts须立即可见回执，报告未核验项并求助或继续独立用例。预算不取消正在执行的测试，不把未核验改为通过或SKIPPED。
+description: 原子消耗调查轮数，防止活动调查重入、重复阻塞和未知写入。累计时间仅是参考值，超出返回 budget_warning，由 Agent 根据进展和新证据决定继续或收敛；不得为重置预算创建重复工作流。单次 Scout 执行仍保留硬超时，未核验不算通过。allowed=false 的安全门禁必须遵守。
 route: POST /assistant/workflows/{workflow_id}/start
 risk: write
 async: false
