@@ -79,6 +79,12 @@ jobs:
           docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}' | head -40
           echo '== big files =='
           find / -xdev -type f -size +300M -printf '%s %p\n' 2>/dev/null | sort -rn | head -20
+          echo '== var breakdown =='
+          du -x -d2 /var 2>/dev/null | sort -h | tail -n 20
+          ls -la /var/lib/docker | head -30
+          docker info --format 'root={{.DockerRootDir}} driver={{.Driver}}' 2>&1
+          echo '== deleted-but-open =='
+          lsof -nP +L1 2>/dev/null | awk '$7 > 100000000 {print $1, $2, $7, $9}' | head -20 || true
           echo '== nexus logs =='
           docker logs --tail 40 mino-production-nexus-1 2>&1 | tail -n 40 || true
           REMOTE
