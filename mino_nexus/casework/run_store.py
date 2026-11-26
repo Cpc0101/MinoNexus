@@ -959,6 +959,68 @@ def patch_case(run_id: str, case_id: str, *, target_sn: str | None = None,
         return put(doc)
 
 
+def refresh_scout_case(record: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Refresh a closed task's exact terminal attempt without reopening its verdict."""
+    from sqlalchemy import text
+    from mino_nexus.core.database import session_scope
+    from mino_nexus.models.run import AppRegressionRun
+    from mino_nexus.models.scout_record import ScoutRecord
+    from mino_nexus.platform.identity import require_user_id
+    from mino_nexus.resources.scout_record_store import TERMINAL
+    allowed = {
+        "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
+        "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
+        "started_at", "finished_at", "sealed", "last_event_seq", "run_purpose", "revision",
+        "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report",
+        "data_outputs", "data_missing", "resource_resolution", "session_id", "attempt_id",
+        "record_node_id", "record_source", "detail_availability", "status_sync_at", "summary_version", "status",
+    }
+    if set(fields) - allowed:
+        raise ValueError("record_projection_fields_invalid")
+    owner = require_user_id()
+    with _LOCK:
+        with session_scope() as db:
+            db.execute(text("BEGIN IMMEDIATE"))
+            run = db.get(AppRegressionRun, record["task_id"])
+            indexed = db.get(ScoutRecord, record["session_id"])
+            if (run is None or indexed is None or run.owner_user_id != owner
+                    or indexed.owner_user_id != owner or indexed.task_id != run.run_id
+                    or indexed.attempt_id != record["attempt_id"] or indexed.node_id != record["node_id"]):
+                raise PermissionError("record_projection_identity_mismatch")
+            doc = copy.deepcopy(run.payload)
+            if task_is_live(doc) or not doc.get("finished_at"):
+                raise ValueError("record_projection_task_not_closed")
+            if (indexed.status not in TERMINAL or fields.get("status") != indexed.status
+                    or fields.get("summary_version") != indexed.summary_version
+                    or fields.get("session_id") != indexed.session_id
+                    or fields.get("attempt_id") != indexed.attempt_id
+                    or fields.get("record_node_id") != indexed.node_id
+                    or fields.get("record_source") != "scout"):
+                raise ValueError("record_projection_stale")
+            matches = [case for case in doc.get("cases") or []
+                       if case.get("case_id") == indexed.case_id and case.get("sn") == indexed.sn
+                       and case.get("session_id") == indexed.session_id
+                       and case.get("attempt_id") == indexed.attempt_id
+                       and case.get("record_source") == "scout"]
+            if len(matches) != 1 or matches[0].get("status") != indexed.status:
+                raise ValueError("record_terminal_projection_conflict")
+            case = matches[0]
+            if int(case.get("summary_version") or 0) > indexed.summary_version:
+                return doc
+            case.update(copy.deepcopy(fields))
+            summary = indexed.summary or {}
+            if (summary.get("resource_isolated") is True or summary.get("execution_started") == "unknown"
+                    or summary.get("state") == "interrupted"):
+                doc.setdefault("write_safety", {}).setdefault("scout:" + indexed.attempt_id, {
+                    "state": "isolated", "sn": indexed.sn, "attempt_id": indexed.attempt_id,
+                    "reason_code": "write_outcome_unknown", "stop_confirmed": False,
+                })
+            # No admission, resource release, status recomputation, or finish timestamp change.
+            run.payload = copy.deepcopy(doc)
+        _LIVE[record["task_id"]] = copy.deepcopy(doc)
+        return copy.deepcopy(doc)
+
+
 def _session_status_for_close(case_status: str) -> str:
     st = str(case_status or "").strip().lower()
     if st == "pass":

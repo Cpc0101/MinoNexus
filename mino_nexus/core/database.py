@@ -69,16 +69,19 @@ def get_db() -> Iterator[Session]:
 
 @contextmanager
 def session_scope() -> Iterator[Session]:
-    ensure_db()
-    db = SessionLocal()
-    try:
-        yield db
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    from mino_nexus.core.callback_scope import callback_boundary, require_callback_current
+    with callback_boundary():
+        ensure_db()
+        db = SessionLocal()
+        try:
+            yield db
+            require_callback_current()
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
 
 _bootstrap_hook = None

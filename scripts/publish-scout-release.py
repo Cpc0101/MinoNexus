@@ -39,7 +39,7 @@ def validate_public_url(value):
     except ValueError as exc:
         raise ValueError("invalid_public_release_url") from exc
     if (parsed.scheme != "https" or not parsed.hostname or port not in (None, 443, 8443)
-            or parsed.path != PUBLIC_RELEASE_PATH or parsed.query or parsed.fragment):
+            or parsed.username or parsed.password or parsed.path != PUBLIC_RELEASE_PATH or parsed.query or parsed.fragment):
         raise ValueError("invalid_public_release_url")
     return value
 

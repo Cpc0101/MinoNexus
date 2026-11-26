@@ -43,7 +43,7 @@ env:
   TENCENT_USER: ${{ vars.TENCENT_USER }}
   TENCENT_DEPLOY_DIR: ${{ vars.TENCENT_DEPLOY_DIR }}
   TENCENT_HOST_KEY_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
-  # Public HTTPS is hostname-only on 443. Port 8443 remains a compatibility origin.
+  # Public HTTPS uses standard port 443; the legacy Workbench origin remains allowed during migration. Workbench and Nexus remain separate origins.
   MINO_NEXUS_PUBLIC_URL: ${{ vars.MINO_NEXUS_PUBLIC_URL || 'https://nexus.minocc.top' }}
   MINO_WORKBENCH_PUBLIC_URL: ${{ vars.MINO_WORKBENCH_PUBLIC_URL || 'https://workbench.minocc.top' }}
   MINO_NEXUS_HEALTH_URL: ${{ vars.MINO_NEXUS_HEALTH_URL || 'https://nexus.minocc.top/health' }}
@@ -103,29 +103,35 @@ jobs:
           workbench_url=${MINO_WORKBENCH_URL}
           scout_manifest_url=${MINO_SCOUT_MANIFEST_URL}
           workbench_origins=${MINO_WORKBENCH_ORIGINS%/}
-          python3 - "$nexus_public_url" "$workbench_public_url" "$workbench_origins" <<'PY'
-import sys
-from urllib.parse import urlsplit
-
-def origin(value, name):
-    parts = urlsplit(value)
-    if (parts.scheme != 'https' or not parts.hostname or parts.path not in ('', '/')
-            or parts.query or parts.fragment or parts.username or parts.password
-            or parts.port not in (None, 443, 8443)):
-        raise SystemExit(f'Public origin must use https:// on 443 or legacy 8443: {name}={value}')
-
-origin(sys.argv[1], 'MINO_NEXUS_PUBLIC_URL')
-origin(sys.argv[2], 'MINO_WORKBENCH_PUBLIC_URL')
-workbench_host = urlsplit(sys.argv[2]).hostname
-for item in sys.argv[3].split(','):
-    item = item.strip()
-    origin(item, 'MINO_WORKBENCH_ORIGINS')
-    if urlsplit(item).hostname != workbench_host:
-        raise SystemExit(f'MINO_WORKBENCH_ORIGINS host must match workbench: {item}')
-PY
+          for origin in "$nexus_public_url" "$workbench_public_url"; do
+            case "$origin" in
+              https://*/*) echo "Public origin must not contain a path: $origin" >&2; exit 1 ;;
+              https://*) ;;
+              *) echo "Public origin must use https://: $origin" >&2; exit 1 ;;
+            esac
+            host=${origin#https://}
+            case "$host" in
+              ''|*/*|*[!A-Za-z0-9.:-]*) echo "Invalid public origin host: $host" >&2; exit 1 ;;
+            esac
+          done
           case "$nexus_health_url" in "$nexus_public_url"/*) ;; *) echo "Nexus health URL is outside $nexus_public_url: $nexus_health_url" >&2; exit 1 ;; esac
           case "$workbench_url" in "$workbench_public_url"/*) ;; *) echo "Workbench URL is outside $workbench_public_url: $workbench_url" >&2; exit 1 ;; esac
           case "$scout_manifest_url" in "$nexus_public_url"/*) ;; *) echo "Scout manifest URL is outside $nexus_public_url: $scout_manifest_url" >&2; exit 1 ;; esac
+          python3 - "$nexus_public_url" "$workbench_public_url" "$workbench_origins" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          nexus, workbench, origins = sys.argv[1:]
+          allowed = origins.split(',')
+          if workbench not in allowed or len(allowed) != len(set(allowed)):
+              raise SystemExit("Workbench CORS origins must include the public Workbench origin, without duplicates")
+          for value in [nexus, workbench, *allowed]:
+              parsed = urlsplit(value)
+              if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                      or parsed.port not in (None, 443, 8443) or parsed.path or parsed.query or parsed.fragment):
+                  raise SystemExit(f"Invalid HTTPS origin: {value}")
+              if value in allowed and parsed.hostname != urlsplit(workbench).hostname:
+                  raise SystemExit(f"CORS origin must belong to the Workbench host: {value}")
+          PY
           echo "NEXUS_VERSION=$version" >> "$GITHUB_ENV"
           echo "NEXUS_IMAGE_TAG=$image_tag" >> "$GITHUB_ENV"
           echo "MINO_NEXUS_PUBLIC_URL=$nexus_public_url" >> "$GITHUB_ENV"
@@ -134,8 +140,10 @@ PY
           echo "MINO_WORKBENCH_URL=$workbench_url" >> "$GITHUB_ENV"
           echo "MINO_SCOUT_MANIFEST_URL=$scout_manifest_url" >> "$GITHUB_ENV"
           echo "MINO_WORKBENCH_ORIGINS=$workbench_origins" >> "$GITHUB_ENV"
-          echo "NEXUS_PUBLIC_HOST=${nexus_public_url#https://}" >> "$GITHUB_ENV"
-          echo "WORKBENCH_PUBLIC_HOST=${workbench_public_url#https://}" >> "$GITHUB_ENV"
+          nexus_public_host=$(python3 -c 'import sys; from urllib.parse import urlsplit; u=urlsplit(sys.argv[1]); print(f"{u.hostname}:{u.port or 443}")' "$nexus_public_url")
+          echo "NEXUS_PUBLIC_HOST=$nexus_public_host" >> "$GITHUB_ENV"
+          workbench_public_host=$(python3 -c 'import sys; from urllib.parse import urlsplit; u=urlsplit(sys.argv[1]); print(f"{u.hostname}:{u.port or 443}")' "$workbench_public_url")
+          echo "WORKBENCH_PUBLIC_HOST=$workbench_public_host" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -221,17 +229,14 @@ PY
           CREDENTIAL_MASTER_KEY: ${{ secrets.MINO_NEXUS_CREDENTIAL_MASTER_KEY }}
         run: |
           set -euo pipefail
+          remote_script="/tmp/mino-install-key-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.py"
+          scp -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes scripts/install-credential-key.py \
+            "$TENCENT_USER@$TENCENT_HOST:$remote_script"
           printf '%s\n' "$CREDENTIAL_MASTER_KEY" | \
-            ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" "
-              set -euo pipefail
-              umask 077
-              install -d -m 0700 '$TENCENT_DEPLOY_DIR/.secrets'
-              cat > '$TENCENT_DEPLOY_DIR/.secrets/credential-master.key'
-              chown 10001:10001 '$TENCENT_DEPLOY_DIR/.secrets/credential-master.key'
-              chmod 0400 '$TENCENT_DEPLOY_DIR/.secrets/credential-master.key'
-            "
+            ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+              "trap 'rm -f -- $remote_script' EXIT; python3 '$remote_script' '$TENCENT_DEPLOY_DIR/.secrets'"
           echo "MINO_NEXUS_CREDENTIAL_MASTER_KEY_FILE=$TENCENT_DEPLOY_DIR/.secrets/credential-master.key" >> "$GITHUB_ENV"
-          echo 'Installed the production credential keyring outside the repository and database backup.'
+          echo 'Validated existing master key or atomically installed the first key; no rotation performed.'
 
       - name: Upload deployment files
         run: |
@@ -248,7 +253,7 @@ PY
           set -euo pipefail
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_NEXUS_HEALTH_URL' > /dev/null && curl --fail --silent --show-error --max-time 20 --resolve '$WORKBENCH_PUBLIC_HOST:127.0.0.1' '$MINO_WORKBENCH_URL' > /dev/null && curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_SCOUT_MANIFEST_URL' > /dev/null"
-          echo "Verified production HTTPS routes on port 8443"
+          echo "Verified configured production HTTPS routes"
 
       - name: Deploy with backup and rollback
         run: |
@@ -282,13 +287,13 @@ PY
           python3 -c 'import json; status = json.load(open("/tmp/nexus-keyring.json")); assert status.get("configured") is True and status.get("active_key_version"), status; print("Credential keyring configured; active version " + status["active_key_version"])'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_NEXUS_HEALTH_URL'" > /tmp/nexus-health.json
-          echo 'Verified Nexus /health through the Tencent :8443 entry'
+          echo 'Verified Nexus /health through the Tencent HTTPS entry'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve '$NEXUS_PUBLIC_HOST:127.0.0.1' '$MINO_SCOUT_MANIFEST_URL'" > /tmp/nexus-scout-manifest.json
-          echo 'Verified Scout manifest through the Tencent :8443 entry'
+          echo 'Verified Scout manifest through the Tencent HTTPS entry'
           ssh -i ~/.ssh/mino-nexus-deploy -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
             "curl --fail --silent --show-error --max-time 20 --resolve '$WORKBENCH_PUBLIC_HOST:127.0.0.1' '$MINO_WORKBENCH_URL'" > /tmp/workbench-build.json
-          echo 'Verified Workbench build metadata through the Tencent :8443 entry'
+          echo 'Verified Workbench build metadata through the Tencent HTTPS entry'
           python3 - <<'PY'
           import json
           import os
@@ -323,4 +328,4 @@ PY
             --dump-header /tmp/nexus-cors.headers \
             "$MINO_NEXUS_PUBLIC_URL/health" > /dev/null
           tr -d '\r' < /tmp/nexus-cors.headers | grep -Fxi "access-control-allow-origin: $MINO_WORKBENCH_PUBLIC_URL"
-          echo 'Verified Workbench CORS through the public :8443 Nexus entry'
+          echo 'Verified Workbench CORS through the public HTTPS Nexus entry'

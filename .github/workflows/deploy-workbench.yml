@@ -45,25 +45,15 @@ jobs:
             --dir workbench-package
           cd workbench-package
           sha256sum -c SHA256SUMS.txt
-          tar -xOzf "workbench-web-$version.tar.gz" ./BUILD.json > BUILD.json
-          python3 - "$version" <<'PY'
-          import json
-          import os
-          import re
-          import sys
-          from pathlib import Path
-
-          version = sys.argv[1]
-          payload = json.loads(Path("BUILD.json").read_text(encoding="utf-8"))
-          if payload.get("version") != version:
-              raise SystemExit(f"BUILD.json version mismatch: {payload.get('version')} != {version}")
-          if not re.fullmatch(r"workbench-" + re.escape(version) + r"-[0-9a-f]{40}", str(payload.get("build_id") or "")):
-              raise SystemExit("BUILD.json contains an invalid build_id")
-          if not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("source_commit") or "")):
-              raise SystemExit("BUILD.json contains an invalid source_commit")
-          Path(os.environ["GITHUB_ENV"]).open("a").write(f"WORKBENCH_VERSION={version}\n")
-          print(json.dumps(payload, sort_keys=True))
-          PY
+          gh api "repos/Cpc0101/MinoWorkbench/releases/tags/$RELEASE_TAG" > release.json
+          python3 -c 'import json; r=json.load(open("release.json")); assert r["draft"] is False and r["prerelease"] is False, "Only published stable releases may deploy"'
+          source_commit=$(gh api "repos/Cpc0101/MinoWorkbench/commits/$RELEASE_TAG" --jq .sha)
+          mkdir validated
+          python3 "$GITHUB_WORKSPACE/scripts/validate-workbench-release.py" package \
+            "workbench-web-$version.tar.gz" "$version" "$source_commit" validated
+          cp validated/BUILD.json BUILD.json
+          echo "WORKBENCH_VERSION=$version" >> "$GITHUB_ENV"
+          echo "WORKBENCH_SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
 
       - name: Configure authenticated deployment transport
         env:
@@ -91,8 +81,10 @@ jobs:
             "$TENCENT_USER@$TENCENT_HOST:$remote_dir/package.tar.gz"
           scp -i ~/.ssh/mino-workbench-deploy -o BatchMode=yes scripts/deploy-workbench-static.sh \
             "$TENCENT_USER@$TENCENT_HOST:$remote_dir/deploy.sh"
+          scp -i ~/.ssh/mino-workbench-deploy -o BatchMode=yes scripts/validate-workbench-release.py \
+            "$TENCENT_USER@$TENCENT_HOST:$remote_dir/validate-workbench-release.py"
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
-            "bash '$remote_dir/deploy.sh' '$WORKBENCH_VERSION' '$remote_dir/package.tar.gz' '$WORKBENCH_RELEASES_DIR' '$WORKBENCH_ROOT'"
+            "bash '$remote_dir/deploy.sh' '$WORKBENCH_VERSION' '$remote_dir/package.tar.gz' '$WORKBENCH_RELEASES_DIR' '$WORKBENCH_ROOT' '$WORKBENCH_SOURCE_COMMIT'"
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "rm -rf '$remote_dir'"
 
       - name: Verify public Workbench entry
@@ -100,13 +92,5 @@ jobs:
           set -euo pipefail
           curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 3 \
             --max-time 20 "$WORKBENCH_PUBLIC_URL/BUILD.json" > /tmp/workbench-build.json
-          python3 - "$WORKBENCH_VERSION" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          payload = json.loads(Path("/tmp/workbench-build.json").read_text(encoding="utf-8"))
-          if payload.get("version") != sys.argv[1]:
-              raise SystemExit(f"Public Workbench version mismatch: {payload.get('version')} != {sys.argv[1]}")
-          print(f"Production Workbench verified at version {payload['version']} ({payload['build_id']})")
-          PY
+          python3 scripts/validate-workbench-release.py published /tmp/workbench-build.json \
+            "$WORKBENCH_VERSION" "$WORKBENCH_SOURCE_COMMIT" workbench-package/BUILD.json

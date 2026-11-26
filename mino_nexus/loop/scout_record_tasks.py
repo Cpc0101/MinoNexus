@@ -24,16 +24,20 @@ def _owner_or_physical(node: Any, row: dict[str, Any]) -> bool:
 def project(row: dict[str, Any]) -> bool:
     """Project only the last durable summary; evidence remains on the original node."""
     from mino_nexus.casework import run_store
+    with execution_user(row["owner_user_id"]), run_store._LOCK:
+        latest = records.get(row["session_id"])
+        return _project(latest or row)
+
+
+def _project(row: dict[str, Any]) -> bool:
+    from mino_nexus.casework import run_store
     summary = row.get("summary") or {}
-    if row["status"] in records.TERMINAL and not records.release_evidence_confirmed(row):
-        return False
     with execution_user(row["owner_user_id"]):
         doc = run_store.get(row["task_id"])
-        if not doc or not run_store.task_is_live(doc):
-            if doc and doc.get("finished_at"):
-                from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
-                settle_terminal_task(row["task_id"], row["owner_user_id"])
-                return True
+        if not doc:
+            return False
+        closed = not run_store.task_is_live(doc)
+        if closed and (not doc.get("finished_at") or row["status"] not in records.TERMINAL):
             return False
         fields = {key: summary[key] for key in (
             "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
@@ -49,6 +53,11 @@ def project(row: dict[str, Any]) -> bool:
                       detail_availability=summary.get("detail_availability", "pending"),
                       status_sync_at=row["updated_at"], summary_version=row["summary_version"],
                       status=row["status"])
+        if closed:
+            run_store.refresh_scout_case(row, **fields)
+            from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
+            settle_terminal_task(row["task_id"], row["owner_user_id"])
+            return True
         if fields.get("resource_isolated"):
             # Isolation flags a possibly-committed business write. Once Scout's sealed
             # stop proof lands, the worker is gone and only the business baseline stays
@@ -80,7 +89,10 @@ def project(row: dict[str, Any]) -> bool:
             if cases and all(case.get("status") in records.TERMINAL for case in cases):
                 status = "cancelled" if latest.get("cancel_requested") else (
                     "done")
-                finished = run_store.finish(row["task_id"], status=status)
+                finished = run_store.finish(row["task_id"], status=status, release=False,
+                    terminal_records_confirmed=all(
+                        item["status"] in records.TERMINAL and item["summary"].get("sealed") is True
+                        for item in records.for_task(row["task_id"])))
                 if not run_store.task_is_live(finished):
                     from mino_nexus.loop.scout_resource_resolution import settle_terminal_task
                     settle_terminal_task(row["task_id"], row["owner_user_id"])
@@ -101,7 +113,12 @@ def receive(node_id: str, incoming: dict[str, Any]) -> dict[str, Any]:
         # Scout 记录绑定的是节点认证账号；实体手机的本地记录仍属于使用者。
         incoming = normalize_incoming(row, incoming, node_owner_id(node_id))
     row = records.receive(node_id, incoming)
-    project(row)
+    try:
+        project(row)
+    except Exception as exc:
+        # The index is committed; its ACK is independent of retryable projection.
+        SLog.e("ScoutRecords", f"projection pending node={node_id} session={row['session_id']} "
+               f"attempt={row['attempt_id']} version={row['summary_version']}: {type(exc).__name__}")
     return row
 
 
@@ -196,7 +213,14 @@ def wait_attempt(row: dict[str, Any]) -> dict[str, Any]:
     while True:
         row = records.get(row["session_id"]) or row
         if row["status"] in records.TERMINAL:
-            project(row)
+            try:
+                project(row)
+            except Exception as exc:
+                SLog.w("ScoutRecords", f"terminal projection retry session={row['session_id']} "
+                       f"version={row['summary_version']}: {type(exc).__name__}")
+                time.sleep(delay)
+                delay = min(10.0, delay * 1.5)
+                continue
             return {**row["summary"], "status": row["status"], "steps": []}
         if run_store.cancel_requested(row["task_id"]) and not row["cancel_requested"]:
             records.request_cancel(row["task_id"])

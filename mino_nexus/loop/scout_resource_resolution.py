@@ -195,6 +195,12 @@ def repair_terminal_resources() -> None:
     """Settle persisted proofs and recover missing Web stops from the original Scout."""
     from mino_nexus.platform.identity import execution_user
     from mino_nexus.loop.scout_record_tasks import project
+    for row in records.terminal_records_for_projection():
+        try:
+            project(row)
+        except Exception as exc:
+            SLog.w("ScoutResources", f"projection retry session={row['session_id']} "
+                   f"version={row['summary_version']}: {type(exc).__name__}")
     for row in records.terminal_records_for_settlement():
         with execution_user(row["owner_user_id"]):
             project(row)

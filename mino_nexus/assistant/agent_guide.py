@@ -28,11 +28,12 @@ def _workbench() -> dict[str, str]:
 def agent_guide() -> dict[str, Any]:
     guide = {
         "channel": "Mino MCP。工具名里的点写成下划线，例如 agent.guide 调用为 agent_guide。",
-        "first_call": "agent_guide",
+        "first_call": "明确测试/QA意图时先 agent_guide；普通研发和只读诊断不强制测试启动",
+        "trigger": "Agent按用户明确测试/QA意图判断。普通产品研发、代码审查、部署、域名/TLS运维或仅提到Mino，不启动测试工作流、不锁定用例、不要求业务看板。控制面查询仍走MCP；只读诊断可省略agent_task_id。",
         "agent_execution": {
             "tools": ["agent_task_start", "agent_task_event", "agent_task_heartbeat", "agent_task_question",
                       "agent_task_answer", "agent_task_acknowledge", "agent_task_link", "agent_task_target", "agent_task_get", "agent_task_events", "agent_task_list"],
-            "contract": "多步任务开始先 agent_task_start，立即在可见对话展示 startup_message/board_url，通过 agent_task_event(startup_delivered=true,summary 含 board_url) 声明发送后再执行业务；该声明不证明用户已读。上报 phase/summary/next_action/scope/environment（明确应用、端与环境）。已有真实需求 ID 时用 agent_task_target 挂载应用/端/环境节点；同节点可挂多个任务，禁止猜测归属。空地址报告入口未配置。后续 Mino 工具调用带 agent_task_id；Nexus 自动记录真实调用起止、耗时与引用。客户端本地分析、写文件与其他工具不可见，必须显式 event 和实际心跳。测试和工作流入口缺少业务 task_id 则拒绝；只读独立调用归入技术诊断，不推断 Agent 运行。",
+            "contract": "仅用户明确要求的多步测试/QA任务开始先 agent_task_start，立即在可见对话展示 startup_message/board_url，通过 agent_task_event(startup_delivered=true,summary 含 board_url) 声明发送后再执行业务；该声明不证明用户已读。上报 phase/summary/next_action/scope/environment（明确应用、端与环境）。已有真实需求 ID 时用 agent_task_target 挂载应用/端/环境节点；同节点可挂多个任务，禁止猜测归属。空地址报告入口未配置。后续 Mino 工具调用带 agent_task_id；Nexus 自动记录真实调用起止、耗时与引用。客户端本地分析、写文件与其他工具不可见，必须显式 event 和实际心跳。测试和工作流入口缺少业务 task_id 则拒绝；只读独立调用归入技术诊断，不推断 Agent 运行。",
             "help": "question 立即登记问题；get 读取 answers 后 acknowledge，答案已读取不等于问题解决。Nexus 内置助手问题走原 request/revision 续接；外部 Agent 不可由服务端擅自唤醒。",
             "liveness": "执行中超过60秒未有心跳状态为unknown，保留reported_status；心跳不证明设备动作或测试通过。暂停只能由执行方确认，不用UI点击伪造停止。",
         },
@@ -44,6 +45,7 @@ def agent_guide() -> dict[str, Any]:
         },
         "agent_workflow": {
             "owner": "agent",
+            "applies_when": "用户明确要求测试用例编写、执行或验证；不用于普通研发、运维或只读诊断",
             "tools": ["case_source_list", "case_source_read", "agent_workflow_init", "agent_workflow_start", "agent_workflow_finish", "agent_workflow_resolve", "agent_workflow_get", "agent_workflow_bootstrap", "agent_workflow_draft", "agent_workflow_list", "agent_workflow_answer", "agent_workflow_context", "agent_workflow_report"],
             "storage": "Nexus 当前部署数据库，按登录用户与 workflow_id 隔离；使用 Python SQLite，不使用 Agent 本地数据库",
             "source_drafting": "来源确实为空时先 bootstrap 登记目标，读取需求、补写人工用例并发布回读，再 init 锁定。读取失败不能当空表。人工业务歧义立即求助，其余继续。",

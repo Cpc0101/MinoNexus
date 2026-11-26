@@ -83,7 +83,7 @@ def main():
             assert receipt['agent_task_id'] == 'business' and receipt['board_url'] == task['board_url']
             execute('fixture-owner', 'resource_env_get', {})
             assert tasks.listing('fixture-owner')['total'] == 2
-            assert tasks.listing('fixture-owner', view_kind='calls')['total'] == 1
+            assert tasks.listing('fixture-owner', view_kind='calls')['total'] == 0
             assert tasks.listing('other-owner')['total'] == 1
             assert 'agent_task_id' in _task_schema({'id': 'debug.case.execute'})['required']
             for i in range(105):

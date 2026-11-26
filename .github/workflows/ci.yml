@@ -41,6 +41,8 @@ jobs:
         run: python -B tools/check_web_auth_contracts.py
       - name: Check Web execution stability contracts
         run: python -B tools/check_web_execution_stability.py
+      - name: Check callback connection fences and terminal projection
+        run: python -B tools/check_nexus_record_sync.py
       - name: Check debug resource recovery
         run: python -B tools/check_debug_resource_recovery.py
       - name: Check undefined globals

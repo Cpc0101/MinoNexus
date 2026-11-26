@@ -52,7 +52,7 @@ for match in re.finditer(r'(?m)^[ \t]*server\s*\{', text):
         port = address.rsplit(':', 1)[-1]
         if not port.isdecimal():
             raise SystemExit('Unsupported listener address; refusing rewrite')
-        if int(port) not in {80, public_https_port}:
+        if int(port) not in {80, public_https_port, 8443}:
             obsolete.append(listener)
         elif int(port) == public_https_port:
             public_https.update(

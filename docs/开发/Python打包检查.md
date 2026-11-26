@@ -26,6 +26,6 @@ Scout 主分支的原生打包全部成功后，在 Scout 仓库运行 `Publish 
 
 部署后核对公开清单版本和 build_id，再通过 MCP `scout_release_meta` 验证 Nexus 返回的安装版本；不能只凭 GitHub 最新 tag 或清单地址返回 200 宣称分发已更新。
 
-公网 TLS 入口需从外部验证。Scout 分发清单统一使用公网 `https://nexus.minocc.top:8443` 入口，不检测标准 443。服务器 localhost 健康检查成功不能替代公网可达性；`continue-on-error` 的公网检查失败也不能写成“所有部署检查通过”。
+公网 TLS 入口需从外部验证。备案后的发布目标使用标准 443：`https://nexus.minocc.top`；兼容期保留 8443。Scout 分发清单默认使用标准域名入口。服务器 localhost 健康检查成功不能替代公网可达性；`continue-on-error` 的公网检查失败也不能写成“所有部署检查通过”。
 
 Agent workflow 初始化的 `scope` 是业务入参，转发层必须保留；不能沿用旧 case-selection 范围过滤而将它丢弃。

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,7 +73,9 @@ def handle(node_id: str, req: P.Execute) -> P.Result:
     if cap == "script.callback":
         cap = str(params.get("op") or "")
     cap = _ALIASES.get(cap, cap)
+    from mino_nexus.core.callback_scope import require_callback_current
     try:
+        require_callback_current()
         if cap == "record.sync":
             from mino_nexus.loop.scout_record_tasks import receive
             row = receive(node_id, params)
@@ -81,7 +84,11 @@ def handle(node_id: str, req: P.Execute) -> P.Result:
                             data={"attempt_id": row["attempt_id"], "ack_version": row["summary_version"]})
         admission = _require(node_id, params)
         with admission.lock:
+            require_callback_current()
+            if _require(node_id, params) is not admission:
+                raise PermissionError("callback_admission_replaced")
             data = _call(admission, cap, params)
+        require_callback_current()
         summary = str(data.pop("_summary", "") or "ok")[:300]
         return P.Result(
             run_id=str(req.run_id or admission.run_id),
@@ -93,8 +100,11 @@ def handle(node_id: str, req: P.Execute) -> P.Result:
         )
     except Exception as exc:
         code = str(getattr(exc, "code", "") or getattr(exc, "reason_code", "") or "")
+        if not code and isinstance(exc, (ValueError, PermissionError)) and re.fullmatch(r"[a-z][a-z0-9_]{0,119}", str(exc)):
+            code = str(exc)
         message = str(exc)[:300] or code or "callback_rejected"
-        SLog.w(TAG, f"callback {cap} run={params.get('run_id')} rejected: {code or type(exc).__name__}")
+        SLog.w(TAG, f"callback={cap} node={node_id} run={params.get('run_id')} "
+               f"session={params.get('session_id')} rejected={code or type(exc).__name__}")
         return P.Result(
             run_id=str(req.run_id or params.get("run_id") or ""),
             step_idx=int(req.step_idx),
@@ -126,8 +136,10 @@ def _require(node_id: str, params: dict[str, Any]) -> ScriptAdmission:
     if record and record["status"] in TERMINAL:
         raise PermissionError("这次执行已经结束")
 
-    if not run_store.task_is_live(run_store.get(run_id)):
-        raise PermissionError("这次运行已经结束")
+    from mino_nexus.platform.identity import execution_user
+    with execution_user(admission.owner_user_id):
+        if not run_store.task_is_live(run_store.get(run_id)):
+            raise PermissionError("这次运行已经结束")
     node, reason = get_registry().resolve(admission.sn)
     # 实体手机跟随当前接入节点，不比较节点认证账号。
     from mino_nexus.contract.execution.device import is_physical_platform

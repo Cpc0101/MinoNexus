@@ -1,6 +1,6 @@
 id: agent.guide
 title: 给其他 agent 的使用说明
-description: 外部 agent 使用 Mino 时先调用。返回工具怎么分组调用，以及脚本、Git、设备分别由谁做。不依赖本机某个仓库里的 skill 文件。编写脚本、执行、自检用对应的 agent 技能（write-test-cases、run-test-cases、check-test-cases）。
+description: 用户明确要求测试/QA时，外部agent先调用；Agent按明确测试意图判断。普通产品研发、代码审查、部署、域名/TLS运维或仅提到Mino不触发测试工作流。控制面只读诊断仍走MCP但不需业务看板或agent_task_id。返回工具怎么分组调用，以及脚本、Git、设备分别由谁做。不依赖本机某个仓库里的 skill 文件。编写脚本、执行、自检用对应的 agent 技能（write-test-cases、run-test-cases、check-test-cases）。
 route: GET /assistant/agent-guide
 risk: read
 async: false

@@ -5,23 +5,28 @@ from typing import Any
 
 AGENT_INSTRUCTIONS = """You are working with Mino.
 
-MANDATORY ROUTING
+TRIGGER AND SCOPE
+- The Agent decides from the user's explicit testing/QA intent whether to start a testing workflow.
+- Ordinary product development, code review, deployment, domain/TLS operations, and merely mentioning Mino do NOT trigger testing workflows, source locking, test preflight, business boards, or test receipts.
+- Nexus control-plane queries still use MCP. Read-only diagnosis needs no business board or agent_task_id; do not manufacture a test workflow for it.
+
+MANDATORY ROUTING (within explicitly requested testing/QA)
 - Nexus control-plane work MUST use Mino MCP tools.
 - Local Scout work MUST use the mino-scout CLI.
-- Testing or operating target Android, iOS, Web, desktop applications, browser pages, screenshots, accessibility/UI trees, taps, typing, and UI assertions MUST execute on Mino Scout through Mino MCP debug_case/debug_case_execute for local authoring or case_run for formal runs. Remote nodes are for formal runs only.
+- Within testing/QA, inspecting or operating target Android, iOS, Web, desktop applications, browser pages, screenshots, accessibility/UI trees, taps, typing, and UI assertions MUST execute on Mino Scout through Mino MCP debug_case/debug_case_execute for local authoring or case_run for formal runs. Remote nodes are for formal runs only.
 - Do NOT substitute platform Computer Use, browser control, Playwright, adb, Appium, WDA, or desktop automation for Mino Scout by default.
 - Only use another tool when the user explicitly requests it, or after checking Mino and explaining to the user why Mino MCP/Scout is unavailable. Mino being less convenient is not a reason to fall back.
 - Mino MCP cannot remove tools that the Codex client already exposes. Do not claim Computer Use is disabled unless the client-side PreToolUse guard or administrator policy is verifiably active.
 
-STARTUP
-1. On the first Mino task in each new session, run the installed Mino skill's read-only update preflight before business work.
+STARTUP (only for explicitly requested testing/QA)
+1. On the first explicitly requested testing/QA task in each new session, run the installed Mino skill's read-only update preflight before business work.
 2. If the skill is outdated, update it before business work and request a new session when required. If Scout is outdated, use the fixed build_id/release_tag and confirm the service impact with the user before updating.
 3. For Codex, verify the installed Mino routing block in AGENTS.md. If it is missing or outdated, explain why persistent routing matters and ask before writing it; tell the user that a new session may be required.
 4. After the update and routing checks, call agent_guide and follow its current tool list and routing contract.
-5. For multi-step work, start an Agent task using agent_task_start, immediately display its startup_message and board_url in the visible conversation before business actions (if empty, report unconfigured entry; never invent a URL); pass its task_id as agent_task_id on subsequent Mino tools. After visibly sending the startup message, declare startup_delivered=true with the exact board_url in agent_task_event.summary. Guarded testing/workflow calls reject missing bindings or announcements; the declaration is not proof of user reading. Report phase, business summary, next_action, scope and environment for local writing/analysis, plus real heartbeats. Read and acknowledge user answers. Nexus cannot observe or wake an external client that has not reported activity.
+5. For multi-step testing/QA work, start an Agent task using agent_task_start, immediately display its startup_message and board_url in the visible conversation before business actions (if empty, report unconfigured entry; never invent a URL); pass its task_id as agent_task_id on subsequent Mino tools. After visibly sending the startup message, declare startup_delivered=true with the exact board_url in agent_task_event.summary. Guarded testing/workflow calls reject missing bindings or announcements; the declaration is not proof of user reading. Report phase, business summary, next_action, scope and environment for local writing/analysis, plus real heartbeats. Read and acknowledge user answers. Nexus cannot observe or wake an external client that has not reported activity.
 6. A case_run acknowledgement, accepted task, or successful action is not a passed test. Report only assertions backed by execution evidence as passed.
 
-VISIBLE RECEIPTS
+VISIBLE RECEIPTS (testing workflows only)
 - For every case receipt, emit its complete multi-line text, including execution identity, environment, expected versus observed outcome, evidence availability, reason and next action. Unknown fields must remain unknown. Deduplicate by receipt_id, not case_id; preserve retries and channel/device differences. Local assertions passing do not change a SKIPPED/BLOCKED/UNVERIFIED whole-case verdict. Failure root cause is unconfirmed unless backed by evidence.
 - Before ending any testing workflow (including failure, blockers, cancellation and budget exhaustion), reconcile active investigations, call agent_workflow_report(final=true), and visibly deliver the report ID, scope/results, evidence, questions and remaining work. Ending an external Agent task linked to a workflow is rejected until its final report is sealed; a sealed report is not proof of client display.
 - Announce a batch when it starts and after each batch completes. A long silent run is a contract violation even while Scout is still executing.
@@ -44,12 +49,18 @@ def agent_contract() -> dict[str, Any]:
             "authoritative_channel": "Mino MCP",
             "local_executor": "mino-scout CLI",
             "target_ui_route": "Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout",
-            "scope": "Any Mino task, including target Android, iOS, Web, desktop, browser, screenshot, UI-tree, tap, typing, and UI assertion work.",
+            "scope": "Explicitly requested testing/QA only; ordinary product development, code review, deployment, domain/TLS operations, and merely mentioning Mino do not trigger a testing workflow.",
+        },
+        "workflow_trigger": {
+            "decision_owner": "agent",
+            "requires": "explicit user testing/QA intent",
+            "excluded": ["ordinary product development", "code review", "deployment", "domain/TLS operations", "merely mentioning Mino"],
+            "readonly_diagnosis_requires_board": False,
         },
         "routing_precedence": [
-            "Nexus projects, apps, requirements, accounts, devices, runs, and records -> Mino MCP.",
+            "Nexus control-plane projects, apps, requirements, accounts, devices, runs, and records -> Mino MCP; read-only diagnosis needs no business board.",
             "Local Scout status, probe, static checks, and fixed-version maintenance -> mino-scout CLI.",
-            "Target UI observation or operation -> write a case script -> Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout.",
+            "Within explicit testing/QA, target UI observation or operation -> write a case script -> Mino MCP debug_case/debug_case_execute (local authoring) or case_run (formal) -> Mino Scout.",
             "Use platform Computer Use, browser control, Playwright, adb, Appium, WDA, or desktop automation only after an explicit user request or a Mino availability check and explanation.",
         ],
         "forbidden_fallbacks": [
@@ -66,8 +77,9 @@ def agent_contract() -> dict[str, Any]:
         },
         "startup_preflight": {
             "required_call": "agent_guide",
+            "applies_when": "explicit user testing/QA intent; not ordinary development or read-only diagnosis",
             "order": [
-                "On the first Mino task in each new session, run the installed mino skill scripts/check_updates.py before business work.",
+                "On the first explicitly requested testing/QA task in each new session, run the installed mino skill scripts/check_updates.py before business work.",
                 "Update an outdated Mino skill first; request a new session when the client cannot reload skills in place.",
                 "If Scout is outdated, confirm the service impact before using its fixed build_id and release_tag.",
                 "Verify the Codex persistent routing block, then call agent_guide and follow its current tool list.",

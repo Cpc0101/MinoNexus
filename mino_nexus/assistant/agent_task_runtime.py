@@ -137,6 +137,12 @@ def tracked_mcp(fn):
                 flows = state["presentation"].get("workflows", [])
                 if not flows or flows[0]["source_status"] == "drafting":
                     return rejected("case_source_not_locked", "人工用例未锁定：先补写并发布源用例，再机器回读锁定；不能绕过后直接测试", state)
+        if not supplied and not guarded:
+            from mino_nexus.assistant.assistant_tools import tool_by_function_name
+            spec = tool_by_function_name(name)
+            if spec and spec.get("risk") == "read":
+                # A technical read has no external execution lifecycle to announce.
+                return fn(uid, name, args)
         if supplied:
             task_id = str(supplied)
             standalone = False

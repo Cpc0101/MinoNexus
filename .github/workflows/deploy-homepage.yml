@@ -1,0 +1,114 @@
+name: Deploy pinned Mino homepage
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Workbench homepage main push run ID
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: deploy-tencent-nexus
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.WORKBENCH_RELEASE_TOKEN || github.token }}
+      TENCENT_HOST: ${{ vars.TENCENT_HOST }}
+      TENCENT_USER: ${{ vars.TENCENT_USER }}
+      HOST_FINGERPRINT: ${{ vars.TENCENT_HOST_KEY_FINGERPRINT }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify immutable Workbench homepage run
+        env:
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/Cpc0101/MinoWorkbench/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          run = json.loads(Path('source-run.json').read_text())
+          if (str(run['id']) != os.environ['SOURCE_RUN_ID'] or run['status'] != 'completed'
+                  or run['conclusion'] != 'success' or run['event'] != 'push'
+                  or run['head_branch'] != 'main' or run['path'] != '.github/workflows/homepage.yml'
+                  or run['head_repository']['full_name'] != 'Cpc0101/MinoWorkbench'
+                  or not re.fullmatch(r'[0-9a-f]{40}', run['head_sha'])):
+              raise SystemExit('Only successful Workbench main homepage push runs may deploy')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('HOMEPAGE_SOURCE_COMMIT=' + run['head_sha'] + '\n')
+          PY
+          gh api "repos/Cpc0101/MinoWorkbench/actions/runs/$SOURCE_RUN_ID/artifacts" --paginate --slurp > source-artifacts.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows = [a for page in json.loads(Path('source-artifacts.json').read_text()) for a in page['artifacts'] if a['name'] == 'mino-homepage']
+          if len(rows) != 1 or rows[0]['expired']:
+              raise SystemExit('Exactly one unexpired mino-homepage artifact is required')
+          PY
+      - name: Download verified run artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.WORKBENCH_RELEASE_TOKEN || github.token }}
+          repository: Cpc0101/MinoWorkbench
+          run-id: ${{ inputs.run_id }}
+          name: mino-homepage
+          path: homepage-artifact
+      - name: Validate manifest and package pinned deployment sources
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-homepage-deploy.py homepage-artifact/mino-homepage.tar.gz "$HOMEPAGE_SOURCE_COMMIT" homepage-deploy
+          bash -n homepage-deploy/deploy/scripts/deploy-homepage.sh
+          python3 -c "import ast, pathlib; ast.parse(pathlib.Path('homepage-deploy/deploy/scripts/install-homepage-nginx.py').read_text())"
+          tar -czf homepage-deploy.tar.gz -C homepage-deploy .
+          echo "HOMEPAGE_PACKAGE_SHA256=$(sha256sum homepage-deploy.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+      - name: Configure authenticated SSH transport
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TENCENT_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$TENCENT_HOST" && test -n "$TENCENT_USER" && test -n "$HOST_FINGERPRINT" && test -n "$DEPLOY_SSH_KEY"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/homepage
+          chmod 600 ~/.ssh/homepage
+          ssh-keygen -y -f ~/.ssh/homepage > /dev/null
+          ssh-keyscan -T 15 -t ed25519 "$TENCENT_HOST" > ~/.ssh/known_hosts
+          test "$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')" = "$HOST_FINGERPRINT"
+      - name: Install homepage with existing rollback and site conflict guards
+        run: |
+          set -euo pipefail
+          remote_dir="/tmp/mino-homepage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ssh -i ~/.ssh/homepage -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" "umask 077; mkdir '$remote_dir'"
+          scp -i ~/.ssh/homepage -o BatchMode=yes homepage-deploy.tar.gz "$TENCENT_USER@$TENCENT_HOST:$remote_dir/package.tar.gz"
+          ssh -i ~/.ssh/homepage -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" \
+            "ROOT='$remote_dir' EXPECTED_SHA='$HOMEPAGE_PACKAGE_SHA256' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          trap 'rm -rf -- "$ROOT"' EXIT
+          cd "$ROOT"
+          printf '%s  package.tar.gz\n' "$EXPECTED_SHA" | sha256sum -c -
+          mkdir source
+          tar -xzf package.tar.gz -C source --no-same-owner --no-same-permissions
+          cd source
+          python3 deploy/scripts/install-homepage-nginx.py \
+            --build-dir "$PWD/build" \
+            --config "$PWD/deploy/nginx/mino-homepage.conf" \
+            --default-config "$PWD/deploy/nginx/mino-default-https.conf" \
+            --deploy-script "$PWD/deploy/scripts/deploy-homepage.sh"
+          REMOTE
+      - name: Verify public apex assets, ICP footer and exact release contents
+        run: |
+          set -euo pipefail
+          mkdir public-homepage
+          for asset in index.html styles.css main.js favicon.svg; do
+            url="https://minocc.top/$asset"
+            test "$asset" != index.html || url=https://minocc.top/
+            curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 --max-time 20 "$url" > "public-homepage/$asset"
+            cmp "public-homepage/$asset" "homepage-deploy/build/$asset"
+          done
+          echo "Verified public homepage from Workbench commit $HOMEPAGE_SOURCE_COMMIT"

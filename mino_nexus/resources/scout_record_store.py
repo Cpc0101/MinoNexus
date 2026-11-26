@@ -459,14 +459,26 @@ def _terminal_scan_page(
     scan_key: str,
     limit: int,
     predicate: Callable[[dict[str, Any]], bool],
+    *, projection_tasks: bool = False,
 ) -> list[dict[str, Any]]:
     """Scan bounded pages with a keyset cursor so old invalid rows cannot starve later work."""
     page_size = max(1, limit) * 8
     cursor = _TERMINAL_SCAN_CURSORS.get(scan_key)
 
     def query_page(db):
-        query = (db.query(ScoutRecord)
-                 .filter(ScoutRecord.status.in_(TERMINAL), text(_ACTIVE_HOLDINGS_SQL)))
+        query = db.query(ScoutRecord).filter(ScoutRecord.status.in_(TERMINAL))
+        if projection_tasks:
+            from mino_nexus.models.run import AppRegressionRun
+            query = query.join(AppRegressionRun, AppRegressionRun.run_id == ScoutRecord.task_id).filter(
+                or_(AppRegressionRun.status.in_({"running", "queued"}), text("""
+                    EXISTS (SELECT 1 FROM json_each(app_regression_runs.payload, '$.cases') c
+                      WHERE json_extract(c.value, '$.session_id') = scout_record_index.session_id
+                        AND json_extract(c.value, '$.attempt_id') = scout_record_index.attempt_id
+                        AND (COALESCE(json_extract(c.value, '$.summary_version'), 0) < scout_record_index.summary_version
+                          OR COALESCE(json_extract(c.value, '$.status_sync_at'), '') != scout_record_index.updated_at))
+                """)))
+        else:
+            query = query.filter(text(_ACTIVE_HOLDINGS_SQL))
         if cursor:
             updated_at, session_id = cursor
             query = query.filter(or_(
@@ -491,6 +503,11 @@ def _terminal_scan_page(
     marker = selected[-1] if selected else page[-1]
     _TERMINAL_SCAN_CURSORS[scan_key] = (str(marker["updated_at"]), str(marker["session_id"]))
     return selected
+
+
+def terminal_records_for_projection(limit: int = 32) -> list[dict[str, Any]]:
+    """Repair live or stale closed task projections independently of resource holdings."""
+    return _terminal_scan_page("projection", limit, lambda row: True, projection_tasks=True)
 
 
 def terminal_records_for_settlement(limit: int = 32) -> list[dict[str, Any]]:

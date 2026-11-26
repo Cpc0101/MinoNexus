@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 import uuid
 from copy import deepcopy
+from contextlib import contextmanager
 from dataclasses import asdict
 import time
 from dataclasses import dataclass, field, replace
@@ -389,8 +390,33 @@ class NodeRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._nodes: dict[str, NodeSession] = {}
+        self._callback_locks: dict[str, threading.RLock] = {}
         # sn -> node_id 归属
         self._owner: dict[str, str] = {}
+
+    def _callback_lock(self, node_id):
+        lock = self._callback_locks.get(node_id)
+        if lock is not None:
+            return lock
+        with self._lock:
+            return self._callback_locks.setdefault(node_id, threading.RLock())
+
+    @contextmanager
+    def callback_scope(self, *, node_id, send, owner_user_id, connection_generation,
+                       process_generation, revoked, deadline):
+        def require_current():
+            if revoked() or time.monotonic() >= deadline:
+                raise PermissionError("callback_scope_expired")
+            node = self._nodes.get(node_id)
+            if (node is None or node.send != send or node.owner_user_id != owner_user_id
+                    or node.node_connection_generation != connection_generation
+                    or node.scout_process_generation != process_generation):
+                raise PermissionError("callback_connection_retired")
+        # Registration and a callback transaction use the same lock before any DB lock.
+        with self._callback_lock(node_id):
+            require_current()
+            yield
+            require_current()
 
     # ---------------- 注册 ----------------
 
@@ -405,7 +431,7 @@ class NodeRegistry:
         from mino_nexus.core.platform_contract import validate_platform_announcement
         validate_platform_announcement(reg)
         warnings: list[str] = []
-        with self._lock:
+        with self._callback_lock(reg.node_id), self._lock:
             prev = self._nodes.get(reg.node_id)
             if prev is not None:
                 SLog.i(TAG, f"节点 {reg.node_id} 重新注册（覆盖上一次会话）")
@@ -571,7 +597,9 @@ class NodeRegistry:
 
 
     def heartbeat(self, hb: P.Heartbeat, *, send=None) -> None:
-        with self._lock:
+        with self._callback_lock(hb.node_id), self._lock:
+            from mino_nexus.core.callback_scope import require_callback_current
+            require_callback_current()
             node = self._nodes.get(hb.node_id)
             if node is None:
                 SLog.w(TAG, f"收到未注册节点的心跳: {hb.node_id}")
@@ -669,15 +697,11 @@ class NodeRegistry:
                 "execution_binding_version": node.execution_binding_version,
                 "binding_unavailable_reason": node.binding_unavailable_reason})
 
-    def note_seen(self, node_id: str) -> None:
-        """任何已验证的上行帧都说明节点还活着，不必等下一次 HEARTBEAT。"""
-        nid = str(node_id or "").strip()
-        if not nid:
-            return
-        with self._lock:
-            node = self._nodes.get(nid)
-            if node is not None:
-                node.last_seen = time.time()
+    def note_seen(self, node_id: str, *, send=None) -> None:
+        """Update only this published connection; no DB or mutation lock on the receive pump."""
+        node = self._nodes.get(str(node_id or "").strip())
+        if node is not None and (send is None or node.send == send):
+            node.last_seen = time.time()
 
     def note_host_mode(self, node_id: str, mode: str) -> None:
         """休眠/启动的回执先于下一次心跳。立刻改 mode，避免列表还显示旧状态。"""
@@ -725,7 +749,9 @@ class NodeRegistry:
             platform=str(req.platform or ""),
         )
         handler = _NODE_EVENT_HANDLERS.get(event)
-        with self._lock:
+        with self._callback_lock(nid), self._lock:
+            from mino_nexus.core.callback_scope import require_callback_current
+            require_callback_current()
             node = self._nodes.get(nid)
             if node is None:
                 return NodeEventOutcome(handled=False, reason="node_unknown")
@@ -742,20 +768,19 @@ class NodeRegistry:
 
         返回断开时仍挂在该节点上的 run_id，调用方应立刻判失败，不要干等超时。
         """
-        with self._lock:
+        with self._callback_lock(node_id), self._lock:
             current = self._nodes.get(node_id)
             if send is not None and current is not None and current.send != send:
                 return []
             node = self._nodes.pop(node_id, None)
             runs = list(node.active_runs) if node is not None else []
             if node is not None:
-                from mino_nexus.contract.runs import running_run_ids_for_sn
-
-                for dev_sn in list(node.devices.keys()):
-                    runs.extend(running_run_ids_for_sn(dev_sn))
-                runs = list(dict.fromkeys(runs))
                 node.persist_snapshot()
         if node is not None:
+            from mino_nexus.contract.runs import running_run_ids_for_sn
+            for dev_sn in list(node.devices.keys()):
+                runs.extend(running_run_ids_for_sn(dev_sn))
+            runs = list(dict.fromkeys(runs))
             SLog.i(
                 TAG,
                 f"节点 {node_id} 断开，名下 {len(node.devices)} 台设备置为离线"
@@ -770,8 +795,8 @@ class NodeRegistry:
             return [n for n in self._nodes.values()]
 
     def get_node(self, node_id: str) -> Optional[NodeSession]:
-        with self._lock:
-            return self._nodes.get(node_id)
+        # Registration publishes a new object; identity rechecks fence stale snapshots.
+        return self._nodes.get(node_id)
 
     def resolve(self, sn: str) -> tuple[Optional[NodeSession], str]:
         """sn → 该设备所在的活节点。
@@ -779,23 +804,24 @@ class NodeRegistry:
         返回 (session, 拒绝原因)。session 为 None 时原因非空且**必须说清是哪一种**
         —— 派单失败时立刻明说，不要静默排队（NODE_REGISTRY.md §4）。
         """
-        with self._lock:
-            owner = self._owner.get(sn)
-            if owner is None:
-                known = sorted(self._owner)
-                return None, (
-                    f"设备 {sn} 未登记到任何节点"
-                    + (f"（已知设备：{known}）" if known else "（当前没有任何节点在线）")
-                )
-            node = self._nodes.get(owner)
-            if node is None:
-                return None, f"设备 {sn} 所属节点 {owner} 离线"
-            if not node.alive:
-                ago = round(time.time() - node.last_seen, 1)
-                return None, f"设备 {sn} 所属节点 {owner} 心跳超时（{ago}s 未上报）"
-            if node.draining:
-                return None, f"设备 {sn} 所属节点 {owner} 正在关闭"
-            return node, ""
+        owner = self._owner.get(sn)
+        if owner is None:
+            known = sorted(self._owner.copy())
+            return None, (
+                f"设备 {sn} 未登记到任何节点"
+                + (f"（已知设备：{known}）" if known else "（当前没有任何节点在线）")
+            )
+        node = self._nodes.get(owner)
+        if node is None:
+            return None, f"设备 {sn} 所属节点 {owner} 离线"
+        if not node.alive:
+            ago = round(time.time() - node.last_seen, 1)
+            return None, f"设备 {sn} 所属节点 {owner} 心跳超时（{ago}s 未上报）"
+        if node.draining:
+            return None, f"设备 {sn} 所属节点 {owner} 正在关闭"
+        if self._owner.get(sn) != owner or self._nodes.get(owner) is not node:
+            return None, "设备所在节点正在变更"
+        return node, ""
 
     def devices(self) -> list[dict[str, Any]]:
         """给 UI / 调试接口用的设备清单。连通性来自 Scout 上报。"""
