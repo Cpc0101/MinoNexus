@@ -1,6 +1,7 @@
 """N0 write safety in the existing run record; not the N2 binding contract."""
 from __future__ import annotations
 from typing import Any
+import asyncio
 
 
 class WriteAdmissionError(RuntimeError):
@@ -175,7 +176,7 @@ async def recover_stopped(task_id: str):
             records = scout_record_store.for_task(task_id)
             if records and all(row["payload"].get("platform") == "web" for row in records):
                 from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources
-                return reconcile_task_resources(task_id)
+                return await asyncio.to_thread(reconcile_task_resources, task_id)
             raise ValueError("recovery_evidence_unsupported")
         return dead_run_reaper.finalize(task_id, retired)
     outcomes, baseline, attempts = [], [], set()
@@ -283,7 +284,7 @@ async def confirm_baseline(task_id: str):
     records = scout_record_store.for_task(task_id)
     if records and all(row["payload"].get("platform") == "web" for row in records):
         from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources
-        return reconcile_task_resources(task_id, review_unknown=True)
+        return await asyncio.to_thread(reconcile_task_resources, task_id, review_unknown=True)
     actions = unresolved(doc)
     if not actions:
         raise ValueError("baseline_not_required")

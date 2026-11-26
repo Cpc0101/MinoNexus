@@ -157,6 +157,15 @@ def main():
                 db.add(PoolAccount(id='review-account', project_id='project', lease={'run_id': 'review-attempt'}))
                 db.add(DeviceResourceLease(sn='web-node', package_id='https://example.invalid', run_id='review-task', project_id='project'))
             def review_request(row, capability, params=None, **kwargs):
+                # The synchronous Scout proxy must run off the HTTP event-loop thread.
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    pass
+                else:
+                    raise AssertionError('synchronous Scout proxy called on an active event loop')
+                from mino_nexus.platform.identity import require_user_id
+                assert require_user_id() == 'owner'
                 return deepcopy({'record.status': review_summary, 'record.resource_status': review_proof, 'record.events': review_page}[capability])
             from mino_nexus.casework.run_write_safety import confirm_baseline, recover_stopped
             from mino_nexus.casework.run_safety_status import status as safety_status
