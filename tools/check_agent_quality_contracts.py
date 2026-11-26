@@ -161,6 +161,9 @@ def check_receipts():
 
 
 if __name__ == "__main__":
+    guide_source = (Path(__file__).resolve().parents[1] / "mino_nexus/assistant/agent_guide.py").read_text()
+    assert '"policy": "advisory"' in guide_source and '"stage_time_budget_sec": 1800' in guide_source
+    assert 'max(14400,expected_total*600)' in guide_source
     check_workflow()
     check_receipts()
     guide_source = (Path(__file__).resolve().parents[1] / "mino_nexus/assistant/agent_guide.py").read_text()
