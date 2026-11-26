@@ -125,6 +125,33 @@ def main():
             with patch.object(evidence, '_request', return_value=late_page):
                 reject(lambda: evidence.audit_writes(late_row), 'recovery_write_outcome_unknown')
                 assert evidence.audit_writes(late_row, review_unknown=True)['unknown_write_actions'] == 1
+            # Byte-limited pages and local waits reproduce the original Scout ledger.
+            wait_payload = {'capability_id': 'wait', 'executor_used': 'core', 'status': 'pass',
+                            'data': {}, 'elapsed_ms': 600, 'error': '', 'reason_code': '', 'action_seq': 93}
+            wait_row = deepcopy(current); wait_row['summary']['last_event_seq'] = 3
+            wait_page = deepcopy(page); wait_page.update(high_watermark=3, next_seq=3)
+            wait_page['items'].append({'seq': 3, 'type': 'tool/result', 'payload': wait_payload})
+            def paged_request(row, capability, params=None, **kwargs):
+                assert params['max_bytes'] == 524288
+                cursor = params['after_seq']
+                items = wait_page['items'][cursor:cursor + 1]
+                return {**wait_page, 'items': deepcopy(items), 'next_seq': cursor + 1, 'has_more': cursor + 1 < 3}
+            with patch.object(evidence, '_request', side_effect=paged_request):
+                assert evidence.audit_writes(wait_row)['open_write_actions'] == 0
+            for field, value in [('capability_id', 'tap'), ('executor_used', 'web'), ('data', {'resource_isolated': True}),
+                                 ('status', 'blocked'), ('elapsed_ms', True), ('error', 'unknown')]:
+                invalid = deepcopy(wait_page); invalid['items'][2]['payload'][field] = value
+                with patch.object(evidence, '_request', return_value=invalid):
+                    reject(lambda: evidence.audit_writes(wait_row, review_unknown=True), 'recovery_write_evidence_required')
+            changed_wait_row = deepcopy(wait_row); changed_wait_row['summary']['last_event_seq'] = 4
+            changed_wait = deepcopy(wait_page); changed_wait.update(high_watermark=4, next_seq=4)
+            changed_wait['items'].append({'seq': 4, 'type': 'tool/result', 'payload': {**wait_payload, 'capability_id': 'tap'}})
+            with patch.object(evidence, '_request', return_value=changed_wait):
+                reject(lambda: evidence.audit_writes(changed_wait_row, review_unknown=True), 'recovery_write_evidence_required')
+            for index in (0, 1):
+                invalid = deepcopy(page); invalid['items'][index]['payload']['detail_in_artifact'] = True
+                with patch.object(evidence, '_request', return_value=invalid):
+                    reject(lambda: evidence.audit_writes(current, review_unknown=True), 'recovery_write_evidence_required')
             malformed = deepcopy(page); malformed['items'][1]['payload']['action_seq'] = []
             with patch.object(evidence, '_request', return_value=malformed):
                 reject(lambda: evidence.audit_writes(current, review_unknown=True), 'recovery_write_evidence_required')

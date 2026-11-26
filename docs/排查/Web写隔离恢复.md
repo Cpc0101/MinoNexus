@@ -27,3 +27,9 @@
 - `resource_resolution_conflict`：记录、资源归属或 epoch 已变化，重新核验，不强删记录。
 
 不删业务库记录，不新增或改名 Scout 节点绕过隔离，不把恢复资源当作测试通过，不自动重跑原任务。
+
+## 本地等待与大事件
+
+Scout 本地 `wait` 不下发设备操作，仅写 `tool/result`。审计只兼容 `capability_id=wait`、`executor_used=core`、成功、空 data/error/reason_code、非负整数耗时且没有未知写标记的回执；其他无对应调用的结果仍拒绝。
+
+分页必须跟随 `next_seq`，不能按请求条数跳页。工具事件带 `detail_in_artifact` 时，摘要不能证明结果明确，恢复保持隔离；日志记录拒绝的 attempt、事件序号及结构原因，不记录业务载荷。
