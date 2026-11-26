@@ -11,6 +11,7 @@ on:
           - report
           - free-disk
           - deep-disk
+          - trim-images
 
 permissions:
   contents: read
@@ -129,4 +130,28 @@ jobs:
           echo '== after =='
           df -h /
           docker system df
+          REMOTE
+
+      - name: Keep the three newest Nexus releases and reclaim the rest
+        if: inputs.task == 'trim-images'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/maintenance -o BatchMode=yes "$TENCENT_USER@$TENCENT_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          echo '== before =='
+          df -h /
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' \
+            | grep 'hkccr.ccs.tencentyun.com/mino/mino-nexus:' \
+            | grep -v -e ':0.1.145-' -e ':0.1.144-' -e ':0.1.143-' \
+            | awk '{print $2}' | sort -u | while read -r id; do
+                echo "removing $id"
+                docker image rm -f "$id" >/dev/null 2>&1 || true
+              done
+          docker image prune -f || true
+          docker builder prune -af || true
+          echo '== after =='
+          df -h /
+          docker system df
+          docker ps --format '{{.Names}}\t{{.Status}}'
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}' | head -6
           REMOTE
