@@ -67,8 +67,10 @@ def _project(row: dict[str, Any]) -> bool:
             entry = {
                 "state": "settled" if stopped else "isolated", "sn": row["sn"],
                 "reason_code": "write_outcome_unknown",
-                "stop_confirmed": stopped or bool(summary.get("sealed")),
+                "stop_confirmed": stopped,
                 "attempt_id": row["attempt_id"],
+                "record_ref": {"task_id": row["task_id"], "session_id": row["session_id"],
+                               "attempt_id": row["attempt_id"], "node_id": row["node_id"]},
             }
             if stopped:
                 entry["recovery"] = {
@@ -78,7 +80,9 @@ def _project(row: dict[str, Any]) -> bool:
                 }
             with run_store._LOCK:
                 guarded = run_store.get(row["task_id"])
-                guarded.setdefault("write_safety", {})["scout:" + row["attempt_id"]] = entry
+                from mino_nexus.casework.run_write_safety import merge
+                guarded["write_safety"] = merge(guarded, {
+                    "write_safety": {"scout:" + row["attempt_id"]: entry}})
                 if stopped:
                     guarded["business_baseline_pending"] = True
                 run_store.put(guarded)

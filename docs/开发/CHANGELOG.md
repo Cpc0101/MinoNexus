@@ -1,3 +1,8 @@
+## 0.1.144
+
+- Route attempt-scoped Scout isolation through sealed record and epoch recovery without inventing legacy action identities.
+- Sealing alone is not stop evidence; preserve recovered ledgers against late projections and expose record identities in safety status.
+
 # Nexus CHANGELOG
 
 Nexus 发布变更日志真源；版本真源为 `mino_nexus/VERSION`。只记录源码与实际验证，部署及真实业务验收另行确认。

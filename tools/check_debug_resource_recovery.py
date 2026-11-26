@@ -173,7 +173,9 @@ def main():
                 db.add(AppRegressionRun(run_id='review-task', owner_user_id='owner', status='cancelled',
                     finished_at='2026-11-26T00:00:00Z', payload={'run_id': 'review-task', 'task_id': 'review-task',
                     'owner_user_id': 'owner', 'status': 'cancelled', 'finished_at': '2026-11-26T00:00:00Z',
-                    'project_id': 'project', 'reason_code': 'write_outcome_unknown', 'write_safety': {},
+                    'project_id': 'project', 'reason_code': 'write_outcome_unknown', 'write_safety': {
+                    'scout:review-attempt': {'state': 'isolated', 'attempt_id': 'review-attempt',
+                    'sn': 'web-node', 'stop_confirmed': False, 'reason_code': 'write_outcome_unknown'}},
                     'cases': [{'case_id': 'case', 'status': 'blocked', 'reason_code': 'write_outcome_unknown'}]}))
                 db.add(ScoutRecord(**{k: review_identity[k] for k in ('task_id','session_id','attempt_id','owner_user_id','node_id','sn','case_id')},
                     status='blocked', summary_version=2, cancel_requested=True, payload={**review_identity, 'execution_kind': 'debug'},

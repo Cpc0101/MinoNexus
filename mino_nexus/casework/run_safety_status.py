@@ -13,7 +13,8 @@ def status(task_id):
         if row is None or row.owner_user_id != require_user_id():
             raise KeyError("task_not_found")
         doc = row.payload or {}
-        actions = [{"action_ref": item.get("action_ref"), "sn": item.get("sn", ""),
+        actions = [{"action_ref": item.get("action_ref"), "record_ref": item.get("record_ref"),
+            "attempt_id": item.get("attempt_id"), "sn": item.get("sn", ""),
             "state": item.get("state"), "execution_started": item.get("execution_started", "unknown"),
             "stop_confirmed": item.get("stop_confirmed") is True,
             "resource_reset_verified": (item.get("recovery") or {}).get("resource_reset_verified") is True,

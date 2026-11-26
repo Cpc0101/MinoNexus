@@ -29,7 +29,7 @@ def merge(old: dict | None, new: dict | None) -> dict:
     for key, value in ((new or {}).get("write_safety") or {}).items():
         if isinstance(value, dict) and rank.get(value.get("state"), -1) >= rank.get((values.get(key) or {}).get("state"), -1):
             previous = values.get(key) or {}
-            identity_fields = ("action_ref", "sn", "node_id", "scout_process_generation", "capability_id")
+            identity_fields = ("action_ref", "sn", "node_id", "scout_process_generation", "capability_id", "record_ref", "attempt_id")
             if any(field in previous and field in value and previous[field] != value[field]
                    for field in identity_fields):
                 continue  # Never attach another action's proof to this ledger key.
@@ -179,6 +179,27 @@ async def recover_stopped(task_id: str):
                 return await asyncio.to_thread(reconcile_task_resources, task_id)
             raise ValueError("recovery_evidence_unsupported")
         return dead_run_reaper.finalize(task_id, retired)
+    # Scout record ledgers bind an attempt, not a legacy EXECUTE step.
+    # Resolve them through the sealed record/epoch audit; never invent action_ref.
+    pending = unresolved(doc)
+    ledger = doc.get("write_safety") or {}
+    if pending and all(
+        item.get("attempt_id")
+        and ledger.get("scout:" + str(item["attempt_id"])) == item
+        and not item.get("action_ref")
+        for item in pending
+    ):
+        from mino_nexus.resources import scout_record_store
+        rows = scout_record_store.for_task(task_id)
+        indexed = {row["attempt_id"]: row for row in rows}
+        if rows and all(row["payload"].get("platform") == "web" for row in rows) and all(
+            item["attempt_id"] in indexed
+            and item.get("sn") == indexed[item["attempt_id"]]["sn"]
+            for item in pending
+        ):
+            from mino_nexus.loop.scout_resource_resolution import reconcile_task_resources
+            return await asyncio.to_thread(reconcile_task_resources, task_id)
+        raise ValueError("recovery_record_identity_mismatch")
     outcomes, baseline, attempts = [], [], set()
     for item in unresolved(doc):
         ref, sn = item.get("action_ref") or {}, item.get("sn", "")
