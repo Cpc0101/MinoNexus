@@ -50,6 +50,12 @@ def main():
                  'worker_active': False, 'browser_closed': True, 'mode': 'retired_generation',
                  'scout_process_generation': 'new', 'process_started_at': 100,
                  'reason_code': 'web_lane_stopped'}}
+        if '--terminated-attempt' in sys.argv:
+            proof['resource_stop'].update(mode='terminated_attempt', scout_process_generation='old',
+                process_tree_stop={'contract': 'worker_process_tree.v1', 'inspection_complete': True,
+                'process_tree_stopped': True, 'worker_pid': 123, 'processes': [
+                {'pid': 123, 'created_at': 10.0}, {'pid': 124, 'created_at': 11.0}],
+                'process_group': 123, 'observed_at': 100.0})
         with execution_user('owner'):
             with session_scope() as db:
                 db.add(AppRegressionRun(run_id='task', owner_user_id='owner', status='done', finished_at='2026-11-26T00:00:00Z',
@@ -186,7 +192,13 @@ def main():
             review_identity = {**identity, 'task_id': 'review-task', 'run_id': 'review-task',
                                'session_id': 'review-attempt', 'attempt_id': 'review-attempt'}
             review_summary = {**summary, **review_identity}
-            review_proof = {**proof, **review_identity}
+            review_proof = {**deepcopy(proof), **review_identity}
+            if '--terminated-attempt' in sys.argv:
+                review_proof['resource_stop'].update(mode='terminated_attempt', scout_process_generation='old',
+                    process_tree_stop={'contract': 'worker_process_tree.v1', 'inspection_complete': True,
+                    'process_tree_stopped': True, 'worker_pid': 123, 'processes': [
+                    {'pid': 123, 'created_at': 10.0}, {'pid': 124, 'created_at': 11.0}],
+                    'process_group': 123, 'observed_at': 100.0})
             review_page = deepcopy(page)
             review_page['items'][1]['payload'].update(status='blocked', reason_code='write_outcome_unknown')
             with session_scope() as db:
@@ -227,6 +239,75 @@ def main():
                 row, reviewed_proof = evidence.fetch_stop_evidence(records.get('review-attempt'), review_unknown=True)
                 assert reviewed_proof['retirement_write_audit']['unknown_write_actions'] == 1
                 assert records.web_stop_proof_valid(row, reviewed_proof)
+                without_cancel = deepcopy(row); without_cancel['cancel_requested'] = False
+                assert records.web_stop_recovery_candidate(without_cancel)
+                original_summary = deepcopy(row['summary'])
+                for key in ('task_id', 'session_id', 'attempt_id', 'owner_user_id', 'node_id', 'sn', 'case_id'):
+                    wrong = deepcopy(reviewed_proof); wrong[key] = 'foreign'
+                    assert not records.web_stop_proof_valid(row, wrong), key
+                for key, value in [('stop_confirmed', False), ('browser_closed', False),
+                                   ('worker_active', True), ('scout_process_generation', 'old' if reviewed_proof['resource_stop']['mode'] == 'retired_generation' else 'new'),
+                                   ('process_started_at', True)]:
+                    wrong = deepcopy(reviewed_proof); wrong['resource_stop'][key] = value
+                    assert not records.web_stop_proof_valid(row, wrong), key
+                if reviewed_proof['resource_stop']['mode'] == 'terminated_attempt':
+                    tree = reviewed_proof['resource_stop']['process_tree_stop']
+                    invalid_trees = [None, {}, {**tree, 'contract': 'wrong'}, {**tree, 'windows_job_stopped': False},
+                        {**tree, 'inspection_complete': False}, {**tree, 'process_tree_stopped': False},
+                        {**tree, 'worker_pid': True}, {**tree, 'worker_pid': 999},
+                        {**tree, 'processes': []}, {**tree, 'processes': [tree['processes'][0]] * 2},
+                        {**tree, 'processes': [{'pid': True, 'created_at': 1.0}]},
+                        {**tree, 'processes': [{'pid': 123, 'created_at': float('inf')}]},
+                        {**tree, 'processes': [{'pid': 123, 'created_at': 0}]},
+                        {**tree, 'processes': [{'pid': 123, 'created_at': True}]},
+                        {**tree, 'process_group': True}, {**tree, 'process_group': 0}, {**tree, 'process_group': 999},
+                        {**tree, 'observed_at': float('nan')}, {**tree, 'observed_at': -1},
+                        {**tree, 'observed_at': True}, {**tree, 'observed_at': 10 ** 400},
+                        {**tree, 'processes': [{'pid': 123, 'created_at': 10 ** 400}]}]
+                    missing_group = deepcopy(tree); missing_group.pop('process_group')
+                    invalid_trees.append(missing_group)
+                    for invalid in invalid_trees:
+                        wrong = deepcopy(reviewed_proof); wrong['resource_stop']['process_tree_stop'] = invalid
+                        assert not records.web_stop_proof_valid(row, wrong), invalid
+                    valid = deepcopy(reviewed_proof); valid['resource_stop']['process_tree_stop']['process_group'] = None
+                    assert records.web_stop_proof_valid(row, valid)
+                    # Even with an old valid receipt saved, recovery must fetch a fresh
+                    # RPC: a now-unconfirmed tree cannot release an expired lease.
+                    records.save_resource_stop(row['session_id'], reviewed_proof)
+                    review_proof['resource_stop']['process_tree_stop']['process_tree_stopped'] = False
+                    reject(lambda: asyncio.run(confirm_baseline('review-task')), 'stop_evidence_required')
+                    review_proof['resource_stop']['process_tree_stop']['process_tree_stopped'] = True
+                    assert protected('review-task')
+                # An open write has no receipt; explicit review retains that unknown,
+                # while automatic reconciliation and debug.close remain blocked.
+                open_page = deepcopy(review_page)
+                open_page['items'][1] = {'seq': 2, 'type': 'run/finished', 'payload': {}}
+                with patch.object(evidence, '_request', return_value=open_page):
+                    reject(lambda: evidence.audit_writes(row), 'recovery_write_outcome_unknown')
+                    audit = evidence.audit_writes(row, review_unknown=True)
+                    assert audit['open_write_actions'] == audit['unknown_write_actions'] == 1
+                    open_proof = deepcopy(reviewed_proof); open_proof['retirement_write_audit'] = audit
+                    assert records.web_stop_proof_valid(row, open_proof)
+                    open_proof['retirement_write_audit'].update(contract='sealed_write_audit.v1')
+                    assert not records.web_stop_proof_valid(row, open_proof)
+                from mino_nexus.loop import debug_cases
+                node = SimpleNamespace(node_id='node', owner_user_id='owner', alive=True, send=True)
+                with patch.object(debug_cases, 'get_registry', return_value=SimpleNamespace(get_node=lambda _: node)), \
+                     patch.object(debug_cases, '_owned_by_node_account', return_value=True), \
+                     patch.object(debug_cases, '_scope', return_value=review_identity), \
+                     patch.object(debug_cases, '_call', return_value=review_summary), \
+                     patch('mino_nexus.loop.scout_record_tasks.project'):
+                    closed = debug_cases._close(row)
+                    assert closed['state'] == 'stopping'
+                    assert closed['blocking_code'] == 'recovery_write_outcome_unknown'
+                    assert '租约' in closed['recovery_guidance'] or '不自动重放' in closed['recovery_guidance']
+                with patch.object(debug_cases, 'get_registry', return_value=SimpleNamespace(get_node=lambda _: node)), \
+                     patch.object(debug_cases, '_owned_by_node_account', return_value=True), \
+                     patch.object(debug_cases, '_scope', return_value=review_identity), \
+                     patch.object(debug_cases, '_call', side_effect=debug_cases.DebugCallError('debug_transport_timeout')), \
+                     patch('mino_nexus.loop.scout_record_tasks.project'):
+                    assert debug_cases._close(row)['blocking_code'] == 'debug_transport_timeout'
+                assert protected('review-task')
                 wrong = deepcopy(reviewed_proof); wrong['retirement_write_audit']['reviewed_by'] = 'other'
                 assert not records.web_stop_proof_valid(row, wrong)
                 wrong = deepcopy(reviewed_proof); wrong['resource_stop']['mode'] = 'same_process'
@@ -257,6 +338,7 @@ def main():
                     run = db.get(AppRegressionRun, 'review-task')
                     assert run.status == 'cancelled' and run.payload['reason_code'] == 'write_outcome_unknown'
                     assert run.payload['cases'][0]['status'] == 'blocked'
+                    assert db.get(ScoutRecord, 'review-attempt').summary == original_summary
                     assert db.get(PoolAccount, 'review-account').lease == {}
                     resource = db.get(ExecutionResource, 'device:web-node:review-task')
                     assert resource.state == 'released' and resource.epoch == 2
@@ -279,6 +361,7 @@ def main():
             changed = {**summary, 'summary_version': 3, 'execution_started': 'yes'}
             reject(lambda: records.receive('node', changed), 'record_terminal_conflict')
         print('PASS: refresh unsealed legacy terminal; exact retired-generation proof; sealed write audit; unknown writes stay fenced; atomic release; immutable original verdict; idempotent recovery')
+        print('Review mode:', 'terminated_attempt' if '--terminated-attempt' in sys.argv else 'retired_generation')
         print('Offline contracts only; no device or production-task recovery claim.')
 
 

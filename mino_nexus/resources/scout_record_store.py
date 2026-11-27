@@ -14,7 +14,7 @@ from mino_nexus.models.scout_record import ScoutRecord
 from mino_nexus.platform.identity import require_user_id
 
 TERMINAL = frozenset({"pass", "fail", "blocked", "declined", "skipped", "cancelled"})
-_WEB_STOP_MODES = frozenset({"same_process", "retired_generation"})
+_WEB_STOP_MODES = frozenset({"same_process", "retired_generation", "terminated_attempt"})
 _TERMINAL_SCAN_CURSORS: dict[str, tuple[str, str]] = {}
 _ACTIVE_HOLDINGS_SQL = """
   (EXISTS (SELECT 1 FROM execution_resources e
@@ -94,7 +94,9 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
             or stop.get("reason_code") != "web_lane_stopped"
             or not isinstance(mode, str) or mode not in _WEB_STOP_MODES
             or not isinstance(generation, str) or not generation.strip()
-            or type(started) not in (int, float) or not isfinite(started) or started <= 0):
+            or not _finite_positive(started)):
+        return False
+    if mode == "terminated_attempt" and not _process_tree_stop_valid(stop.get("process_tree_stop")):
         return False
     uncertain = (execution_outcome_unknown(record) or resource_isolated(record)
                  or summary.get("execution_stopped") is not True or summary.get("browser_closed") is not True)
@@ -102,7 +104,7 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
     if not isinstance(audit, dict) or (audit.get("contract") is not None and not isinstance(audit["contract"], str)):
         return False
     reviewed = audit.get("contract") == "retired_write_review.v1"
-    if reviewed and (mode != "retired_generation" or audit.get("reviewed_by") != record.get("owner_user_id")
+    if reviewed and (mode not in {"retired_generation", "terminated_attempt"} or audit.get("reviewed_by") != record.get("owner_user_id")
                      or audit.get("historical_outcome_preserved") is not True
                      or type(audit.get("unknown_write_actions")) is not int
                      or audit["unknown_write_actions"] < 0):
@@ -110,7 +112,7 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
     if uncertain or reviewed:
         lifetime_unknown = (execution_outcome_unknown(record) or summary.get("execution_stopped") is not True
                             or summary.get("browser_closed") is not True)
-        if ((lifetime_unknown and mode != "retired_generation")
+        if ((lifetime_unknown and mode not in {"retired_generation", "terminated_attempt"})
                 or audit.get("contract") not in {"sealed_write_audit.v1", "retired_write_review.v1"}
                 or type(audit.get("summary_version")) is not int or audit["summary_version"] != version
                 or type(audit.get("last_event_seq")) is not int or audit["last_event_seq"] < 1
@@ -125,9 +127,49 @@ def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -
             return False
     if mode == "same_process" and (proof.get("execution_stopped") is not True or proof.get("browser_closed") is not True):
         return False
-    if mode == "same_process":
+    if mode in {"same_process", "terminated_attempt"}:
         return generation == summary_generation
     return generation != summary_generation
+
+
+def _finite_positive(value: Any) -> bool:
+    if type(value) not in (int, float) or value <= 0:
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _process_tree_stop_valid(tree: Any) -> bool:
+    """Validate PID/create-time identities, never infer exit from a PID alone."""
+    if (not isinstance(tree, dict) or tree.get("contract") != "worker_process_tree.v1"
+            or tree.get("inspection_complete") is not True
+            or tree.get("process_tree_stopped") is not True
+            or type(tree.get("worker_pid")) is not int or tree["worker_pid"] <= 0
+            or "process_group" not in tree):
+        return False
+    if "windows_job_stopped" in tree and tree["windows_job_stopped"] is not True:
+        return False
+    group = tree["process_group"]
+    if group is not None and (type(group) is not int or group != tree["worker_pid"]):
+        return False
+    observed = tree.get("observed_at")
+    if not _finite_positive(observed):
+        return False
+    processes = tree.get("processes")
+    if not isinstance(processes, list) or not processes:
+        return False
+    seen = set()
+    for process in processes:
+        if not isinstance(process, dict):
+            return False
+        pid, created = process.get("pid"), process.get("created_at")
+        if (type(pid) is not int or pid <= 0 or pid in seen
+                or not _finite_positive(created)):
+            return False
+        seen.add(pid)
+    return tree["worker_pid"] in seen
 
 
 def resource_isolated(record: dict[str, Any]) -> bool:
@@ -191,7 +233,7 @@ def release_evidence_confirmed(record: dict[str, Any]) -> bool:
 def web_stop_recovery_candidate(record: dict[str, Any]) -> bool:
     """Whether a terminal Web record still needs a stop receipt fetched from Scout."""
     summary = record.get("summary") or {}
-    if (record.get("status") not in TERMINAL or record.get("cancel_requested") is not True
+    if (record.get("status") not in TERMINAL
             or (record.get("payload") or {}).get("platform") != "web"):
         return False
     unresolved_retirement = ((execution_outcome_unknown(record) or resource_isolated(record))

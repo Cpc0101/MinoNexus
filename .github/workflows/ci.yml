@@ -44,7 +44,9 @@ jobs:
       - name: Check callback connection fences and terminal projection
         run: python -B tools/check_nexus_record_sync.py
       - name: Check debug resource recovery
-        run: python -B tools/check_debug_resource_recovery.py
+        run: |
+          python -B tools/check_debug_resource_recovery.py
+          python -B tools/check_debug_resource_recovery.py --terminated-attempt
       - name: Check undefined globals
         # 拆文件时漏掉 import：模块照常导入，第一条用例一跑就 NameError
         # （2026-10-22 的 line_text / llm_session_block）。

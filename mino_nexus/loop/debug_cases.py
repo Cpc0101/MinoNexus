@@ -145,6 +145,10 @@ def _stopping(task_id: str, session_id: str, blocking_code: str, *, stop_confirm
         "stop_confirmed": stop_confirmed,
         "lease_released": lease_released,
         "blocking_code": blocking_code,
+        "recovery_guidance": {
+            "recovery_write_outcome_unknown": "历史写结果未知；显式基线复核可凭原 Scout 的退役或同代际 terminated_attempt 停止证明恢复资源，不改变业务结论、不自动重放。",
+            "stop_evidence_required": "须由原 Scout 核验准确 attempt 的 worker 与浏览器进程树已停止；取消确认、节点在线或租约到期不能解除隔离。",
+        }.get(blocking_code, "读取原 Scout 记录并核对具体错误；证据不足继续隔离，租约到期不会自动恢复资源。"),
     }
 
 
@@ -203,6 +207,8 @@ def _close_state(record: dict[str, Any], owner_user_id: str) -> dict[str, Any]:
     if (not stop_confirmed and (record.get("payload") or {}).get("platform") == "web"
             and record.get("cancel_requested") is True):
         blocking = "stop_evidence_required"
+    elif scout_record_store.execution_outcome_unknown(record) or scout_record_store.resource_isolated(record):
+        blocking = "recovery_write_outcome_unknown"
     elif finished:
         blocking = "lease_release_pending"
     else:
@@ -235,7 +241,7 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
     node = get_registry().get_node(str(record.get("node_id") or ""))
     if (node is None or not node.alive or not node.send
             or not _owned_by_node_account(node, owner, str(record.get("sn") or ""))):
-        return _stopping(task_id, session_id, "stop_evidence_required")
+        return _stopping(task_id, session_id, "evidence_temporarily_unavailable")
     params = _scope(record, node)
     try:
         canonical = _call(node, "record.status", params, run_id=task_id, sn=str(record.get("sn") or ""),
@@ -281,8 +287,10 @@ def _close(record: dict[str, Any]) -> dict[str, Any]:
             record = scout_record_store.get(session_id) or record
             state = _close_state(record, owner)
         return state
-    except (DebugCallError, RecordReadError, PermissionError, ValueError):
-        return _stopping(task_id, session_id, "stop_evidence_required")
+    except (DebugCallError, RecordReadError, PermissionError, ValueError) as exc:
+        reason = str(getattr(exc, "reason_code", "") or str(exc) or "stop_evidence_required")
+        return _stopping(task_id, session_id, reason,
+                         stop_confirmed=scout_record_store.stop_evidence_confirmed(record))
 
 
 def start(app, args):

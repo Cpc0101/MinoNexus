@@ -9,9 +9,11 @@
 ## 两个恢复入口
 
 1. `task_resource_reconcile(task_id)`：自动结果审计路径。原节点的封存事件必须完整，所有写结果明确，停止证明绑定同一任务、会话、attempt、账号、节点、SN、版本及进程代际。
-2. `task_write_safety_baseline(task_id)`：用户明确要求恢复资源时的复核路径。Web 必须有 `retired_generation` 停止证明、`worker_active=false`、`browser_closed=true`，并完整读取原 Scout 封存事件。历史未知写结果可以保留，但不能自动重放。
+2. `task_write_safety_baseline(task_id)`：用户明确要求恢复资源时的复核路径。Web 必须有跨代际 `retired_generation` 或同原代际 `terminated_attempt` 停止证明、`worker_active=false`、`browser_closed=true`，并完整读取原 Scout 封存事件。历史未知写结果可以保留，但不能自动重放。
 
 第二个入口不要求 `open_actions>0`；它按持久 Scout 记录及执行资源恢复。非 Web 仍要求停止证据和实际截图基线；截图回执与待复核动作快照在提交事务内再次核对。
+
+`terminated_attempt` 来自原 Scout 父进程对准确 attempt 的执行进程树核验；必须与原摘要 generation 相同，不能把历史 `execution_stopped=false` / `browser_closed=false` 改成 true。新停止事实只保存到 `context.resource_stop`。自动审计仍拒绝未闭合或未知写结果；调试 close 不隐式开启 `review_unknown`，须显式基线复核。
 
 ## 提交与回执
 
@@ -33,3 +35,5 @@
 Scout 本地 `wait` 不下发设备操作，仅写 `tool/result`。审计只兼容 `capability_id=wait`、`executor_used=core`、成功、空 data/error/reason_code、非负整数耗时且没有未知写标记的回执；其他无对应调用的结果仍拒绝。
 
 分页必须跟随 `next_seq`，不能按请求条数跳页。工具事件带 `detail_in_artifact` 时，摘要不能证明结果明确，恢复保持隔离；日志记录拒绝的 attempt、事件序号及结构原因，不记录业务载荷。
+
+自动后台扫描覆盖取消、超时和异常终态，不依赖 cancel_requested；仍先完整审计，开放或未知写需显式复核。停止证明只允许进入恢复事务，不单独宣称租约释放。

@@ -1,3 +1,10 @@
+## 0.1.146 · 2026-11-27
+
+- 接受准确 attempt 的同代际父进程停止证明，封存未知结果保持不变；显式复核恢复执行资源但不自动重放。
+- 恢复证明严格校验 PID/创建时间、进程组、版本、归属和动作审计；证据不足保持隔离。
+- 调试关闭和后台恢复保留具体错误码，明确取消与租约到期不等于资源释放。
+- CI 覆盖同代际强制终止与跨代际恢复两种契约。
+
 ## 0.1.145
 
 - Audit legacy Scout checkout, wait, OTP and control observations as auxiliary receipts, never as write settlement; preserve unknown original outcomes and strict retirement/epoch review.

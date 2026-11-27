@@ -1,6 +1,6 @@
 id: task.write_safety_baseline
 title: 基线复核并解除设备隔离
-description: 用户明确要求恢复本人已结束任务的隔离资源时使用。Web 由原 Scout 核验旧进程代际已退役、无工作线程且浏览器已关闭，并完整审计封存记录；允许保留历史写结果未知，原子释放执行资源和关联租约。不改变原测试结论，不宣称业务复位成功，不自动重放原动作。非 Web 使用停止证据及当前截图基线。身份、停止或记录证据不足保持隔离；无需用户登录 Workbench。
+description: 用户明确要求恢复本人已结束任务的隔离资源时使用。Web 由原 Scout 核验旧进程代际已退役，或以同原代际 terminated_attempt 证明准确 attempt 的 worker 与浏览器进程树已停止，并完整审计封存记录；允许保留历史写结果未知，原子释放执行资源和关联租约。不改变原测试结论，不宣称业务复位成功，不自动重放原动作。非 Web 使用停止证据及当前截图基线。身份、停止或记录证据不足保持隔离，租约到期不构成恢复证明；无需用户登录 Workbench。
 route: POST /case-runner/tasks/{task_id}/write-safety/baseline
 risk: write
 async: false

@@ -220,5 +220,5 @@ def repair_terminal_resources() -> None:
                 project(current)
                 reconcile_task_resources(row["task_id"])
             except Exception as exc:
-                reason = str(getattr(exc, "reason_code", "") or type(exc).__name__)
+                reason = str(getattr(exc, "reason_code", "") or str(exc) or type(exc).__name__)
                 SLog.w("ScoutResources", f"web stop recovery pending session={row['session_id']} reason={reason}")
