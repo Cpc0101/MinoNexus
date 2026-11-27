@@ -56,12 +56,18 @@ jobs:
         run: |
           set -euo pipefail
           incoming="/var/www/scout-release/.incoming-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          transport=(ssh -i ~/.ssh/mino-scout-deploy -o BatchMode=yes)
+          # Reuse one authenticated connection for this short immutable publish.
+          # Separate rapid connections can be reset after the manifest is committed.
+          connection=(-o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=3
+            -o ControlMaster=auto -o ControlPersist=60
+            -o "ControlPath=$RUNNER_TEMP/scout-publish-%C")
+          transport=(ssh -i ~/.ssh/mino-scout-deploy "${connection[@]}")
+          copy=(scp -i ~/.ssh/mino-scout-deploy "${connection[@]}")
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" "mkdir -p '$incoming'"
-          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes dist/manifest.json dist/release-assets.json \
+          "${copy[@]}" dist/manifest.json dist/release-assets.json \
             dist/bootstrap.sh dist/bootstrap.ps1 \
             "$TENCENT_USER@$TENCENT_HOST:$incoming/"
-          scp -i ~/.ssh/mino-scout-deploy -o BatchMode=yes scripts/publish-scout-release.py \
+          "${copy[@]}" scripts/publish-scout-release.py \
             "$TENCENT_USER@$TENCENT_HOST:$incoming/publish.py"
           "${transport[@]}" "$TENCENT_USER@$TENCENT_HOST" \
             "python3 '$incoming/publish.py' --source '$incoming' --release-tag '$RELEASE_TAG' --destination /var/www/scout-release --metadata-only --release-assets-json '$incoming/release-assets.json'"
