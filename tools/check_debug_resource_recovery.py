@@ -344,6 +344,104 @@ def main():
                     assert resource.state == 'released' and resource.epoch == 2
                     assert db.query(DeviceResourceLease).count() == 1
                     assert db.query(DeviceResourceLease).first().run_id == 'other-task'
+            # One stopped worker and one later sealed admission rejection share a
+            # batch. Neither an expired lease nor execution_started=no alone proves stop.
+            batch_worker = {**identity, 'task_id': 'batch-task', 'run_id': 'batch-task',
+                            'session_id': 'batch-worker', 'attempt_id': 'batch-worker'}
+            batch_admission = {**batch_worker, 'session_id': 'batch-admission',
+                               'attempt_id': 'batch-admission', 'case_id': 'later-case'}
+            batch_summary = {**summary, **batch_worker, 'started_at': '2026-11-26T00:00:00Z'}
+            admission_summary = {**batch_admission, 'status': 'blocked', 'state': 'completed',
+                                 'sealed': True, 'summary_version': 1, 'execution_started': 'no',
+                                 'failure_stage': 'admission', 'started_at': None,
+                                 'resource_isolated': False, 'reason_code': 'resource_lease_expired', 'last_event_seq': 2}
+            batch_proof = {**deepcopy(proof), **batch_summary}
+            batch_doc = {'run_id': 'batch-task', 'task_id': 'batch-task', 'owner_user_id': 'owner',
+                         'status': 'cancelled', 'finished_at': '2026-11-26T00:00:01Z',
+                         'project_id': 'project', 'reason_code': 'write_outcome_unknown',
+                         'cases': [{'case_id': 'case', 'status': 'blocked', 'reason_code': 'write_outcome_unknown'},
+                                   {'case_id': 'later-case', 'status': 'blocked', 'reason_code': 'resource_lease_expired'}]}
+            batch_keys = ['device:web-node:batch-worker', 'device:web-node:batch-admission']
+            with session_scope() as db:
+                db.add(AppRegressionRun(run_id='batch-task', owner_user_id='owner', status='cancelled',
+                                        finished_at=batch_doc['finished_at'], payload=deepcopy(batch_doc)))
+                for ident, sealed, key in zip((batch_worker, batch_admission),
+                                              (batch_summary, admission_summary), batch_keys):
+                    db.add(ScoutRecord(**{k: ident[k] for k in ('task_id', 'session_id', 'attempt_id',
+                        'owner_user_id', 'node_id', 'sn', 'case_id')}, status='blocked',
+                        summary_version=sealed['summary_version'], cancel_requested=True,
+                        payload=deepcopy(ident), summary=deepcopy(sealed), context={'project_id': 'project',
+                        'resource_request': {'attempt_id': ident['attempt_id'], 'resource_epochs': {key: 1}}},
+                        updated_at=batch_doc['finished_at']))
+                    db.add(ExecutionResource(resource_key=key, project_id='project', owner_user_id='owner',
+                        run_id='batch-task', execution_unit_id=ident['attempt_id'], attempt_id=ident['attempt_id'],
+                        sn='web-node', epoch=1, expires_at=0, state='isolated'))
+                db.add(PoolAccount(id='batch-account', project_id='project', lease={'run_id': 'batch-admission'}))
+                db.add(DeviceReservation(resource_key='batch-reserved', run_id='batch-task'))
+                db.add(DeviceResourceLease(sn='web-node', package_id='https://batch.invalid',
+                                          run_id='batch-task', project_id='project'))
+            assert records.admission_without_execution(records.get('batch-admission'))
+            for field, value in [('sealed', False), ('execution_started', 'yes'),
+                                 ('failure_stage', 'execution'), ('started_at', ''),
+                                 ('resource_isolated', True)]:
+                invalid = deepcopy(records.get('batch-admission')); invalid['summary'][field] = value
+                assert not records.admission_without_execution(invalid), field
+            invalid = deepcopy(records.get('batch-admission')); invalid['status'] = 'running'
+            assert not records.admission_without_execution(invalid)
+            batch_calls = []
+            def batch_request(row, capability, params=None, **kwargs):
+                batch_calls.append((row['attempt_id'], capability))
+                if row['attempt_id'] == 'batch-worker':
+                    return deepcopy({'record.status': batch_summary, 'record.resource_status': batch_proof,
+                                     'record.events': review_page}[capability])
+                assert row['attempt_id'] == 'batch-admission'
+                if capability == 'record.status':
+                    return deepcopy(row['summary'])
+                if capability == 'record.resource_status':
+                    return {**row['summary'], 'resource_stop': {'stop_confirmed': False}}
+                if capability == 'record.events':
+                    return deepcopy(page)
+                raise ValueError('stop_evidence_required')
+            from mino_nexus.loop.scout_resource_resolution import _commit
+            with patch.object(evidence, '_request', side_effect=batch_request):
+                for field, value in [('started_at', '2026-11-26T00:00:00Z'), ('resource_isolated', True)]:
+                    with session_scope() as db:
+                        db.get(ScoutRecord, 'batch-admission').summary = {**admission_summary, field: value}
+                    reject(lambda: reconcile_task_resources('batch-task', review_unknown=True), 'stop_evidence_required')
+                    # Commit independently enforces the same predicate even if a
+                    # caller bypasses fetch or the sealed admission facts change.
+                    reject(lambda: _commit('batch-task', 'owner', records.for_task('batch-task'), [],
+                                           review_unknown=True), 'stop_evidence_required')
+                    with session_scope() as db:
+                        assert all(db.get(ExecutionResource, key).state == 'isolated' for key in batch_keys)
+                        assert db.get(PoolAccount, 'batch-account').lease == {'run_id': 'batch-admission'}
+                        assert db.query(DeviceReservation).filter_by(run_id='batch-task').count() == 1
+                        assert db.query(DeviceResourceLease).filter_by(run_id='batch-task').count() == 1
+                        assert not db.get(AppRegressionRun, 'batch-task').payload.get('resource_resolution')
+                        db.get(ScoutRecord, 'batch-admission').summary = deepcopy(admission_summary)
+                batch_calls.clear()
+                restored = reconcile_task_resources('batch-task', review_unknown=True)
+                assert all(attempt == 'batch-worker' for attempt, _ in batch_calls)
+                assert ('batch-worker', 'record.resource_status') in batch_calls
+                assert restored['resource_resolution']['automatic_replay_allowed'] is False
+                assert len(restored['resource_resolution']['proofs']) == 1
+                with session_scope() as db:
+                    assert db.get(ScoutRecord, 'batch-worker').summary == batch_summary
+                    assert db.get(ScoutRecord, 'batch-admission').summary == admission_summary
+                    run = db.get(AppRegressionRun, 'batch-task')
+                    assert run.status == 'cancelled' and run.payload['reason_code'] == batch_doc['reason_code']
+                    assert [(c['status'], c['reason_code']) for c in run.payload['cases']] == [
+                        (c['status'], c['reason_code']) for c in batch_doc['cases']]
+                    assert all(db.get(ExecutionResource, key).state == 'released' and
+                               db.get(ExecutionResource, key).epoch == 2 for key in batch_keys)
+                    assert db.get(PoolAccount, 'batch-account').lease == {}
+                    assert db.query(DeviceReservation).filter_by(run_id='batch-task').count() == 0
+                    assert db.query(DeviceResourceLease).filter_by(run_id='batch-task').count() == 0
+                batch_calls.clear()
+                assert reconcile_task_resources('batch-task', review_unknown=True) == restored
+                assert not batch_calls
+            print('PASS: atomic interrupted-worker + admission-only batch recovery; no admission browser RPC; '
+                  'started/isolated admission rejected by fetch and commit; rollback; frozen outcomes; idempotence')
             from mino_nexus.casework.isolation_exit import commit_baseline_release
             physical_doc = {'run_id': 'physical-task', 'task_id': 'physical-task', 'owner_user_id': 'owner',
                             'status': 'cancelled', 'platform': 'android', 'write_safety': {

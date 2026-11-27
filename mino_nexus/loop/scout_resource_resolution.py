@@ -47,7 +47,7 @@ def reconcile_task_resources(task_id: str, *, review_unknown: bool = False) -> d
     proofs = []
     refreshed = []
     for row in rows:
-        if not row["summary_version"] and row["summary"].get("execution_started") == "no":
+        if records.admission_without_execution(row):
             refreshed.append(row)
             continue
         row, proof = fetch_stop_evidence(row, review_unknown=review_unknown)
@@ -96,7 +96,7 @@ def _commit(task_id: str, actor: str, rows: list[dict], proofs: list[dict], *, r
                     raise ValueError("resource_resolution_conflict")
             for record in indexed:
                 snapshot = records.view(record)
-                if record.summary_version and not records.web_stop_proof_valid(snapshot, snapshot["context"].get("resource_stop")):
+                if not records.admission_without_execution(snapshot) and not records.web_stop_proof_valid(snapshot, snapshot["context"].get("resource_stop")):
                     raise ValueError("stop_evidence_required")
             attempts = set(snapshots)
             if any(action.get("attempt_id") not in attempts or action.get("sn") != snapshots[action["attempt_id"]]["sn"] for action in unresolved(doc)):

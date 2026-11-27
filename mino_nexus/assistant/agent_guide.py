@@ -144,7 +144,7 @@ def agent_guide() -> dict[str, Any]:
             {
                 "name": "恢复已结束 Web 任务的隔离资源",
                 "tools": ["task_get", "device_list", "task_resource_reconcile", "task_write_safety_baseline"],
-                "then": "正常任务结束后自动结算资源。用户要求恢复历史隔离时调用 task_resource_reconcile(task_id)，由原 Scout 核验进程及浏览器停止，再原子释放槽位和账号；历史写结果未知时，不重复尝试 reconcile 或换节点绕过。用户明确要求复核并恢复该资源时调用 task_write_safety_baseline：Web 必须由原 Scout 证明旧代际已退役、无工作线程且浏览器已关闭，并完整审计封存记录；复核只释放执行资源，保留历史未知结论，不核验业务复位、不自动重放原写动作。停止或身份证据不足继续隔离。无需登录 Workbench。",
+                "then": "正常任务结束后自动结算资源。用户要求恢复历史隔离时调用 task_resource_reconcile(task_id)，由原 Scout 核验进程及浏览器停止，再原子释放槽位和账号；历史写结果未知时，不重复尝试 reconcile 或换节点绕过。用户明确要求复核并恢复该资源时调用 task_write_safety_baseline：Web 必须由原 Scout 证明旧代际已退役，或提供同代际 terminated_attempt 的准确执行进程树停止证明；均须无活动 worker、浏览器已关闭，并完整审计封存记录；复核只释放执行资源，保留历史未知结论，不核验业务复位、不自动重放原写动作。停止或身份证据不足继续隔离，租约到期不代表自动恢复。无需登录 Workbench。",
             },
         ],
     }

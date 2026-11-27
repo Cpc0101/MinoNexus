@@ -55,6 +55,16 @@ def view(record: ScoutRecord | dict[str, Any]) -> dict[str, Any]:
     return _view(record) if isinstance(record, ScoutRecord) else deepcopy(record)
 
 
+def admission_without_execution(record: dict[str, Any]) -> bool:
+    """A sealed admission rejection has no worker or browser lifetime to stop."""
+    summary = record.get("summary") or {}
+    return (record.get("status") in TERMINAL and summary.get("sealed") is True
+            and summary.get("execution_started") == "no"
+            and summary.get("failure_stage") == "admission"
+            and summary.get("started_at") is None
+            and summary.get("resource_isolated") is not True)
+
+
 def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -> bool:
     """Validate a fresh Web stop receipt against this exact durable attempt."""
     if not isinstance(proof, dict) or record.get("status") not in TERMINAL:
