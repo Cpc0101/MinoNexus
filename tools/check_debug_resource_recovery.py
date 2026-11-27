@@ -174,6 +174,21 @@ def main():
                 bad = deepcopy(aux_page); bad['items'][1]['payload']['data']['execution_control'] = {'stop_run': True}
                 with patch.object(evidence, '_request', return_value=bad):
                     reject(lambda: evidence.audit_writes(aux_row, review_unknown=True), 'recovery_write_evidence_required')
+            # A timed-out mailbox receipt borrows the previous action number.
+            failed_otp = deepcopy(aux_page)
+            failed_otp['items'][1]['payload'].update(capability_id='otp', executor_used='core',
+                status='blocked', error='otp_mail_not_received', reason_code='otp_environment_unavailable',
+                data={'source': 'gmail', 'matched': 0, 'reason_code': 'otp_environment_unavailable'})
+            with patch.object(evidence, '_request', return_value=failed_otp):
+                reject(lambda: evidence.audit_writes(aux_row), 'recovery_write_outcome_unknown')
+                audited = evidence.audit_writes(aux_row, review_unknown=True)
+                assert audited['open_write_actions'] == 1 and audited['unknown_write_actions'] == 1
+            for field, value in [('executor_used', 'playwright'), ('status', 'running'),
+                                 ('error', None), ('reason_code', ''), ('effect_class', 'write'),
+                                 ('data', {'resource_isolated': True})]:
+                invalid = deepcopy(failed_otp); invalid['items'][1]['payload'][field] = value
+                with patch.object(evidence, '_request', return_value=invalid):
+                    reject(lambda: evidence.audit_writes(aux_row, review_unknown=True), 'recovery_write_evidence_required')
             for index in (0, 1):
                 invalid = deepcopy(page); invalid['items'][index]['payload']['detail_in_artifact'] = True
                 with patch.object(evidence, '_request', return_value=invalid):

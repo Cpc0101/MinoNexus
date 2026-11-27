@@ -125,13 +125,18 @@ def _auxiliary_receipt(data):
     if _local_wait_receipt(data):
         return True
     capability, executor, body = data.get('capability_id'), data.get('executor_used'), data.get('data')
-    if (data.get('status') != 'pass' or data.get('error') != ''
-            or data.get('reason_code') != '' or type(data.get('elapsed_ms')) is not int
+    if (type(data.get('error')) is not str or type(data.get('reason_code')) is not str
+            or type(data.get('elapsed_ms')) is not int
             or data['elapsed_ms'] < 0 or not isinstance(body, dict)
             or _unknown_write(data) or data.get('effect_class') == 'write'
             or 'execution_control' in body or 'execution' in body):
         return False
-    return (capability == 'otp' and executor == 'core') or (capability == 'control_observe' and executor == 'playwright')
+    # Mailbox failures are read-only auxiliary receipts, not failed device writes.
+    if capability == 'otp' and executor == 'core':
+        return (data.get('status') == 'pass' and data['error'] == '' and data['reason_code'] == '') or (
+            data.get('status') in ('blocked', 'fail') and bool(data['error']) and bool(data['reason_code']))
+    return (capability == 'control_observe' and executor == 'playwright'
+            and data.get('status') == 'pass' and data['error'] == '' and data['reason_code'] == '')
 
 
 def _local_wait_receipt(data):
