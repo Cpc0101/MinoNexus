@@ -112,6 +112,7 @@ def handle(node_id: str, req: P.Execute) -> P.Result:
             summary=message,
             error=code or type(exc).__name__,
             executor_used="nexus",
+            data={"reason_code": code or "callback_rejected", "reason_detail": getattr(exc, "reason_detail", {})},
         )
 
 
@@ -252,6 +253,7 @@ def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[st
         filters["prefer"] = [*(filters.get("prefer") or []), *prefer]
         selected_case["account_requirements"] = filters
 
+    admission.ctx.session_id = admission.session_id
     row, scoped_ctx, err = lease_scoped_script_account(
         admission.ctx,
         selected_case,
@@ -261,7 +263,12 @@ def _account_impl(admission: ScriptAdmission, params: dict[str, Any]) -> dict[st
     )
     row = dict(row or {})
     if not str(row.get("id") or row.get("account_id") or "").strip():
-        raise ScriptAbort(err or "这条用例没有租到账号", reason_code=err or "resource_account_missing")
+        from mino_nexus.resources.resource_claim_tx import claim_failure_detail
+        failure = ScriptAbort(err or "这条用例没有租到账号", reason_code=err or "resource_account_missing")
+        detail = claim_failure_detail()
+        if detail.get("reason_code") == err:
+            failure.reason_detail = {key: value for key, value in detail.items() if key != "reason_code"}
+        raise failure
 
     account_app = str(row.get("app_id") or getattr(scoped_ctx, "app_id", "") or admission.app_id).strip()
     project_id = str(getattr(scoped_ctx, "project_id", "") or admission.project_id)

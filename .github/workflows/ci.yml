@@ -30,7 +30,9 @@ jobs:
         # 逐条解析 4000+ 条函数内 import，名字不存在 → 非 0 退出。
         run: python tools/check_lazy_imports.py
       - name: Check execution admission contracts
-        run: python -B tools/check_execution_contracts.py
+        run: |
+          python -B tools/check_execution_contracts.py
+          python -B tools/check_account_lease_diagnostics.py
       - name: Check agent quality contracts
         run: python -B tools/check_agent_quality_contracts.py
       - name: Check Agent task board contracts

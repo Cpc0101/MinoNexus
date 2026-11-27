@@ -41,6 +41,7 @@ def _project(row: dict[str, Any]) -> bool:
             return False
         fields = {key: summary[key] for key in (
             "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
+            "session_state", "session_age_ms", "command", "active_command",
             "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
             "started_at", "finished_at", "sealed", "last_event_seq", "run_purpose", "revision",
             "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report", "data_outputs", "data_missing",
@@ -146,7 +147,10 @@ def restore_admission(node_id: str, session_id: str):
             target = (doc.get("device_targets") or {}).get(row["sn"]) or {}
             ctx.env_surface = str(target.get("target_surface", doc.get("env_surface")) or "")
         from mino_nexus.resources.accounts.lease import restore_leases_for_run
-        restore_leases_for_run(ctx, row["task_id"])
+        _, restore_error = restore_leases_for_run(ctx, row["task_id"])
+        if restore_error and restore_error != "本 run 无活跃租约":
+            from mino_nexus.loop.script_runtime import ScriptAbort
+            raise ScriptAbort(restore_error, reason_code=restore_error)
         admission = ScriptAdmission(run_id=row["task_id"], session_id=session_id, case_id=row["case_id"],
             sn=row["sn"], node_id=node_id, owner_user_id=row["owner_user_id"], ctx=ctx, writer=None,
             project_id=data.get("project_id", ""), app_id=data.get("app_id", ""),

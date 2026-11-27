@@ -429,6 +429,8 @@ def try_claim_account_lease(
     """原子占号：仅当未被其它 run/设备占用（或同 run+同 sn 续租）时写入。"""
     from mino_nexus.resources.resource_pool import lease_blocks_other_holder
 
+    from mino_nexus.resources.resource_claim_tx import reset_claim_failure
+    reset_claim_failure()
     pid = str(project_id or "").strip()
     aid = str(account_id or "").strip()
     payload = dict(lease or {})
@@ -469,15 +471,44 @@ def try_claim_account_lease(
         from mino_nexus.resources.resource_claim_tx import deny_claim, holder_reason
         holder = str(existing.get("run_id") or "")
         holder_sn = str(existing.get("sn") or "")
+        def lease_detail():
+            from mino_nexus.models.scout_record import ScoutRecord
+            def session_id(value):
+                if value.get("session_id"):
+                    return str(value["session_id"])
+                rows = db.query(ScoutRecord).filter_by(task_id=str(value.get("run_id") or ""),
+                    sn=str(value.get("sn") or ""), case_id=str(value.get("case_id") or "")).all()
+                return rows[0].session_id if len(rows) == 1 else ""
+            return {"account_id": aid, "holder_run_id": holder, "holder_session_id": session_id(existing),
+                    "holder_slot": str(existing.get("slot") or "default"),
+                    "request_run_id": rid, "request_session_id": session_id(payload),
+                    "request_slot": str(payload.get("slot") or "default"),
+                    "recommended_action": "复用持有者执行会话；需新会话时显式结束旧会话并核验停止及租约释放，或显式使用其他账号。租约到期不证明停止。"}
         if protected(holder, db=db, sn=holder_sn):
             info = holder_reason(db, holder, holder_sn)
             deny_claim("resource_isolated", info.get("reason_code") or "write_safety_isolated",
-                       account_id=aid, **{key: value for key, value in info.items() if key != "reason_code"})
+                       **{**{key: value for key, value in info.items() if key != "reason_code"}, **lease_detail()})
             return False
-        if lease_blocks_other_holder(existing, run_id=rid, sn=sn):
-            deny_claim("resource_busy", "resource_account_lease_held", account_id=aid,
-                       holder_run_id=holder, sn=holder_sn)
+        slot_changed = bool(holder) and str(existing.get("slot") or "default") != str(payload.get("slot") or "default")
+        scope_changed = bool(holder) and any(existing.get(key) and payload.get(key) and existing[key] != payload[key]
+            for key in ("case_id", "session_id", "app_id", "platform", "target_package", "env_surface"))
+        if lease_blocks_other_holder(existing, run_id=rid, sn=sn) or slot_changed or scope_changed:
+            code = "resource_account_lease_held" if holder != rid else "account_slot_scope_mismatch"
+            deny_claim("resource_busy", code, **lease_detail())
             return False
+        # The durable slot binding survives a callback-context loss. It cannot
+        # acquire a second account while its first account is still held.
+        for bound in db.query(PoolAccount).filter(PoolAccount.project_id == pid, PoolAccount.id != aid).all():
+            old = bound.lease or {}
+            if (old.get("run_id") == rid and str(old.get("slot") or "default") == str(payload.get("slot") or "default")
+                    and str(old.get("sn") or "") == sn and str(old.get("case_id") or "") == str(payload.get("case_id") or "")):
+                deny_claim("resource_busy", "account_slot_identity_mismatch",
+                           account_id=aid, holder_account_id=bound.id, holder_run_id=rid,
+                           holder_session_id=str(old.get("session_id") or ""), holder_slot=str(old.get("slot") or "default"),
+                           request_run_id=rid, request_session_id=str(payload.get("session_id") or ""),
+                           request_slot=str(payload.get("slot") or "default"),
+                           recommended_action="复用该 slot 的原账号；更换账号必须显式结束原租约或使用独立 slot。")
+                return False
         from mino_nexus.resources.resource_claim_tx import claim_in_transaction
         if not claim_in_transaction(db, aid):
             return False

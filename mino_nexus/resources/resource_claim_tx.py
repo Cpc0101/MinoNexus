@@ -4,6 +4,19 @@ from __future__ import annotations
 from contextvars import ContextVar
 
 _claim = ContextVar("execution_resource_claim", default=None)
+_failure = ContextVar("resource_claim_failure", default=None)
+
+
+def reset_claim_failure() -> None:
+    _failure.set(None)
+    request = _claim.get()
+    if isinstance(request, dict):
+        request.update(reason="", reason_code="", reason_detail={})
+
+
+def claim_failure_detail() -> dict:
+    from copy import deepcopy
+    return deepcopy(_failure.get() or {})
 
 
 def _without_code(info: dict) -> dict:
@@ -12,6 +25,7 @@ def _without_code(info: dict) -> dict:
 
 def deny_claim(reason: str, reason_code: str = "", **detail) -> bool:
     """Keep the coarse ``reason`` and add the ledger code callers can schedule on."""
+    _failure.set({"reason_code": str(reason_code or reason), **detail})
     request = _claim.get()
     if isinstance(request, dict):
         request["reason"] = reason
@@ -24,8 +38,8 @@ def deny_claim(reason: str, reason_code: str = "", **detail) -> bool:
 def claim_failure_code(default: str = "") -> str:
     request = _claim.get()
     if not isinstance(request, dict):
-        return default
-    return str(request.get("reason_code") or request.get("reason") or default)
+        return str((_failure.get() or {}).get("reason_code") or default)
+    return str(request.get("reason_code") or request.get("reason") or (_failure.get() or {}).get("reason_code") or default)
 
 
 def holder_reason(db, run_id: str, sn: str = "") -> dict:

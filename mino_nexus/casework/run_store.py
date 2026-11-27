@@ -542,7 +542,7 @@ _CASE_BRIEF_KEYS = (
     "detail_availability", "status_sync_at", "summary_version", "assertions", "source_coverage",
     "elapsed_ms", "module", "platform", "hitl", "test_report", "run_purpose",
     "execution_started", "started_at", "finished_at", "sealed", "last_event_seq", "reason_code", "source_hash", "script_path", "revision",
-    "failure_stage", "case_step",
+    "failure_stage", "case_step", "session_state", "session_age_ms", "command", "active_command",
 )
 
 
@@ -955,7 +955,7 @@ def patch_case(run_id: str, case_id: str, *, target_sn: str | None = None,
         if (fields.get("record_source") == "scout" and matches[0].get("session_id") == fields.get("session_id")
                 and int(matches[0].get("summary_version") or 0) > int(fields.get("summary_version") or 0)):
             return doc  # A delayed projection cannot regress a newer durable summary.
-        matches[0].update({k: v for k, v in fields.items() if v is not None})
+        matches[0].update({k: v for k, v in fields.items() if v is not None or k in {"command", "active_command"}})
         return put(doc)
 
 
@@ -969,6 +969,7 @@ def refresh_scout_case(record: dict[str, Any], **fields: Any) -> dict[str, Any]:
     from mino_nexus.resources.scout_record_store import TERMINAL
     allowed = {
         "execution_kind", "debug_state", "workspace_hash", "debug_origin_matched",
+        "session_state", "session_age_ms", "command", "active_command",
         "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
         "started_at", "finished_at", "sealed", "last_event_seq", "run_purpose", "revision",
         "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report",

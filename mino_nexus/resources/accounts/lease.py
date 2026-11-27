@@ -452,6 +452,7 @@ def _mark_leased(
     platform: str = "",
     target_package: str = "",
     env_surface: str = "",
+    session_id: str = "",
 ) -> bool:
     from mino_nexus.resources.pool_account_store import try_claim_account_lease
     if app_id:
@@ -477,6 +478,8 @@ def _mark_leased(
         target_package=target_package,
         env_surface=env_surface,
     )
+    if session_id:
+        rec["session_id"] = session_id
     from mino_nexus.resources.accounts.pool_templates import merged_pool_field_defs
     defs = {str(d["key"]): d for d in merged_pool_field_defs(doc) if d.get("key")}
     ok = try_claim_account_lease(project_id, account_id, rec,
@@ -572,7 +575,7 @@ def renew_run_lease(ctx: Any) -> bool:
         pid = str(lease.get("project_id") or "").strip()
         aid = str(lease.get("account_id") or "").strip()
         rid = str(lease.get("run_id") or getattr(ctx, "run_id", "") or "").strip()
-        if not pid or not aid or not rid:
+        if not pid or not aid or not rid or rid != str(getattr(ctx, "run_id", "") or ""):
             return False
         try:
             if not _mark_leased(
@@ -587,6 +590,7 @@ def renew_run_lease(ctx: Any) -> bool:
                 platform=str(lease.get("platform") or getattr(ctx, "platform", "") or ""),
                 target_package=str(lease.get("target_package") or getattr(ctx, "target_package", "") or ""),
                 env_surface=str(lease.get("env_surface") or ""),
+                session_id=str(lease.get("session_id") or getattr(ctx, "session_id", "") or ""),
             ):
                 return False
         except Exception as exc:
@@ -707,6 +711,7 @@ def apply_lease_to_ctx(
         "account_id": account_id,
         "project_id": str(project_id or ""),
         "run_id": str(getattr(ctx, "run_id", "") or ""),
+        "session_id": str(lease.get("session_id") or getattr(ctx, "session_id", "") or ""),
         "account_ident": ident,
         "sn": str(getattr(ctx, "sn", "") or ""),
         "case_id": str(getattr(ctx, "case_id", "") or ""),
@@ -844,7 +849,9 @@ def _restore_leases_for_run(
     *,
     target_slot: str = "",
 ) -> tuple[list[dict[str, Any]], str]:
-    """Atomically restore all matching slots, or one slot, from the run ledger."""
+    """Restore context only after all matching slots pass identity and scope checks."""
+    if str(run_id or "").strip() != str(getattr(ctx, "run_id", "") or "").strip():
+        return [], "account_restore_run_mismatch"
     from mino_nexus.resources.accounts.app_scope import (
         account_matches_app,
         validate_project_apps,
@@ -874,7 +881,7 @@ def _restore_leases_for_run(
     by_account: dict[str, str] = {}
     for row in list_test_accounts(env_doc, project_id=project_id):
         lease = row.get("lease") if isinstance(row.get("lease"), dict) else {}
-        if str(lease.get("run_id") or "").strip() != rid or lease_expired(lease):
+        if str(lease.get("run_id") or "").strip() != rid:
             continue
         leased_case = str(lease.get("case_id") or "").strip()
         if want_case and leased_case and leased_case != want_case:
@@ -885,6 +892,14 @@ def _restore_leases_for_run(
         slot = normalize_account_slot(lease.get("slot"))
         if wanted_slot and slot != wanted_slot:
             continue
+        requested_env = str(getattr(ctx, "env_profile", "") or "").strip()
+        if requested_env and str(row.get("env") or "") != requested_env:
+            return [], "account_slot_scope_mismatch"
+        requested_session = str(getattr(ctx, "session_id", "") or "").strip()
+        if lease.get("session_id") and requested_session and lease["session_id"] != requested_session:
+            return [], "account_slot_scope_mismatch"
+        if lease_expired(lease):
+            return [], "resource_account_missing"
         lease_app = str(lease.get("app_id") or primary_app).strip()
         try:
             validate_project_apps(project_id, [lease_app])
@@ -1049,6 +1064,8 @@ def persist_account_facets(
 
 
 def lease_for_context(ctx, params, **kwargs):
+    from mino_nexus.resources.resource_claim_tx import reset_claim_failure
+    reset_claim_failure()
     from mino_nexus.resources.account_fact_scope import fact_scope
     with fact_scope(ctx):
         return _lease_for_context(ctx, params, **kwargs)
@@ -1139,8 +1156,11 @@ def _lease_for_context(
     excluded_account_ids = _excluded_accounts_for_slot(ctx, slot)
 
     restored, rerr = restore_lease_slot_for_run(ctx, run_id, slot)
-    if rerr == "account_slot_scope_mismatch":
+    if rerr and rerr != "本 run 无活跃租约":
         return None, rerr
+    if restored and (need_facets or {}).get("idempotent_slot"):
+        if not _script_identity_matches(restored, {"account_requirements": requirements}, env_doc):
+            return None, "account_slot_identity_mismatch"
     if restored and ident_hints and not account_row_matches_hints(restored, ident_hints):
         SLog.i(
             TAG,
@@ -1192,7 +1212,7 @@ def _lease_for_context(
                             case_id=str(getattr(ctx, "case_id", "") or ""), sn=holder_sn,
                             env=env_profile, requirements=requirements,
                             slot=slot, platform=platform, target_package=target_id,
-                            env_surface=env_surface):
+                            env_surface=env_surface, session_id=str(getattr(ctx, "session_id", "") or "")):
                         from mino_nexus.resources.resource_claim_tx import claim_failure_code
                         return None, claim_failure_code("resource_busy")
                     return restored, ""
@@ -1226,6 +1246,7 @@ def _lease_for_context(
                 platform=platform,
                 target_package=target_id,
                 env_surface=env_surface,
+                session_id=str(getattr(ctx, "session_id", "") or ""),
             ):
                 if not apply_lease_to_ctx(ctx, alias_row, project_id=project_id, slot=slot, app_id=app_id, platform=platform, target_package=target_id, env_surface=env_surface):
                     _clear_leased(project_id, account_id, run_id, account_slot=slot)
@@ -1255,6 +1276,7 @@ def _lease_for_context(
                 platform=platform,
                 target_package=target_id,
                 env_surface=env_surface,
+                session_id=str(getattr(ctx, "session_id", "") or ""),
             ):
                 if not apply_lease_to_ctx(ctx, phone_row, project_id=project_id, slot=slot, app_id=app_id, platform=platform, target_package=target_id, env_surface=env_surface):
                     _clear_leased(project_id, account_id, run_id, account_slot=slot)
@@ -1304,14 +1326,39 @@ def _lease_for_context(
                 platform=platform,
                 target_package=target_id,
                 env_surface=env_surface,
+                session_id=str(getattr(ctx, "session_id", "") or ""),
             ):
                 row = candidate
             else:
-                return None, "resource_busy"
+                from mino_nexus.resources.resource_claim_tx import claim_failure_code
+                return None, claim_failure_code("resource_busy")
         else:
             row = candidate
 
     if not row:
+        # The normal ranker excludes held accounts. Probe only hard identity
+        # matches to report the real holder instead of provisioning a substitute.
+        identity_clauses = [clause for clause in requirements.get("all", [])
+                            if clause.get("facet") in {"id", "account_id", "email", "phone", "username"}]
+        if identity_clauses:
+            from mino_nexus.resources.resource_pool import lease_blocks_other_holder
+            for held in list_test_accounts(env_doc, project_id=project_id):
+                if _script_identity_matches(held, {"account_requirements": {"all": identity_clauses}}, env_doc):
+                    lease = held.get("lease") or {}
+                    if lease_blocks_other_holder(lease, run_id=run_id, sn=holder_sn):
+                        claimed = _mark_leased(project_id, _account_id(held), run_id,
+                                     case_id=str(getattr(ctx, "case_id", "") or ""), sn=holder_sn,
+                                     app_id=app_id, slot=slot, platform=platform,
+                                     target_package=target_id, env_surface=env_surface,
+                                     session_id=str(getattr(ctx, "session_id", "") or ""))
+                        if claimed:
+                            if apply_lease_to_ctx(ctx, held, project_id=project_id, slot=slot, app_id=app_id,
+                                                  platform=platform, target_package=target_id, env_surface=env_surface):
+                                return held, ""
+                            _clear_leased(project_id, _account_id(held), run_id, account_slot=slot)
+                            return None, "租约凭证读取失败"
+                        from mino_nexus.resources.resource_claim_tx import claim_failure_code
+                        return None, claim_failure_code("resource_account_lease_held")
         alias_row = try_provision_gmail_after_miss(
             ctx,
             project_id=project_id,
@@ -1342,6 +1389,7 @@ def _lease_for_context(
                 platform=platform,
                 target_package=target_id,
                 env_surface=env_surface,
+                session_id=str(getattr(ctx, "session_id", "") or ""),
             ):
                 if not apply_lease_to_ctx(ctx, alias_row, project_id=project_id, slot=slot, app_id=app_id, platform=platform, target_package=target_id, env_surface=env_surface):
                     _clear_leased(project_id, account_id, run_id, account_slot=slot)
@@ -1418,6 +1466,13 @@ def account_login_policy(ctx: Any) -> dict[str, Any]:
     }
 
 
+def _script_identity_matches(account, case, env_doc) -> bool:
+    requirements = (case or {}).get("account_requirements") or {}
+    clauses = [clause for clause in requirements.get("all", []) if isinstance(clause, dict)
+               and clause.get("facet") in {"id", "account_id", "email", "phone", "username", "env"}]
+    return not clauses or row_satisfies_requirements(account, {"all": clauses, "prefer": []}, env_doc)
+
+
 def lease_scoped_script_account(
     ctx: Any,
     case: dict[str, Any] | None,
@@ -1432,6 +1487,8 @@ def lease_scoped_script_account(
     active lease; changing its app/platform is rejected rather than silently
     replacing the account.
     """
+    from mino_nexus.resources.resource_claim_tx import reset_claim_failure
+    reset_claim_failure()
     try:
         wanted_slot = validate_account_slot(slot)
     except ValueError:
@@ -1489,6 +1546,8 @@ def lease_scoped_script_account(
         scoped_ctx.env_surface = str(
             existing_lease.get("env_surface") or existing.get("env_surface") or ""
         )
+        if not _script_identity_matches(existing, case, {}):
+            return None, None, "account_slot_identity_mismatch"
         # This context represents one slot, so compatibility fields must not
         # retain the default or most-recent account from the parent context.
         scoped_ctx.picked_account = dict(existing)
@@ -1598,6 +1657,7 @@ def lease_script_account(ctx: Any, case: dict[str, Any] | None) -> tuple[dict[st
     need = {
         "need_account": True,
         "advisory_business_data": True,
+        "idempotent_slot": True,
         "skip_prose": True,
         "prompt": "",
         "session": "",
