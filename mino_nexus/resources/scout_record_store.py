@@ -61,8 +61,8 @@ def admission_without_execution(record: dict[str, Any]) -> bool:
     return (record.get("status") in TERMINAL and summary.get("sealed") is True
             and summary.get("execution_started") == "no"
             and summary.get("failure_stage") == "admission"
-            and summary.get("started_at") is None
-            and summary.get("resource_isolated") is not True)
+            and "started_at" in summary and summary["started_at"] is None
+            and summary.get("resource_isolated") is False)
 
 
 def web_stop_proof_valid(record: dict[str, Any], proof: dict[str, Any] | None) -> bool:

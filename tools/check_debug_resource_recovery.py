@@ -381,6 +381,9 @@ def main():
                 db.add(DeviceResourceLease(sn='web-node', package_id='https://batch.invalid',
                                           run_id='batch-task', project_id='project'))
             assert records.admission_without_execution(records.get('batch-admission'))
+            for absent in ('started_at', 'resource_isolated'):
+                incomplete = deepcopy(records.get('batch-admission')); incomplete['summary'].pop(absent)
+                assert not records.admission_without_execution(incomplete)
             for field, value in [('sealed', False), ('execution_started', 'yes'),
                                  ('failure_stage', 'execution'), ('started_at', ''),
                                  ('resource_isolated', True)]:
