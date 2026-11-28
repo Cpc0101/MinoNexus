@@ -65,6 +65,53 @@ def operate(owner_user_id: str, workflow_id: str, operation: str, args: dict) ->
                         raise ValueError("formal_verification_project_mismatch")
                     require_verified_unit(run_store.to_task_json(task), attempt["unit"])
                     old = {**old, "project_id": project_id}
+        if old:
+            from copy import deepcopy
+            from mino_nexus.casework import run_store
+            from mino_nexus.contract.case_receipts import project as receipt_project
+            candidate = deepcopy(old)
+            observed = dict(candidate.get("observed_dispositions") or {})
+            explicit = {item.get("unit") for item in candidate.get("attempts") or [] if item.get("disposition")}
+            task_ids = {item.get("task_id") for item in candidate.get("attempts") or [] if item.get("task_id")}
+            task_ids |= set(candidate.get("task_contexts") or {})
+            mapping = {"verified": "verified", "script_repair": "script_repair", "build_mismatch": "build_mismatch",
+                       "precondition": "precondition_creatable", "precondition_historical": "precondition_historical",
+                       "bug": "bug", "accepted_difference": "accepted_difference"}
+            gap_kind = {"build_mismatch": "build_gap", "precondition_historical": "historical_gap", "accepted_difference": "accepted_difference"}
+            gap_title = {"build_gap": "被测构建不符", "historical_gap": "历史样本不足", "accepted_difference": "文案可接受差异"}
+            changed = False
+            stamped = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            expected_units = list(candidate.get("expected_units") or candidate.get("units") or [])
+            for task_id in task_ids:
+                task = run_store.get(task_id) if task_id else None
+                if task is None or task.get("owner_user_id") not in {None, owner} and task.get("owner_user_id") != owner:
+                    continue
+                for receipt in receipt_project(run_store.to_task_json(task)).get("case_receipts") or []:
+                    unit, mapped = receipt.get("case_id"), mapping.get(receipt.get("disposition") or "")
+                    if unit and mapped and unit not in explicit and observed.get(unit) != mapped:
+                        observed[unit] = mapped
+                        changed = True
+                    kind = gap_kind.get(mapped or "")
+                    if not unit or not kind or unit not in expected_units:
+                        continue
+                    if any(item.get("case_id") == unit and item.get("kind") == kind for item in candidate.get("findings") or []):
+                        continue
+                    diffs = [item for item in receipt.get("accepted_differences") or [] if isinstance(item, dict)]
+                    session_id = str(receipt.get("session_id") or "")
+                    evidence = [f"session:{session_id}/artifact:{item.get('artifact_id')}" for item in diffs if session_id and item.get("artifact_id")]
+                    from mino_nexus.contract.agent_workflow import _store_finding
+                    _store_finding(candidate, {
+                        "finding_id": f"auto-{kind}-{unit}"[:128], "kind": kind, "strict": False, "case_id": unit,
+                        "title": gap_title[kind], "steps": "见对应用例",
+                        "case_text": str(receipt.get("expectation") or "需求未强制该写法"),
+                        "expected": "；".join(str(item.get("expected") or "") for item in diffs) or str(receipt.get("expectation") or "见回执"),
+                        "actual": "；".join(str(item.get("actual") or "") for item in diffs) or str(receipt.get("summary") or "见回执"),
+                        "evidence": evidence,
+                    }, stamped)
+                    changed = True
+            if changed:
+                candidate["observed_dispositions"] = observed
+                old = candidate
         if operation == "finish" and old and args.get("task_id"):
             from copy import deepcopy
             from mino_nexus.casework import run_store
@@ -76,7 +123,9 @@ def operate(owner_user_id: str, workflow_id: str, operation: str, args: dict) ->
                 key: task.get(key) for key in ("app_id", "env_profile", "platform", "revision", "execution_kind", "started_at", "finished_at")}
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         state, result = transition(old, operation, workflow_id, args, now)
-        if (row is None or state != row.state) and operation != "get":
+        stored = row.state if row else None
+        synced = stored is not None and (state.get("observed_dispositions") != stored.get("observed_dispositions") or state.get("findings") != stored.get("findings"))
+        if (row is None or state != row.state) and (operation != "get" or synced):
             if len(json.dumps(state, ensure_ascii=False).encode()) > 2_000_000:
                 raise ValueError("Workflow record limit reached; deliver this scope and start a new workflow")
             if row:

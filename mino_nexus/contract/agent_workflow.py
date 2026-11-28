@@ -97,7 +97,7 @@ def normalize_finding(value: Any, expected: list[str]) -> dict:
     if value.get("status") not in (None, "editing"):
         raise ValueError("Finding stays in editing; it is not submitted")
     kind = value["kind"]
-    if kind not in {"bug", "accepted_difference"} or type(value["strict"]) is not bool:
+    if kind not in {"bug", "accepted_difference", "build_gap", "historical_gap", "precondition_gap"} or type(value["strict"]) is not bool:
         raise ValueError("Invalid finding kind")
     if value["strict"] and kind != "bug":
         raise ValueError("Required copy or UI position cannot be recorded as an accepted difference")
@@ -218,16 +218,36 @@ def _classified(attempts: list[dict], unit: str) -> str:
     return disposition
 
 
+_CLOSED = {"bug", "product_mismatch", "build_mismatch", "precondition_historical", "precondition_creatable",
+           "script_repair", "accepted_difference", "source_repair"}
+
+
+def _effective(attempts: list[dict], unit: str, observed: dict) -> str:
+    kind = _classified(attempts, unit)
+    if kind:
+        return kind
+    raw = str(observed.get(unit) or "")
+    if raw in {"script_repair", "accepted_difference"} and any(
+            item.get("unit") == unit and item.get("stage") == "authoring" and item.get("outcome") == "complete" for item in attempts):
+        return "script_rerun"
+    if raw == "precondition_creatable" and any(
+            item.get("unit") == unit and item.get("stage") == "preparation" and item.get("outcome") == "complete" for item in attempts):
+        return "ready_to_verify"
+    return raw
+
+
 def coverage(state: dict) -> dict:
     expected = state["expected_units"] if "expected_units" in state else state["units"]
     declared = set(state["units"])
     attempts = state["attempts"]
+    observed = state.get("observed_dispositions") or {}
     states = {unit: _unit_state(attempts, unit) for unit in expected}
-    kinds = {unit: _classified(attempts, unit) for unit in expected}
-    missing = [unit for unit in expected if not states[unit]["implemented"] and not states[unit]["terminal"]]
-    verification_missing = [unit for unit in expected
-                            if not states[unit]["formal_verified"] and not states[unit]["terminal"]]
-    blocked = [unit for unit in expected if states[unit]["terminal"]]
+    kinds = {unit: _effective(attempts, unit, observed) for unit in expected}
+    closed = {unit: states[unit]["terminal"] or kinds[unit] in _CLOSED for unit in expected}
+    verified = {unit: states[unit]["formal_verified"] or kinds[unit] == "verified" for unit in expected}
+    missing = [unit for unit in expected if not states[unit]["implemented"] and not closed[unit] and not verified[unit]]
+    verification_missing = [unit for unit in expected if not verified[unit] and not closed[unit]]
+    blocked = [unit for unit in expected if closed[unit]]
     groups = {name: [unit for unit in expected if kinds[unit] == name] for name in (
         "product_mismatch", "bug", "accepted_difference", "script_repair", "source_repair", "precondition_creatable",
         "precondition_historical", "build_mismatch", "script_rerun", "ready_to_verify", "unconfirmed")}
@@ -236,7 +256,7 @@ def coverage(state: dict) -> dict:
     # Unfixed scripts and creatable prerequisites are not formal reruns. Repaired scripts are.
     next_units = missing[:10] if missing else verification_missing[:10]
     implemented = sum(states[unit]["implemented"] for unit in expected)
-    formal_verified = sum(states[unit]["formal_verified"] for unit in expected)
+    formal_verified = sum(verified[unit] for unit in expected)
     disposition_counts = {name: len(units) for name, units in groups.items()}
     disposition_counts["verified"] = formal_verified
     testing_closed = bool(expected) and not missing and not verification_missing and not groups["script_repair"] and not groups["accepted_difference"] and not groups["precondition_creatable"]

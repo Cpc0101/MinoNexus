@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mino_nexus.contract.agent_workflow import transition
+from mino_nexus.contract.agent_workflow import coverage, transition
 from mino_nexus.contract.case_receipts import project, require_verified_unit
 from mino_nexus.contract.execution_report import task_report
 
@@ -121,6 +121,17 @@ def check_workflow():
     fresh, _ = transition(fresh, "start", "quality", {**start, "attempt_id": "a2", "evidence": ["new fixture endpoint"]}, at(2))
     _, current = transition(fresh, "get", "quality", {}, at(2))
     assert not current["help_requests"]  # old question is not reported as a new active request
+    observed = workflow()
+    observed["observed_dispositions"] = {"A": "script_repair", "B": "verified"}
+    view = coverage(observed)
+    assert view["script_repair"] == ["A"] and view["formal_verified"] == 1 and "A" not in view["next_units"] and "B" not in view["next_units"]
+    wording = task()
+    wording["cases"][0]["accepted_differences"] = [{"expected": "Best Sellers", "actual": "Bestsellers"}]
+    assert project(wording)["case_receipts"][0]["disposition"] == "accepted_difference"
+    historical = task()
+    historical["cases"][0]["status"] = "blocked"
+    historical["cases"][0]["reason_code"] = "fact_unavailable"
+    assert project(historical)["case_receipts"][0]["disposition"] == "precondition_historical"
     print("PASS: advisory elapsed budgets, extended single-execution default, active overdue, independent continuation, immutable budgets, wait exclusion, help validation, legacy defaults")
 
 

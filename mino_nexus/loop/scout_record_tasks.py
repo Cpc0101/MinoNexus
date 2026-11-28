@@ -44,7 +44,7 @@ def _project(row: dict[str, Any]) -> bool:
             "session_state", "session_age_ms", "command", "active_command",
             "summary", "reason_code", "failure_stage", "elapsed_ms", "execution_started",
             "started_at", "finished_at", "sealed", "last_event_seq", "run_purpose", "revision",
-            "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report", "data_outputs", "data_missing", "tested_build",
+            "assertions", "source_coverage", "source_hash", "resource_isolated", "test_report", "data_outputs", "data_missing", "tested_build", "accepted_differences",
         ) if key in summary}
         resolution = row.get("context", {}).get("resource_resolution")
         if resolution:

@@ -78,12 +78,15 @@ _DISPOSITION = {
     "build_mismatch": ("被测构建不符", "安装需求指定的包并重新 version()；没有安装包路径就向用户求助，不要把构建不符写成产品失败"),
     "excluded": ("未执行", "核对排除依据；缺前置不要记成跳过"),
     "verified": ("已按原文验证", "保留封存证据，继续独立条目"),
+    "accepted_difference": ("可接受差异", "空格、大小写或连写与用例不同，且需求未强制该写法；更新用例后重跑，不记产品缺陷"),
+    "precondition_historical": ("历史样本不足", "不能现造历史数据；记为缺口草稿并向用户求助，不要重跑"),
 }
 
 
 def _disposition(case: dict, status: str) -> str:
     if status == "PASS":
-        return "verified"
+        differences = case.get("accepted_differences") if isinstance(case.get("accepted_differences"), list) else []
+        return "accepted_difference" if differences else "verified"
     if status == "SKIPPED":
         return "excluded"
     report = case.get("test_report") if isinstance(case.get("test_report"), dict) else {}
@@ -97,6 +100,8 @@ def _disposition(case: dict, status: str) -> str:
         return "product_mismatch"
     if attr == "source_mismatch" or reason.startswith("source_"):
         return "source_repair"
+    if reason in {"fact_unavailable", "historical_sample_missing"}:
+        return "precondition_historical"
     if attr == "blocked" or reason in _PRECONDITION or status == "BLOCKED":
         return "precondition"
     return "unconfirmed"
@@ -132,7 +137,8 @@ def project(task: dict) -> dict:
                "evidence": _safe_text(case.get("last_evidence") or case.get("evidence_summary")),
                "detail_availability": case.get("detail_availability"),
                "environment": _safe_text(case.get("env_profile") or task.get("env_profile") or case.get("channel") or task.get("channel")),
-               "expectation": _safe_text(case.get("expectation") or case.get("expected_result"))}
+               "expectation": _safe_text(case.get("expectation") or case.get("expected_result")),
+               "accepted_differences": case.get("accepted_differences") if isinstance(case.get("accepted_differences"), list) else []}
         receipt_id = hashlib.sha256(json.dumps(key, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         expectation = _safe_text(case.get("expectation") or case.get("expected_result")) or "未上报；需回读锁定原文"
         environment = _safe_text(case.get("env_profile") or task.get("env_profile") or case.get("channel") or task.get("channel")) or "未上报"
@@ -142,9 +148,12 @@ def project(task: dict) -> dict:
         if status == "UNVERIFIED":
             label, next_action = "证据不足", "补齐原文覆盖和 Scout 断言证据，不计正式通过"
         build = _safe_text(case.get("tested_build"), 120) or "未读取"
+        differences = case.get("accepted_differences") if isinstance(case.get("accepted_differences"), list) else []
+        difference_text = "；".join(_safe_text(f"{item.get('expected')} → {item.get('actual')}", 80) for item in differences if isinstance(item, dict)) or "无"
         lines = [f"[{index}/{len(cases)} 执行单元] {identity['case_id']} | {reporting.upper()} | {status} | " + (f"{elapsed / 1000:.1f}s" if elapsed is not None else "耗时未知"),
                  "执行：" + " | ".join(f"{k}={_safe_text(v) or '未上报'}" for k, v in identity.items()),
                  f"环境：{environment} | 被测构建：{build} | 预期：{expectation}", f"实际：{summary or '未上报'}",
+                 f"可接受差异：{difference_text}",
                  f"证据：{evidence} | 可用性：{_safe_text(case.get('detail_availability')) or '未确认'}",
                  f"原因码：{reason or '未上报'} | 归属：{label}", f"下一步：{next_action}", f"回执：{receipt_id}"]
         receipts.append({**identity, "receipt_id": receipt_id, "position": index, "total": len(cases),
@@ -155,6 +164,7 @@ def project(task: dict) -> dict:
                          "summary_version": case.get("summary_version"), "last_event_seq": case.get("last_event_seq"),
                          "detail_availability": case.get("detail_availability"), "requires_visible_receipt": True,
                          "template_version": 2, "environment": environment, "expectation": expectation,
+                         "accepted_differences": differences,
                          "evidence_summary": evidence, "next_action": next_action,
                          "text": "\n".join(lines)})
     return {"case_receipts": receipts, "active_cases": active,
