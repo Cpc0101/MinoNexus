@@ -1,4 +1,8 @@
 """ORM：一张表一个文件。这里的类名对应 mino.db 的表，改字段要同步 docs/架构/数据模型.md。"""
+from mino_nexus.models.asset_preparation import AssetPreparation
+from mino_nexus.models.asset_storage import AssetStorage
+from mino_nexus.models.asset_blob import AssetBlob
+from mino_nexus.models.test_asset import TestAsset
 from mino_nexus.models.node_tool_task import NodeToolTask
 from mino_nexus.models.account_fact_candidate import AccountFactCandidate
 from mino_nexus.models.account_data import AccountData, AccountDataRequest

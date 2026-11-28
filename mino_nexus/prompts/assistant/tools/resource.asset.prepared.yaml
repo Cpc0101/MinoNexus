@@ -1,0 +1,23 @@
+id: resource.asset.prepared
+title: 登记测试资产准备结果
+description: Scout 准备并发布资源后登记 ready 与固定资产版本，服务端核验资产已入库且满足声明属性。失败登记 failed 和原结果证据，不重复生成、不把准备成功当用例通过。
+route: PUT /project/{project_id}/assets/preparations/{preparation_id}
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id: {type: string}
+    preparation_id: {type: string}
+    state: {type: string, enum: [ready, failed]}
+    asset_ref: {type: object}
+    evidence: {type: object}
+  required: [project_id, preparation_id, state, evidence]
+risk: write
+async: false
+version: 1
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

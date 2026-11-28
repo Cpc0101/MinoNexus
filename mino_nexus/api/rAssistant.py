@@ -52,6 +52,8 @@ class WorkflowBody(BaseModel):
     write_outcome: str | None = None
     note: str | None = None
     help_request: dict[str, Any] | None = None
+    disposition: str | None = None
+    finding: dict[str, Any] | None = None
 
 
 def _workflow(uid: str, workflow_id: str, operation: str, args: dict):
@@ -79,7 +81,7 @@ def get_workflow(workflow_id: str, sess: dict = Depends(current_session)):
 
 @router.post("/workflows/{workflow_id}/{operation}")
 def update_workflow(workflow_id: str, operation: str, body: WorkflowBody, sess: dict = Depends(current_session)):
-    if operation not in {"bootstrap", "draft", "init", "start", "finish", "resolve", "answer", "context", "report"}:
+    if operation not in {"bootstrap", "draft", "init", "start", "finish", "resolve", "answer", "context", "report", "finding"}:
         raise HTTPException(status_code=404, detail="Unknown operation")
     uid = _uid(sess)
     args = body.model_dump(exclude_unset=True)

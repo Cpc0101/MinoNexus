@@ -63,6 +63,45 @@ def _active_case(case: dict, task: dict, identity: dict, index: int, total: int,
             "next_action": "emit_visible_heartbeat"}
 
 
+_SCRIPT = {"locator_missing", "control_unknown", "locator_not_found", "locator_ambiguous", "method_unknown",
+           "script_failed", "check_empty", "assertion_missing", "model_policy_denied", "model_policy_invalid",
+           "model_budget_exceeded", "ocr_low_confidence", "ocr_config_invalid"}
+_PRECONDITION = {"data_missing", "fact_unavailable", "prerequisite_unavailable", "resource_account_missing", "resource_busy",
+                 "otp_requires_human", "otp_environment_unavailable", "nexus_rejected", "nexus_unreachable"}
+_PRODUCT = {"assertion_failed", "vlm_failed", "page_mismatch"}
+_DISPOSITION = {
+    "script_repair": ("脚本或定位", "只改定位或脚本后，正式重跑这些 case_id；不改原文预期"),
+    "product_mismatch": ("产品与原文不符", "保持 FAIL 和封存证据，不为了通过而改断言；继续独立用例"),
+    "source_repair": ("原文映射", "按 source_ref 修正映射；页面打开或登录通过不能充当该预期"),
+    "precondition": ("前置不足", "界面里能建立的前置走准备任务后恢复原用例；历史样本不能现造，向用户求助并继续独立用例"),
+    "unconfirmed": ("尚未归类", "先读封存记录再归类，不直接重跑"),
+    "build_mismatch": ("被测构建不符", "安装需求指定的包并重新 version()；没有安装包路径就向用户求助，不要把构建不符写成产品失败"),
+    "excluded": ("未执行", "核对排除依据；缺前置不要记成跳过"),
+    "verified": ("已按原文验证", "保留封存证据，继续独立条目"),
+}
+
+
+def _disposition(case: dict, status: str) -> str:
+    if status == "PASS":
+        return "verified"
+    if status == "SKIPPED":
+        return "excluded"
+    report = case.get("test_report") if isinstance(case.get("test_report"), dict) else {}
+    reason = str(case.get("reason_code") or report.get("reason_code") or "")
+    if reason in {"tested_build_mismatch", "tested_build_unverified", "app_build_mismatch", "app_build_unverified"}:
+        return "build_mismatch"
+    attr = str(report.get("attribution") or "")
+    if attr == "automation" or reason in _SCRIPT:
+        return "script_repair"
+    if attr == "suspected_product" or reason in _PRODUCT:
+        return "product_mismatch"
+    if attr == "source_mismatch" or reason.startswith("source_"):
+        return "source_repair"
+    if attr == "blocked" or reason in _PRECONDITION or status == "BLOCKED":
+        return "precondition"
+    return "unconfirmed"
+
+
 def project(task: dict) -> dict:
     receipts, active = [], []
     cases = [c for c in task.get("cases") or [] if isinstance(c, dict)]
@@ -98,19 +137,21 @@ def project(task: dict) -> dict:
         expectation = _safe_text(case.get("expectation") or case.get("expected_result")) or "未上报；需回读锁定原文"
         environment = _safe_text(case.get("env_profile") or task.get("env_profile") or case.get("channel") or task.get("channel")) or "未上报"
         evidence = _safe_text(case.get("last_evidence") or case.get("evidence_summary")) or "摘要未提供证据引用；需读取 Scout 封存记录"
-        next_action = {"PASS": "保留封存证据，继续独立条目", "FAIL": "核对原文与封存记录；根因未确认，不直接归因产品或脚本",
-                       "BLOCKED": "登记缺口、已查来源与受影响条目，询问所需条件；继续独立条目",
-                       "SKIPPED": "核对不适用或排除依据；缺资源不应记为跳过",
-                       "UNVERIFIED": "补齐原文覆盖和 Scout 断言证据，不计正式通过"}.get(status, "保留当前记录，核对剩余工作")
+        disposition = "unconfirmed" if status == "UNVERIFIED" else _disposition(case, status)
+        label, next_action = _DISPOSITION[disposition]
+        if status == "UNVERIFIED":
+            label, next_action = "证据不足", "补齐原文覆盖和 Scout 断言证据，不计正式通过"
+        build = _safe_text(case.get("tested_build"), 120) or "未读取"
         lines = [f"[{index}/{len(cases)} 执行单元] {identity['case_id']} | {reporting.upper()} | {status} | " + (f"{elapsed / 1000:.1f}s" if elapsed is not None else "耗时未知"),
                  "执行：" + " | ".join(f"{k}={_safe_text(v) or '未上报'}" for k, v in identity.items()),
-                 f"环境：{environment} | 预期：{expectation}", f"实际：{summary or '未上报'}",
+                 f"环境：{environment} | 被测构建：{build} | 预期：{expectation}", f"实际：{summary or '未上报'}",
                  f"证据：{evidence} | 可用性：{_safe_text(case.get('detail_availability')) or '未确认'}",
-                 f"原因码：{reason or '未上报'} | 根因：未确认", f"下一步：{next_action}", f"回执：{receipt_id}"]
+                 f"原因码：{reason or '未上报'} | 归属：{label}", f"下一步：{next_action}", f"回执：{receipt_id}"]
         receipts.append({**identity, "receipt_id": receipt_id, "position": index, "total": len(cases),
                          "purpose": reporting, "status": status, "raw_status": case.get("status"),
                          "formal_verdict": status if reporting == "formal" else None,
                          "duration_ms": elapsed, "summary": summary, "reason_code": reason,
+                         "disposition": disposition, "tested_build": build,
                          "summary_version": case.get("summary_version"), "last_event_seq": case.get("last_event_seq"),
                          "detail_availability": case.get("detail_availability"), "requires_visible_receipt": True,
                          "template_version": 2, "environment": environment, "expectation": expectation,

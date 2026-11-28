@@ -82,7 +82,11 @@ def dispatch_script_case(
     from mino_nexus.resources.node_registry import get_registry
     node, node_reason = get_registry().resolve(sn)
     if node is not None:
-        runtime_error = _web_runtime_capability_error(node, effective_platform, capabilities)
+        holder_error = _asset_holder_error(project_id, node, case.get("inputs") or {})
+        if holder_error:
+            return _outcome("blocked", "文件在发布它的本机 Scout 上，当前节点没有这份库", t0,
+                            reason_code=holder_error, failure_stage="admission", started="no")
+        runtime_error = _asset_runtime_capability_error(node, case.get("inputs") or {}) or _web_runtime_capability_error(node, effective_platform, capabilities)
         if runtime_error:
             return _outcome(
                 "blocked",
@@ -166,6 +170,7 @@ def dispatch_script_case(
                         inputs=case.get("inputs") or {},
                         source_context=doc.get("source_context") or {},
                         web_capabilities=capabilities,
+                        expected_build=str(doc.get("expected_build") or ""),
                     )))
                     body = P.dump_script_run(payload)
                     admission = ScriptAdmission(
@@ -400,3 +405,44 @@ def _outcome(
         "execution_started": started,
         "resource_isolated": bool(isolated),
     }
+
+
+def _asset_runtime_capability_error(node: Any, inputs: dict) -> str:
+    def needs_asset(value):
+        if isinstance(value, dict):
+            return bool(value.get("asset_id")) or any(needs_asset(v) for v in value.values())
+        return isinstance(value, list) and any(needs_asset(v) for v in value)
+    if not needs_asset(inputs):
+        return ""
+    capabilities = getattr(node, "runtime_capabilities", None) or []
+    matches = [c for c in capabilities if isinstance(c, dict) and c.get("id") == "asset.transfer"]
+    if len(matches) != 1 or type(matches[0].get("contract_version")) is not int or matches[0]["contract_version"] != 1:
+        return "asset_runtime_capability_required"
+    features = matches[0].get("features")
+    if not isinstance(features, list) or any(not isinstance(f, str) for f in features) or not {"fetch", "sha256", "local_library"} <= set(features):
+        return "asset_runtime_capability_required"
+    return ""
+
+
+def _asset_holder_error(project_id, node, inputs):
+    refs = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("asset_id"):
+                refs.append(value)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(inputs)
+    if not refs or node is None:
+        return ""
+    from mino_nexus.resources.asset_store import holder_node_id
+    for ref in refs:
+        holder = holder_node_id(project_id, ref.get("asset_id"), ref.get("version", 1))
+        if holder and holder != str(node.node_id):
+            return "asset_not_on_this_scout"
+    return ""

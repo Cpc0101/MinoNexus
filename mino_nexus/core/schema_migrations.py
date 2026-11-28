@@ -37,10 +37,11 @@ OAUTH_TABLES = (
 
 ACCOUNT_DATA_TABLES = ("pool_account_data", "pool_account_data_requests")
 WEB_AUTH_TABLES = ("web_auth_snapshots",)
+ASSET_TABLES = ("asset_storages", "asset_blobs", "test_assets", "asset_preparations")
 
 # Historical IM inbox tables have no registered model or current consumer. Preserve
 # them in existing databases, but do not require them when creating a current schema.
-ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + ("scout_record_index", "project_members", "agent_workflows", "agent_tasks", "agent_task_events") + ACCOUNT_DATA_TABLES + WEB_AUTH_TABLES
+ADDITIVE_TABLES = NAV_ENTRY_TABLES + NAV_CASE_TABLES + CASE_SCRIPT_TABLES + OAUTH_TABLES + ("scout_record_index", "project_members", "agent_workflows", "agent_tasks", "agent_task_events") + ACCOUNT_DATA_TABLES + WEB_AUTH_TABLES + ASSET_TABLES
 
 RETIRED_TABLES = (
     "m_case_run_trace",
@@ -109,6 +110,10 @@ def apply_additive_migrations(engine: Engine, metadata) -> None:
                 table.create(bind=conn, checkfirst=True)
             conn.exec_driver_sql(f"PRAGMA user_version = {SCHEMA_VERSION}")
             version = SCHEMA_VERSION
+        # Asset tables are additive at the current schema generation. Older builds
+        # tolerate extra tables, so metadata-only rollback does not need a downgrade.
+        for name in ASSET_TABLES:
+            metadata.tables[name].create(bind=conn, checkfirst=True)
         missing = [name for name in ADDITIVE_TABLES if name not in inspect(conn).get_table_names()]
         if missing:
             raise RuntimeError("schema_incomplete:" + ",".join(missing))

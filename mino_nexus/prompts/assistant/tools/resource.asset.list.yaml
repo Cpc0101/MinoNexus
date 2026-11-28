@@ -1,0 +1,23 @@
+id: resource.asset.list
+title: 查询可复用测试资产
+description: 查询项目外部存储中的测试资产目录。仅返回版本、校验值、业务属性与来源，不返回文件或临时签名URL。state=ready 才能跨节点获取；资产不等于账号业务对象。脚本通过 case.assets.fetch 获取文件，case.assets.publish 保存生成文件。
+route: GET /project/{project_id}/assets
+risk: read
+async: false
+version: 1
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id: {type: string}
+    kind: {type: string}
+    state: {type: string, enum: [pending, ready]}
+    limit: {type: integer, minimum: 1, maximum: 100}
+    offset: {type: integer, minimum: 0}
+  required: [project_id]
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

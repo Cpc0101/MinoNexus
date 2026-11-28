@@ -1,0 +1,12 @@
+id: agent.workflow.finding
+title: 编辑待查看的差异或缺陷草稿
+description: 保存给用户查看的差异或缺陷草稿。状态固定为 editing，不向外部缺陷系统提交。同一 finding_id 在编辑状态下可以修改标题、步骤、用例、预期、实际和证据。需求或设计稿要求的文案和界面位置必须记为 bug，不能记成可接受差异。
+route: POST /assistant/workflows/{workflow_id}/finding
+risk: write
+async: false
+version: 1
+params_schema: {"type":"object","additionalProperties":false,"properties":{"workflow_id":{"type":"string","minLength":1,"maxLength":128},"finding":{"type":"object","additionalProperties":false,"properties":{"finding_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["bug","accepted_difference"]},"strict":{"type":"boolean"},"case_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","minLength":1,"maxLength":300},"steps":{"type":"string","minLength":1,"maxLength":2000},"case_text":{"type":"string","minLength":1,"maxLength":2000},"expected":{"type":"string","minLength":1,"maxLength":2000},"actual":{"type":"string","minLength":1,"maxLength":2000},"evidence":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":2000}}},"required":["finding_id","kind","strict","case_id","title","steps","case_text","expected","actual","evidence"]}},"required":["workflow_id","finding"]}
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

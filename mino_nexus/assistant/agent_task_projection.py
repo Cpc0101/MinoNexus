@@ -1,4 +1,5 @@
 """Human-readable facts from owned, explicitly linked ledgers."""
+from mino_nexus.contract.agent_question_policy import internal_question
 from mino_nexus.contract.agent_workflow import summary
 from mino_nexus.contract.case_receipts import project as receipts
 from mino_nexus.models.agent_workflow import AgentWorkflow
@@ -17,7 +18,7 @@ def project(db, row):
             if workflow:
                 facts = summary(workflow.state)
                 workflows.append({'workflow_id': ref['id'], **{k: facts[k] for k in
-                    ('scope', 'source_status', 'coverage', 'units', 'help_requests', 'delivery_status', 'draft_actions')},
+                    ('scope', 'source_status', 'coverage', 'units', 'help_requests', 'delivery_status', 'draft_actions', 'findings')},
                     'active_attempts': [a for a in facts['attempts'] if not a['outcome']]})
         elif ref['kind'] == 'execution' and execution is None:
             run = db.get(AppRegressionRun, ref['id'])
@@ -40,13 +41,15 @@ def project(db, row):
     if active:
         action = '；'.join(f"{c['case_id']}：{c['step'] or '设备未上报具体步骤'}" for c in active[:3])
     workflow_questions = [q for flow in workflows for q in flow['help_requests'] if not q.get('answer')]
-    actionable = [q for q in state.get('questions', []) if q.get('missing') not in {'session_id', 'client_request_id', 'attempt_id'}]
+    actionable = [q for q in state.get('questions', []) if not internal_question(q.get('missing'))]
     questions = [q for q in actionable if q['status'] == 'open']
     next_action = state.get('next_action', '')
     if state['status'] in {'completed', 'failed', 'cancelled'}:
         next_action = '任务已结束；沟通记录仅作历史保留，未读取不代表仍需回答。'
     elif questions or workflow_questions:
         next_action = f"请回答下方 {len(questions) + len(workflow_questions)} 个问题；答案提交后等待 Agent 读取并核验"
+    elif any(internal_question(q.get('missing')) and q['status'] != 'acknowledged' for q in state.get('questions', [])):
+        next_action = '内部工具参数由 Agent 查询配置并修正，无需用户补充。'
     elif any(q['status'] == 'answered' for q in actionable):
         next_action = '答案已提交，等待 Agent 读取并核验'
     target = state.get('target') or {}

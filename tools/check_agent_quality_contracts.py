@@ -74,6 +74,24 @@ def check_workflow():
     _, rejected = transition(state, "start", "quality", {**start, "attempt_id": "a2"}, at(1001))
     assert rejected["reason"] == "repeated_blocker_without_evidence"
     assert not help_doc["coverage"]["all_verified"]
+    verify = {"attempt_id": "v1", "unit": "A", "stage": "verification", "action": "正式执行", "evidence": ["task-1"], "task_id": "task-1"}
+    state, _ = transition(state, "start", "quality", verify, at(12))
+    state, done = transition(state, "finish", "quality", {**verify, "outcome": "failed", "blocker": "product_mismatch", "disposition": "product_mismatch"}, at(12))
+    assert "A" in done["coverage"]["product_mismatch"] and "A" not in done["coverage"]["next_units"] and "A" not in done["coverage"]["verification_missing"]
+    state, _ = transition(state, "start", "quality", {**verify, "attempt_id": "v2", "unit": "B", "evidence": ["task-2"]}, at(12))
+    state, repair = transition(state, "finish", "quality", {**verify, "attempt_id": "v2", "unit": "B", "outcome": "failed", "blocker": "script_repair", "disposition": "script_repair", "evidence": ["task-2"], "task_id": "task-2"}, at(12))
+    assert repair["coverage"]["script_repair"] == ["B"] and "B" not in repair["coverage"]["next_units"]
+    state, _ = transition(state, "start", "quality", {"attempt_id": "fix-b", "unit": "B", "stage": "authoring", "action": "修正定位", "evidence": ["新节点"]}, at(12))
+    state, reopened = transition(state, "finish", "quality", {"attempt_id": "fix-b", "outcome": "complete", "evidence": ["新节点"]}, at(12))
+    assert reopened["coverage"]["script_rerun"] == ["B"] and reopened["coverage"]["next_units"] == ["B"]
+    assert not reopened["coverage"]["testing_closed"]
+    draft = {"finding_id": "bug-a", "kind": "bug", "strict": True, "case_id": "A", "title": "金额错误",
+             "steps": "打开订单页", "case_text": "金额应为 10", "expected": "10", "actual": "12", "evidence": ["artifact:shot-1"]}
+    state, saved = transition(state, "finding", "quality", {"finding": draft}, at(12))
+    assert saved["finding"]["status"] == "editing" and saved["submitted"] is False
+    state, saved = transition(state, "finding", "quality", {"finding": {**draft, "title": "订单金额错误"}}, at(12))
+    assert saved["finding"]["title"] == "订单金额错误" and len(saved["findings"]) == 1
+    rejects(lambda: transition(state, "finding", "quality", {"finding": {**draft, "kind": "accepted_difference"}}, at(12)), "accepted difference")
     state, independent = transition(state, "start", "quality", {**start, "attempt_id": "b1", "unit": "B"}, at(1001))
     assert independent["allowed"]
     state, _ = transition(state, "finish", "quality", {"attempt_id": "b1", "outcome": "progress", "evidence": ["fixture read"]}, at(1021))
@@ -150,7 +168,19 @@ def check_receipts():
     assert all(value not in safe["text"] for value in ("fixture secret", "fixture-token", "123456", "fixture@example.invalid", "fixture-bearer"))
     evidence_update = deepcopy(doc); evidence_update["cases"][0]["last_evidence"] = "artifact:2"
     assert project(evidence_update)["case_receipts"][0]["receipt_id"] != receipt["receipt_id"]
-    assert receipt["template_version"] == 2
+    assert receipt["template_version"] == 2 and receipt["disposition"] == "verified"
+    script_fail = deepcopy(doc)
+    script_fail["cases"][0].update(status="fail", reason_code="locator_missing", tested_build="1.2.3 (10)")
+    script_fail["cases"][0]["test_report"]["attribution"] = "automation"
+    script_receipt = project(script_fail)["case_receipts"][0]
+    assert script_receipt["disposition"] == "script_repair" and "1.2.3 (10)" in script_receipt["text"]
+    product_fail = deepcopy(doc)
+    product_fail["cases"][0].update(status="fail", reason_code="assertion_failed")
+    product_fail["cases"][0]["test_report"]["attribution"] = "suspected_product"
+    assert project(product_fail)["case_receipts"][0]["disposition"] == "product_mismatch"
+    missing = deepcopy(doc)
+    missing["cases"][0].update(status="blocked", reason_code="data_missing")
+    assert project(missing)["case_receipts"][0]["disposition"] == "precondition"
     assert all(label in receipt["text"] for label in ("执行：", "环境：", "预期：", "实际：", "证据：", "可用性：", "原因码：", "下一步：", "回执："))
     live["cases"][0].update(summary="登录错误", error="密码错误", last_evidence="", evidence_summary="")
     assert project(live)["active_cases"][0]["last_evidence"] == ""

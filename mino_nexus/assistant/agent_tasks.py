@@ -1,4 +1,5 @@
 """Observe execution, not model thoughts or Scout test verdicts."""
+from mino_nexus.contract.agent_question_policy import internal_question
 from copy import deepcopy
 from datetime import datetime, timezone
 from sqlalchemy import text as sql, case as sql_case
@@ -27,12 +28,12 @@ def view(row, db=None):
     from mino_nexus.assistant.agent_task_projection import project
     presentation = project(db, row) if db is not None else {}
     for question in state["questions"]:
-        internal = question.get("missing") in {"session_id", "client_request_id", "attempt_id"}
+        internal = internal_question(question.get("missing"))
         question["actionable"] = not internal and status not in TERMINAL
         question["history_reason"] = "internal_precondition" if internal else "task_ended" if status in TERMINAL else ""
     actionable = [q for q in state["questions"] if q["actionable"]]
     if status == "waiting_user" and not any(q["status"] == "open" for q in actionable):
-        status = "waiting_agent" if any(q["status"] == "answered" for q in actionable) else "paused"
+        status = "waiting_agent" if any(q["status"] == "answered" for q in actionable) else "waiting_agent" if any(internal_question(q.get("missing")) and q["status"] != "acknowledged" for q in state["questions"]) else "paused"
     return {**state, "presentation": presentation, "task_id": row.task_id, "project_id": row.project_id, "revision": row.revision,
             "board_url": board_url, "board_url_source": config['source'],
             "startup_message": f"已开始：{state['title']}\n实时任务看板：{board_url or '入口未配置'}\n测试范围：{presentation.get('scope') or state['title']}\n环境：{presentation.get('environment') or '尚未上报'}\n当前阶段：{presentation.get('phase_label') or '尚未上报'}\n当前动作：{presentation.get('action') or '尚未上报'}\n下一步：{presentation.get('next_action') or '尚未上报'}\n任务 ID：{row.task_id}",
@@ -194,6 +195,8 @@ def mutate(owner, task_id, operation, args):
         elif operation == "question":
             if state["status"] in TERMINAL:
                 raise ValueError("Ended agent task cannot ask a question")
+            if internal_question(args.get("missing")):
+                raise ValueError("agent_internal_parameter_requires_repair_not_user_question")
             question_id = text(args.get("question_id"), "question_id", 128)
             payload = {"kind": "question", "question_id": question_id,
                        "summary": text(args.get("question"), "question"),

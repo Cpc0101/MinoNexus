@@ -9,7 +9,7 @@ def seal_report(state, now, *, final=False):
     view = summary(state)
     snapshot = {key: deepcopy(view[key]) for key in (
         "scope", "source", "source_read_id", "expected_units", "coverage", "units",
-        "attempts", "help_requests", "contexts", "unresolved_writes", "task_contexts", "draft_actions", "decisions")}
+        "attempts", "help_requests", "contexts", "unresolved_writes", "task_contexts", "draft_actions", "decisions", "findings")}
     digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     reports = state.setdefault("reports", [])
     if not any(r["content_hash"] == digest and r["final"] == final for r in reports):
@@ -20,7 +20,13 @@ def seal_report(state, now, *, final=False):
         # Only the newest stage snapshot is kept; sealed final deliveries remain immutable.
         state["reports"] = [r for r in reports if r["final"] or r is reports[-1]]
     if final:
-        state["delivery_status"] = "delivered" if view["coverage"]["all_verified"] and not view["unresolved_writes"] else "delivered_with_gaps"
+        closed = view["coverage"].get("testing_closed") and not view["unresolved_writes"]
+        if view["coverage"]["all_verified"] and not view["unresolved_writes"]:
+            state["delivery_status"] = "delivered"
+        elif closed:
+            state["delivery_status"] = "delivered_with_findings"
+        else:
+            state["delivery_status"] = "delivered_with_gaps"
 
 
 def update_delivery(state, operation, args, now):

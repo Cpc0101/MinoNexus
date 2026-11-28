@@ -1,0 +1,24 @@
+id: resource.asset.prepare
+title: 领取测试资产准备任务
+description: 缺资产先查资产目录，再由 Agent 选择明确准备脚本及环境。对相同需求去重，只有 claimed=true/action=prepare 才执行准备，wait 继续独立用例，reuse 获取现有资产，inspect 查原生成结果。Nexus 不执行脚本、不生成数据。准备预算由项目所有者配置，原结果未知不得重复生成；ready 不代表业务用例通过。
+route: POST /project/{project_id}/assets/preparations
+params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    project_id: {type: string}
+    task_id: {type: string}
+    demand: {type: object, description: '包含 app_id、environment、kind、attributes；同一需求使用相同字段'}
+    recipe_ref: {type: string}
+    retry: {type: boolean}
+    retry_evidence: {type: object}
+  required: [project_id, task_id, demand, recipe_ref]
+risk: write
+async: false
+version: 1
+param_resolvers:
+  project_id: project.by_name
+result_pick: [data]
+card: answer
+surfaces: [mcp]
+enabled: true

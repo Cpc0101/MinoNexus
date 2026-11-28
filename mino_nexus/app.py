@@ -25,6 +25,7 @@ from mino_nexus.resources.node_registry import get_registry
 
 from mino_nexus.core.paths import data_dir
 from mino_nexus.api import (
+    rAssets,
     rAppAutomation,
     rAppIntel,
     rAssistant,
@@ -219,6 +220,7 @@ def create_app() -> FastAPI:
     app.include_router(rProject.router)
     app.include_router(rProjectCases.router)
     app.include_router(rResourceView.router)
+    app.include_router(rAssets.router)
     from mino_nexus.api import rApplicationUnderstanding
     app.include_router(rApplicationUnderstanding.router)
     app.include_router(rApplicationUnderstanding.resource_router)

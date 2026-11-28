@@ -327,6 +327,33 @@ def resolve_args(spec: dict[str, Any], args: dict[str, Any], *, user_id: str = "
     """解析本次调用参数。返回 args, ask, options, 名称解析说明。"""
     notes: list[str] = []
     out = dict(args or {})
+    from mino_nexus.resources.project_store import list_projects
+    projects = list_projects() if out.get("project_id") or out.get("app_id") else []
+    apps = [(p, a) for p in projects for a in p.get("apps") or []]
+    # Exact typed references are repaired before name matching, never fuzzy-selected.
+    raw_project = str(out.get("project_id") or "")
+    misplaced = [(p, a) for p, a in apps if str(a.get("id")) == raw_project]
+    if len(misplaced) == 1 and not any(str(p.get("id")) == raw_project for p in projects):
+        p, a = misplaced[0]
+        if not out.get("app_id") or str(out["app_id"]) in {str(a["id"]), str(a.get("name"))}:
+            out["project_id"], out["app_id"] = str(p["id"]), str(a["id"])
+            notes.append("应用标识已归一化到所属项目")
+    app_hits = [(p, a) for p, a in apps if str(out.get("app_id") or "") in {str(a.get("id")), str(a.get("name"))}]
+    if len(app_hits) == 1 and raw_project.lower() in {"", "default", "默认"}:
+        out["project_id"] = str(app_hits[0][0]["id"])
+        notes.append("项目取已确认应用的所属项目")
+    if raw_project.lower() in {"default", "默认"} and not app_hits:
+        out.pop("project_id", None)
+        if len(projects) == 1:
+            out["project_id"] = str(projects[0]["id"])
+            notes.append("默认占位值已替换为唯一可访问项目")
+    raw_channel = str(out.get("env_surface") or "")
+    if raw_channel and out.get("app_id"):
+        devices = [d for d in _visible_devices(user_id) if raw_channel in {str(d.get("sn") or ""), str(d.get("physical_sn") or "")}]
+        if len(devices) == 1 and str(out.get("sn") or raw_channel) in {raw_channel, str(devices[0].get("sn"))}:
+            out["sn"] = str(devices[0]["sn"])
+            out.pop("env_surface", None)
+            notes.append("设备 SN 已从渠道参数移到设备参数")
     resolvers = spec.get("param_resolvers") if isinstance(spec.get("param_resolvers"), dict) else {}
     for key in ("project_id", "app_id", "env_surface", "env_profile"):
         resolver = resolvers.get(key)
@@ -486,6 +513,13 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
         scope = str(context.get("assistant_mutation_scope") or "")
         if scope:
             args["operation_id"] = hashlib.sha256(scope.encode()).hexdigest()[:32]
+    if spec.get('id') in {'cli.query', 'cli.execute'} and not args.get('plugin'):
+        command = args.get('command') or []
+        service = command[0] if isinstance(command, list) and command else ""
+        if service in {"wiki", "sheets", "docs", "docx", "drive", "im"}:
+            args["plugin"] = "feishu"
+        elif service == "workitem":
+            args["plugin"] = "meego"
     if spec.get('id') in {'cli.query', 'cli.execute'} and not args.get('node_id'):
         origin = context.get('assistant_origin') or {}
         if origin.get('node_id'):
@@ -496,9 +530,16 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
         node_id = args.get("node_id")
         if node_id is not None and (not isinstance(node_id, str) or not re.fullmatch(r"[a-z0-9]+", node_id)):
             return ToolOutcome(ok=False, status=400, summary="请使用 scout_list 返回的准确 node_id，不是设备 SN 或路径。", tool_id=str(spec["id"]))
+    if target:
+        try:
+            canonical_target, target_problem, _, _ = resolve_args(spec, target, user_id=user_id)
+            if not target_problem:
+                target = canonical_target
+        except (KeyError, ValueError):
+            pass  # Normal argument resolution returns the concrete target failure.
     for key in ("project_id", "app_id", "env_surface", "env_profile", "module", "modules", "ordinal", "topic_id"):
         if key in props and target and target.get(key):
-            args.setdefault(key, target[key])
+            args[key] = target[key]
     try:
         args, ask, options, notes = resolve_args(spec, args, user_id=user_id)
     except (ValueError, KeyError) as exc:
@@ -593,9 +634,11 @@ def _run_tool_owned(spec: dict[str, Any], args: dict[str, Any], *, user_id: str,
     names = _PARAM.findall(path)
     required = list((spec.get("params_schema") or {}).get("required") or [])
     missing = [name for name in dict.fromkeys(names + required) if args.get(name) in (None, "", [])]
-    if missing and any(key in {"session_id", "client_request_id", "attempt_id"} for key in missing):
-        msg = "工具调用缺少内部执行标识（" + "、".join(missing) + "）。Agent 应先创建或查询对应调试会话，再使用返回的标识重试；无需用户填写。"
-        return ToolOutcome(ok=False, summary=msg, tool_id=str(spec.get("id") or ""), args=args)
+    from mino_nexus.contract.agent_question_policy import INTERNAL_FIELDS
+    if missing and any(key in INTERNAL_FIELDS for key in missing):
+        msg = "工具调用缺少内部参数（" + "、".join(missing) + "）。Agent 应查询工具 schema、已有任务和节点配置后修正；无需用户填写。"
+        return ToolOutcome(ok=False, summary=msg, status=422, tool_id=str(spec.get("id") or ""), args=args,
+            data={"reason_code": "agent_tool_arguments_required", "missing": missing, "required_action": "inspect_schema_and_repair"})
     if missing:
         labels = {"app_id": "应用", "project_id": "项目", "sn": "设备", "task_id": "任务", "env_surface": "应用渠道"}
         msg = "请补充本次的" + "、".join(labels.get(key, key) for key in missing) + "。"

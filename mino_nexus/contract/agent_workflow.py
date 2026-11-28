@@ -10,6 +10,9 @@ OUTCOMES = ("progress", "blocked", "complete", "failed", "deferred")
 VERIFICATION_NOTE = "Agent progress is not a test verdict; verify assertions in the original Scout task."
 DONE_STATUSES = {"implemented", "path_validated", "formal_verified"}
 TERMINAL_STATUSES = {"blocked", "failed", "deferred"}
+DISPOSITIONS = {"verified", "product_mismatch", "bug", "accepted_difference", "script_repair", "source_repair",
+                "precondition_creatable", "precondition_historical", "build_mismatch", "unconfirmed"}
+FINDING_FIELDS = ("finding_id", "kind", "strict", "case_id", "title", "steps", "case_text", "expected", "actual", "evidence")
 SOURCE_FIELDS = {"source_id", "kind", "url", "reference", "spreadsheet_token", "sheet_id", "range", "revision", "content_hash"}
 
 
@@ -87,9 +90,51 @@ def time_budget(state: dict, now: str) -> dict:
             "measured_at": now, "scope": "summed_investigation_elapsed_including_waits"}
 
 
+def normalize_finding(value: Any, expected: list[str]) -> dict:
+    """A review draft. It stays editable and is never a submitted defect."""
+    if not isinstance(value, dict) or set(value) - set(FINDING_FIELDS) - {"status"} or set(FINDING_FIELDS) - set(value):
+        raise ValueError("Invalid finding")
+    if value.get("status") not in (None, "editing"):
+        raise ValueError("Finding stays in editing; it is not submitted")
+    kind = value["kind"]
+    if kind not in {"bug", "accepted_difference"} or type(value["strict"]) is not bool:
+        raise ValueError("Invalid finding kind")
+    if value["strict"] and kind != "bug":
+        raise ValueError("Required copy or UI position cannot be recorded as an accepted difference")
+    case_id = text(value["case_id"], "case_id", 128)
+    if case_id not in expected:
+        raise ValueError("Finding case is outside locked scope")
+    evidence = facts(value["evidence"])
+    if kind == "bug" and not evidence:
+        raise ValueError("Bug draft requires screenshot or evidence reference")
+    return {"finding_id": text(value["finding_id"], "finding_id", 128), "kind": kind, "strict": value["strict"],
+            "case_id": case_id, "title": text(value["title"], "title", 300), "steps": text(value["steps"], "steps"),
+            "case_text": text(value["case_text"], "case_text"), "expected": text(value["expected"], "expected"),
+            "actual": text(value["actual"], "actual"), "evidence": evidence, "status": "editing", "submitted": False}
+
+
+def _store_finding(state: dict, raw: Any, now: str) -> dict:
+    expected = state.get("expected_units") or state.get("units") or []
+    finding = normalize_finding(raw, expected)
+    rows = state.setdefault("findings", [])
+    prior = next((item for item in rows if item["finding_id"] == finding["finding_id"]), None)
+    if prior:
+        if prior.get("status") != "editing" or prior.get("submitted"):
+            raise ValueError("Finding stays in editing; it is not submitted")
+        created = prior.get("created_at", now)
+        prior.clear()
+        prior.update(finding, created_at=created, updated_at=now)
+        return prior
+    rows.append({**finding, "created_at": now, "updated_at": now})
+    return rows[-1]
+
+
 def help_request(value: Any, expected: list[str], unit: str) -> dict | None:
     if value is None:
         return None
+    from mino_nexus.contract.agent_question_policy import internal_question
+    if isinstance(value, dict) and internal_question(value.get("missing")):
+        raise ValueError("agent_internal_parameter_requires_repair_not_user_question")
     keys = {"question", "missing", "checked_sources", "affected_units"}
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError("Help request requires question, missing, checked_sources and affected_units")
@@ -150,19 +195,51 @@ def _unit_status(attempts: list[dict], unit: str) -> str:
     return _unit_state(attempts, unit)["status"]
 
 
+def _classified(attempts: list[dict], unit: str) -> str:
+    """Latest formal disposition. A later authoring or preparation completion reopens that unit."""
+    last_index = -1
+    disposition = ""
+    for index, attempt in enumerate(attempts):
+        if attempt.get("unit") != unit or attempt.get("stage") != "verification" or not attempt.get("outcome"):
+            continue
+        last_index = index
+        disposition = str(attempt.get("disposition") or "")
+        if not disposition and attempt["outcome"] == "complete":
+            disposition = "verified"
+    if last_index < 0:
+        return ""
+    later = attempts[last_index + 1:]
+    if disposition in {"script_repair", "accepted_difference"} and any(
+            item.get("unit") == unit and item.get("stage") == "authoring" and item.get("outcome") == "complete" for item in later):
+        return "script_rerun"
+    if disposition == "precondition_creatable" and any(
+            item.get("unit") == unit and item.get("stage") == "preparation" and item.get("outcome") == "complete" for item in later):
+        return "ready_to_verify"
+    return disposition
+
+
 def coverage(state: dict) -> dict:
     expected = state["expected_units"] if "expected_units" in state else state["units"]
     declared = set(state["units"])
-    states = {unit: _unit_state(state["attempts"], unit) for unit in expected}
+    attempts = state["attempts"]
+    states = {unit: _unit_state(attempts, unit) for unit in expected}
+    kinds = {unit: _classified(attempts, unit) for unit in expected}
     missing = [unit for unit in expected if not states[unit]["implemented"] and not states[unit]["terminal"]]
     verification_missing = [unit for unit in expected
                             if not states[unit]["formal_verified"] and not states[unit]["terminal"]]
     blocked = [unit for unit in expected if states[unit]["terminal"]]
+    groups = {name: [unit for unit in expected if kinds[unit] == name] for name in (
+        "product_mismatch", "bug", "accepted_difference", "script_repair", "source_repair", "precondition_creatable",
+        "precondition_historical", "build_mismatch", "script_rerun", "ready_to_verify", "unconfirmed")}
     implementation_complete = not missing
     verification_complete = not verification_missing
+    # Unfixed scripts and creatable prerequisites are not formal reruns. Repaired scripts are.
     next_units = missing[:10] if missing else verification_missing[:10]
     implemented = sum(states[unit]["implemented"] for unit in expected)
     formal_verified = sum(states[unit]["formal_verified"] for unit in expected)
+    disposition_counts = {name: len(units) for name, units in groups.items()}
+    disposition_counts["verified"] = formal_verified
+    testing_closed = bool(expected) and not missing and not verification_missing and not groups["script_repair"] and not groups["accepted_difference"] and not groups["precondition_creatable"]
     return {
         "expected": len(expected),
         "declared": sum(unit in declared for unit in expected),
@@ -173,6 +250,18 @@ def coverage(state: dict) -> dict:
         "missing": missing,
         "verification_missing": verification_missing,
         "blocked_units": blocked,
+        "product_mismatch": groups["product_mismatch"],
+        "bugs": groups["bug"],
+        "accepted_differences": groups["accepted_difference"],
+        "script_repair": groups["script_repair"],
+        "script_rerun": groups["script_rerun"],
+        "source_repair": groups["source_repair"],
+        "prepare_units": groups["precondition_creatable"],
+        "historical_units": groups["precondition_historical"],
+        "build_mismatch": groups["build_mismatch"],
+        "ready_to_verify": groups["ready_to_verify"],
+        "disposition_counts": disposition_counts,
+        "testing_closed": testing_closed,
         "implementation_complete": implementation_complete,
         "verification_complete": verification_complete,
         "all_implemented": bool(expected) and implemented == len(expected),
@@ -221,6 +310,7 @@ def summary(state: dict, now: str | None = None) -> dict:
             "help_requests": [{**r, "answer": state.get("answers", {}).get(r["attempt_id"])} for r in requests],
             "task_contexts": deepcopy(state.get("task_contexts", {})),
             "contexts": deepcopy(state.get("contexts", [])), "reports": deepcopy(state.get("reports", [])),
+            "findings": deepcopy(state.get("findings", [])),
             "delivery_status": state.get("delivery_status", "in_progress"),
             "source_status": "locked" if state.get("source_read_id") else "drafting",
             **({"time_budget": time_budget(state, now)} if now else {}),
@@ -335,6 +425,12 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         return state, result
     if operation == "start" and not state.get("source_read_id"):
         raise ValueError("Source not locked; draft cases from requirement, publish and read back before init")
+    if operation == "finding":
+        if not state.get("source_read_id"):
+            raise ValueError("Source is not locked")
+        stored = _store_finding(state, args.get("finding"), now)
+        state["delivery_status"] = "in_progress"
+        return state, {"finding": stored, "findings": deepcopy(state.get("findings", [])), "submitted": False}
     attempt_id = text(args.get("attempt_id"), "attempt_id", 128)
     attempt = next((a for a in state["attempts"] if a["attempt_id"] == attempt_id), None)
     evidence = facts(args.get("evidence", []))
@@ -378,7 +474,7 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
         state["units"] = sorted(set(state["units"]) | {unit})
         state["attempts"].append({"attempt_id": attempt_id, "unit": unit, "stage": stage, "action": action, "writes": writes,
                                   "blocker": blocker, "evidence": evidence, "task_id": "", "outcome": "", "write_outcome": "known",
-                                  "note": "", "started_at": now, "finished_at": ""})
+                                  "disposition": "", "note": "", "started_at": now, "finished_at": ""})
         return state, {"allowed": True, "attempt_id": attempt_id, "stage_remaining": state["stage_budget"] - stage_used - 1,
                        "total_remaining": state["total_budget"] - used - 1, "coverage": coverage(state),
                        "time_budget": time_budget(state, now), "budget_warning": "reference_time_exceeded" if over_reference else "",
@@ -386,6 +482,7 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
     if not attempt:
         raise ValueError("Unknown attempt")
     if operation == "finish":
+        attempt.setdefault("disposition", "")
         outcome, write_outcome = args.get("outcome"), args.get("write_outcome", "known")
         request = help_request(args.get("help_request"), state.get("expected_units", state["units"]), attempt["unit"])
         if request and outcome not in {"blocked", "deferred"}:
@@ -399,12 +496,25 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
             raise ValueError("Unsupported outcome")
         if outcome in {"blocked", "failed"} and not blocker:
             raise ValueError("Blocked/failed investigation must name its concrete blocker")
+        disposition = text(args.get("disposition", ""), "disposition", 64, required=False)
+        if disposition and disposition not in DISPOSITIONS:
+            raise ValueError("Unsupported disposition")
+        if attempt["stage"] == "verification" and outcome == "complete" and not disposition:
+            disposition = "verified"
+        if attempt["stage"] == "verification" and outcome in {"failed", "blocked"} and disposition in {"", "verified"}:
+            raise ValueError("Verification failure must name its disposition")
+        if disposition in {"bug", "accepted_difference"} and not isinstance(args.get("finding"), dict):
+            raise ValueError("This disposition requires a review draft")
+        if isinstance(args.get("finding"), dict) and args["finding"].get("kind") not in {disposition, None}:
+            if disposition in {"bug", "accepted_difference"} and args["finding"].get("kind") != disposition:
+                raise ValueError("Finding kind must match the disposition")
         evidence = sorted(set(evidence) | set(attempt["evidence"]))
         if outcome == "complete" and (not evidence or write_outcome == "unknown"):
             raise ValueError("Phase completion requires evidence and a known outcome")
         if write_outcome == "unknown" and (not attempt["writes"] or not task_id):
             raise ValueError("Unknown write outcome requires a writing attempt and its original task ID")
-        values = {"outcome": outcome, "write_outcome": write_outcome, "blocker": blocker, "task_id": task_id, "note": note, "evidence": evidence}
+        values = {"outcome": outcome, "write_outcome": write_outcome, "blocker": blocker, "task_id": task_id,
+                  "disposition": disposition, "note": note, "evidence": evidence}
         if request is not None or "help_request" in attempt:
             values["help_request"] = request
         if attempt["outcome"]:
@@ -412,6 +522,8 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
                 raise ValueError("Finished attempt is immutable")
         else:
             attempt.update(values, finished_at=now)
+        if isinstance(args.get("finding"), dict):
+            _store_finding(state, args["finding"], now)
         from mino_nexus.contract.workflow_delivery import seal_report
         seal_report(state, now, final=not coverage(state)["verification_missing"] and not any(not a["outcome"] for a in state["attempts"]))
         return state, {**deepcopy(attempt), "coverage": coverage(state), "time_budget": time_budget(state, now),

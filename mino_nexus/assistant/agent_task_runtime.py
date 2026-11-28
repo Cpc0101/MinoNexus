@@ -1,4 +1,5 @@
 """Capture real Nexus entry points; external local work requires explicit events."""
+from mino_nexus.contract.agent_question_policy import internal_question
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -90,7 +91,7 @@ def tracked_tool(call, spec, args, *, owner):
     tasks.tool_end(owner, task_id, call_id, name, bool(outcome.ok), round((monotonic() - started) * 1000),
                    int(outcome.status or 0), str(data.get("reason_code") or data.get("code") or ""))
     observe_links(owner, task_id, outcome.args or args, outcome)
-    if outcome.ask and outcome.field not in {"session_id", "client_request_id", "attempt_id"} and tasks.get(owner, task_id)["source"] != "nexus_agent":
+    if outcome.ask and not internal_question(outcome.field) and tasks.get(owner, task_id)["source"] != "nexus_agent":
         tasks.mutate(owner, task_id, "question", {"event_id": call_id + ":question", "question_id": call_id,
                      "question": str(outcome.ask)[:2000], "missing": str(outcome.field or "")[:2000]})
     return outcome

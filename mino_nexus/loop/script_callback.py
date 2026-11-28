@@ -23,6 +23,7 @@ _ALIASES = {
     "fail": "case.fail",
 }
 HANDLED = frozenset({
+    "asset.list", "asset.begin", "asset.upload", "asset.complete", "asset.download",
     "web_auth_get", "web_auth_save", "web_auth_invalidate",
     "case.account", "case.note", "case.step", "case.fail",
     "account", "note", "step", "fail", STEP_CAP, SESSION_CAP, LEASE_CAP, "record.sync",
@@ -165,6 +166,26 @@ def _call(admission: ScriptAdmission, cap: str, params: dict[str, Any]) -> dict[
     if not owner:
         raise PermissionError("这次运行没有执行账号")
     with execution_user(owner):
+        if cap.startswith("asset."):
+            from mino_nexus.resources import asset_store
+            sess = {"user_id": owner}
+            project = admission.project_id
+            if cap == "asset.list":
+                return asset_store.list_assets(project, sess, kind=params.get("kind", ""),
+                    state="ready", attributes=params.get("attributes", {}), limit=params.get("limit", 50))
+            if cap == "asset.begin":
+                value = dict(params.get("asset") or {})
+                source = dict(value.get("source") or {})
+                source["node_id"] = admission.node_id
+                source.setdefault("task_id", admission.run_id)
+                source.setdefault("case_id", admission.case_id)
+                source.setdefault("app_id", admission.app_id)
+                value["source"] = source
+                return asset_store.begin(project, sess, value)
+            if cap == "asset.complete":
+                return asset_store.complete(project, sess, params.get("asset_id"), params.get("version", 1))
+            if cap in {"asset.upload", "asset.download"}:
+                return asset_store.ticket(project, sess, params.get("asset_id"), params.get("version", 1), cap.split(".")[1])
         if cap in {"web_auth_get", "web_auth_save", "web_auth_invalidate"}:
             return _web_auth(admission, cap, params)
         if cap == "case.account":

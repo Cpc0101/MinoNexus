@@ -106,7 +106,7 @@ def main():
                 legacy = {'question_id': 'legacy-session', 'summary': '请补充本次的所需信息。', 'missing': 'session_id', 'evidence': [], 'status': 'open', 'answer': '', 'answered_at': '', 'acknowledged_at': ''}
                 row.state = {**row.state, 'status': 'waiting_user', 'questions': [legacy]}
             legacy_view = tasks.get('fixture-owner', 'business')
-            assert legacy_view['status'] == 'paused' and not legacy_view['questions'][0]['actionable']
+            assert legacy_view['status'] == 'waiting_agent' and not legacy_view['questions'][0]['actionable']
             assert legacy_view['questions'][0]['status'] == 'open'  # projection never fabricates acknowledgement
             assert next(item for item in tasks.listing('fixture-owner')['items'] if item['task_id'] == 'business')['pending_questions'] == 0
         print('PASS: task binding and announcement gates precede side effects; source drafting gate; owned business projection; question state; persistent link receipts; diagnostic filtering; latest/incremental event pagination')

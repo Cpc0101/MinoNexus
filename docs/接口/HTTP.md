@@ -760,3 +760,7 @@ presentation 只读取同账号显式关联的工作流和执行记录，提供 
 需求看板只读展示真实阶段，多个任务阶段并存时逐项展示，不把最高阶段冒充整端完成。waiting_agent 展示“已回答 · Agent 未读取”并给出原任务续接消息；服务端不自动唤醒外部客户端。独立调用诊断 API 保留，Workbench 不再提供独立入口；应用逻辑路由保留但主导航隐藏。
 
 Nexus 新任务创建时间携带 UTC 偏移。旧生产镜像（python:slim 默认 UTC）无偏移的 Nexus 顶层任务时间按 UTC 只读投影；开发环境需显式 MINO_NEXUS_LEGACY_TIMEZONE，否则不猜时区。不解释 Scout 原始记录的无时区值。Workbench 已知偏移的时间统一展示 Asia/Shanghai。
+
+## 外部测试资产
+
+元数据、本机配额和共享准备接口详见 [测试资产](../专题/测试资产.md)。文件正文只在发布它的 Scout 本机库，不经过 Nexus。
