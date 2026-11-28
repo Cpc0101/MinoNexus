@@ -92,6 +92,11 @@ def check_workflow():
     state, saved = transition(state, "finding", "quality", {"finding": {**draft, "title": "订单金额错误"}}, at(12))
     assert saved["finding"]["title"] == "订单金额错误" and len(saved["findings"]) == 1
     rejects(lambda: transition(state, "finding", "quality", {"finding": {**draft, "kind": "accepted_difference"}}, at(12)), "accepted difference")
+    wording = {**draft, "finding_id": "wording-a", "strict": True, "title": "标题空格",
+               "case_text": "标题「畅销好物」/「Best Sellers」", "expected": "Best Sellers", "actual": "Bestsellers"}
+    rejects(lambda: transition(state, "finding", "quality", {"finding": wording}, at(12)), "joined words")
+    state, accepted = transition(state, "finding", "quality", {"finding": {**wording, "kind": "accepted_difference", "strict": False}}, at(12))
+    assert accepted["finding"]["kind"] == "accepted_difference"
     state, independent = transition(state, "start", "quality", {**start, "attempt_id": "b1", "unit": "B"}, at(1001))
     assert independent["allowed"]
     state, _ = transition(state, "finish", "quality", {"attempt_id": "b1", "outcome": "progress", "evidence": ["fixture read"]}, at(1021))

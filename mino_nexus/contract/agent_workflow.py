@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+import re
 from typing import Any
 
 STAGES = ("analysis", "authoring", "preparation", "verification")
@@ -90,6 +91,33 @@ def time_budget(state: dict, now: str) -> dict:
             "measured_at": now, "scope": "summed_investigation_elapsed_including_waits"}
 
 
+def _fold_wording(value: str) -> str:
+    return "".join(ch for ch in str(value).casefold() if ch.isalnum())
+
+
+def _wording_parts(value: str) -> list[str]:
+    parts = [value]
+    parts += re.findall(r"[「『\"“']([^」』\"”']+)[」』\"”']", value)
+    parts += re.split(r"[/／|]", value)
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def wording_only_difference(expected: str, actual: str) -> bool:
+    """Spacing, case, or joined words. Not a different title and not a substring."""
+    if str(expected).strip() == str(actual).strip():
+        return False
+    folds = []
+    for source, other in ((expected, actual), (actual, expected)):
+        other_fold = _fold_wording(other)
+        for part in _wording_parts(source):
+            folded = _fold_wording(part)
+            if len(folded) < 8:
+                continue
+            if folded == other_fold or folded in other_fold:
+                folds.append(folded)
+    return bool(folds)
+
+
 def normalize_finding(value: Any, expected: list[str]) -> dict:
     """A review draft. It stays editable and is never a submitted defect."""
     if not isinstance(value, dict) or set(value) - set(FINDING_FIELDS) - {"status"} or set(FINDING_FIELDS) - set(value):
@@ -101,6 +129,8 @@ def normalize_finding(value: Any, expected: list[str]) -> dict:
         raise ValueError("Invalid finding kind")
     if value["strict"] and kind != "bug":
         raise ValueError("Required copy or UI position cannot be recorded as an accepted difference")
+    if kind == "bug" and any(wording_only_difference(value.get(key, ""), value.get("actual", "")) for key in ("expected", "case_text")):
+        raise ValueError("Spacing, case, or joined words are an accepted difference, not a defect")
     case_id = text(value["case_id"], "case_id", 128)
     if case_id not in expected:
         raise ValueError("Finding case is outside locked scope")
@@ -523,6 +553,10 @@ def transition(old: dict | None, operation: str, workflow_id: str, args: dict, n
             disposition = "verified"
         if attempt["stage"] == "verification" and outcome in {"failed", "blocked"} and disposition in {"", "verified"}:
             raise ValueError("Verification failure must name its disposition")
+        finding = args.get("finding") if isinstance(args.get("finding"), dict) else {}
+        if disposition in {"bug", "product_mismatch"} and any(
+                wording_only_difference(str(finding.get(key, "")), str(finding.get("actual", ""))) for key in ("expected", "case_text")):
+            raise ValueError("Spacing, case, or joined words are an accepted difference, not a defect")
         if disposition in {"bug", "accepted_difference"} and not isinstance(args.get("finding"), dict):
             raise ValueError("This disposition requires a review draft")
         if isinstance(args.get("finding"), dict) and args["finding"].get("kind") not in {disposition, None}:
