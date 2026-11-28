@@ -18,7 +18,7 @@ def project(db, row):
             if workflow:
                 facts = summary(workflow.state)
                 workflows.append({'workflow_id': ref['id'], **{k: facts[k] for k in
-                    ('scope', 'source_status', 'coverage', 'units', 'help_requests', 'delivery_status', 'draft_actions', 'findings')},
+                    ('scope', 'source_status', 'coverage', 'units', 'help_requests', 'delivery_status', 'draft_actions', 'findings', 'closeout')},
                     'active_attempts': [a for a in facts['attempts'] if not a['outcome']]})
         elif ref['kind'] == 'execution' and execution is None:
             run = db.get(AppRegressionRun, ref['id'])

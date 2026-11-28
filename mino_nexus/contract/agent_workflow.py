@@ -361,6 +361,7 @@ def summary(state: dict, now: str | None = None) -> dict:
             "task_contexts": deepcopy(state.get("task_contexts", {})),
             "contexts": deepcopy(state.get("contexts", [])), "reports": deepcopy(state.get("reports", [])),
             "findings": deepcopy(state.get("findings", [])),
+            "closeout": state.get("closeout", ""),
             "delivery_status": state.get("delivery_status", "in_progress"),
             "source_status": "locked" if state.get("source_read_id") else "drafting",
             **({"time_budget": time_budget(state, now)} if now else {}),

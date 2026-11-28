@@ -9,7 +9,7 @@ def seal_report(state, now, *, final=False):
     view = summary(state)
     snapshot = {key: deepcopy(view[key]) for key in (
         "scope", "source", "source_read_id", "expected_units", "coverage", "units",
-        "attempts", "help_requests", "contexts", "unresolved_writes", "task_contexts", "draft_actions", "decisions", "findings")}
+        "attempts", "help_requests", "contexts", "unresolved_writes", "task_contexts", "draft_actions", "decisions", "findings", "closeout")}
     digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     reports = state.setdefault("reports", [])
     if not any(r["content_hash"] == digest and r["final"] == final for r in reports):
@@ -92,4 +92,13 @@ def update_delivery(state, operation, args, now):
             raise ValueError("Invalid final")
         if final and any(not a["outcome"] for a in state["attempts"]):
             raise ValueError("Reconcile active investigations before final delivery")
+        if final:
+            closeout = text(args.get("closeout", ""), "closeout", 8000)
+            for heading in ("通过", "可接受差异", "缺陷草稿", "仍未测"):
+                if heading not in closeout:
+                    raise ValueError("Final report must list 通过, 可接受差异, 缺陷草稿, and 仍未测")
+            import re
+            if re.search(r"(?i)\b(pass|fail)\b\s*[:：|]?\s*\d+", closeout) or "需要我接着" in closeout:
+                raise ValueError("Final report cannot be a PASS/FAIL count or a next-step menu")
+            state["closeout"] = closeout
         seal_report(state, now, final=final)

@@ -130,6 +130,12 @@ def check_workflow():
     observed["observed_dispositions"] = {"A": "script_repair", "B": "verified"}
     view = coverage(observed)
     assert view["script_repair"] == ["A"] and view["formal_verified"] == 1 and "A" not in view["next_units"] and "B" not in view["next_units"]
+    report = workflow()
+    rejects(lambda: transition(report, "report", "quality", {"final": True, "closeout": "通过：无"}, at(1)), "仍未测")
+    closeout = "通过：无\n可接受差异：SM-05 · Best Sellers · Bestsellers · 连写 · 已改用例\n缺陷草稿：无\n仍未测：无"
+    _, sealed = transition(report, "report", "quality", {"final": True, "closeout": closeout}, at(1))
+    assert "Bestsellers" in sealed["closeout"]
+    rejects(lambda: transition(workflow(), "report", "quality", {"final": True, "closeout": closeout + "\nFAIL 12"}, at(1)), "PASS/FAIL")
     wording = task()
     wording["cases"][0]["accepted_differences"] = [{"expected": "Best Sellers", "actual": "Bestsellers"}]
     assert project(wording)["case_receipts"][0]["disposition"] == "accepted_difference"

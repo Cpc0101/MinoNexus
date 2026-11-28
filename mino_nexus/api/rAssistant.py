@@ -31,6 +31,7 @@ class WorkflowBody(BaseModel):
     reference: str | None = None
     affected_units: list[str] | None = None
     final: bool | None = None
+    closeout: str | None = None
     scope: str | None = None
     source_read_id: str | None = None
     expected_units: list[str] | None = None
